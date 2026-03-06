@@ -26,6 +26,7 @@ export interface ApiContext {
   startTime: number;
   getConfig: () => JimmyConfig;
   emit: (event: string, payload: unknown) => void;
+  connectors: Map<string, import("../shared/types.js").Connector>;
 }
 
 function readBody(req: HttpRequest): Promise<string> {
@@ -300,6 +301,26 @@ export async function handleApiRequest(
       return json(res, { lines });
     }
 
+    // POST /api/connectors/:name/send — send a message via a connector
+    params = matchRoute("/api/connectors/:name/send", pathname);
+    if (method === "POST" && params) {
+      const connector = context.connectors.get(params.name);
+      if (!connector) return notFound(res);
+      const body = JSON.parse(await readBody(req));
+      if (!body.channel || !body.text) return badRequest(res, "channel and text are required");
+      await connector.sendMessage(
+        { channel: body.channel, thread: body.thread },
+        body.text,
+      );
+      return json(res, { status: "sent" });
+    }
+
+    // GET /api/connectors — list available connectors
+    if (method === "GET" && pathname === "/api/connectors") {
+      const names = Array.from(context.connectors.keys());
+      return json(res, names);
+    }
+
     // GET /api/onboarding — check if onboarding is needed
     if (method === "GET" && pathname === "/api/onboarding") {
       const sessions = listSessions();
@@ -346,7 +367,8 @@ async function runWebSession(
       source: "web",
       channel: session.sourceRef,
       user: "web-user",
-      // employee could be looked up here if session.employee is set
+      connectors: Array.from(context.connectors.keys()),
+      config,
     });
 
     const engineConfig = session.engine === "codex"
@@ -360,6 +382,12 @@ async function runWebSession(
       cwd: JIMMY_HOME,
       bin: engineConfig.bin,
       model: session.model ?? engineConfig.model,
+      onStream: (delta) => {
+        context.emit("session:delta", {
+          sessionId: session.id,
+          delta,
+        });
+      },
     });
 
     updateSession(session.id, {

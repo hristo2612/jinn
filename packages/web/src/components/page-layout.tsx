@@ -14,7 +14,7 @@ export function PageLayout({ children }: { children: React.ReactNode }) {
         <div className="flex h-screen overflow-hidden" style={{ background: 'var(--bg)' }}>
           <Sidebar />
           <GlobalSearch />
-          <main className="flex-1 overflow-hidden">
+          <main className="flex-1 overflow-hidden md:ml-[56px]">
             <div className="md:hidden" style={{ height: 48 }} />
             {children}
           </main>

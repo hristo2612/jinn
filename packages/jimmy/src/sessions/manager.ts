@@ -21,14 +21,17 @@ import { logger } from "../shared/logger.js";
 export class SessionManager {
   private config: JimmyConfig;
   private engines: Map<string, Engine>;
+  private connectorNames: string[];
   private queue = new SessionQueue();
 
   constructor(
     config: JimmyConfig,
     engines: Map<string, Engine>,
+    connectorNames: string[] = [],
   ) {
     this.config = config;
     this.engines = engines;
+    this.connectorNames = connectorNames;
   }
 
   /**
@@ -62,6 +65,7 @@ export class SessionManager {
     const target: Target = {
       channel: msg.channel,
       thread: msg.thread,
+      messageTs: msg.raw?.ts,
     };
 
     const attachmentPaths = msg.attachments
@@ -92,8 +96,16 @@ export class SessionManager {
       return;
     }
 
-    // Signal processing
+    // Add eyes reaction to the user's message
     await connector.addReaction(target, "eyes").catch(() => {});
+
+    // Post a "thinking" placeholder message
+    const thinkingTarget = { ...target };
+    const thinkingTs = await connector.sendMessage(
+      { channel: target.channel, thread: target.thread || target.messageTs },
+      "_Thinking..._",
+    ).catch(() => undefined);
+
     updateSession(session.id, {
       status: "running",
       lastActivity: new Date().toISOString(),
@@ -106,6 +118,8 @@ export class SessionManager {
         thread: target.thread,
         user,
         employee,
+        connectors: this.connectorNames,
+        config: this.config,
       });
 
       const engineConfig = session.engine === "codex"
@@ -122,8 +136,26 @@ export class SessionManager {
         attachments: attachments.length > 0 ? attachments : undefined,
       });
 
-      // Send response
-      await connector.sendMessage(target, result.result);
+      // Edit the thinking message with the actual response, or send new if edit fails
+      if (thinkingTs) {
+        await connector.editMessage(
+          { channel: target.channel, thread: target.thread || target.messageTs, messageTs: thinkingTs },
+          result.result,
+        ).catch(async () => {
+          await connector.sendMessage(
+            { channel: target.channel, thread: target.thread || target.messageTs },
+            result.result,
+          );
+        });
+      } else {
+        await connector.sendMessage(
+          { channel: target.channel, thread: target.thread || target.messageTs },
+          result.result,
+        );
+      }
+
+      // Remove eyes reaction
+      await connector.removeReaction(target, "eyes").catch(() => {});
 
       // Update session with engine session id for resume
       updateSession(session.id, {
@@ -132,10 +164,6 @@ export class SessionManager {
         lastActivity: new Date().toISOString(),
         lastError: result.error ?? null,
       });
-
-      // Swap reactions
-      await connector.removeReaction(target, "eyes").catch(() => {});
-      await connector.addReaction(target, "white_check_mark").catch(() => {});
 
       logger.info(
         `Session ${session.id} completed in ${result.durationMs ?? 0}ms` +
@@ -151,9 +179,16 @@ export class SessionManager {
         lastError: errMsg,
       });
 
-      await connector.sendMessage(target, `Error: ${errMsg}`).catch(() => {});
+      // Edit thinking message with error, or send new
+      if (thinkingTs) {
+        await connector.editMessage(
+          { channel: target.channel, thread: target.thread || target.messageTs, messageTs: thinkingTs },
+          `Error: ${errMsg}`,
+        ).catch(() => {});
+      } else {
+        await connector.sendMessage(target, `Error: ${errMsg}`).catch(() => {});
+      }
       await connector.removeReaction(target, "eyes").catch(() => {});
-      await connector.addReaction(target, "x").catch(() => {});
     }
   }
 

@@ -39,7 +39,9 @@ function serveStatic(
 ): boolean {
   if (!fs.existsSync(webDir)) return false;
 
-  let filePath = path.join(webDir, req.url || "/");
+  // Strip query string before resolving file path
+  const urlPath = (req.url || "/").split("?")[0];
+  let filePath = path.join(webDir, urlPath);
   if (filePath.endsWith("/")) filePath = path.join(filePath, "index.html");
 
   // Prevent directory traversal
@@ -101,8 +103,14 @@ export async function startGateway(
   engines.set("claude", new ClaudeEngine());
   engines.set("codex", new CodexEngine());
 
+  // Derive connector names from config
+  const connectorNames: string[] = [];
+  if (config.connectors?.slack?.appToken && config.connectors?.slack?.botToken) {
+    connectorNames.push("slack");
+  }
+
   // Session manager
-  const sessionManager = new SessionManager(config, engines);
+  const sessionManager = new SessionManager(config, engines, connectorNames);
 
   // Build employee registry
   let employeeRegistry = scanOrg();
@@ -160,6 +168,7 @@ export async function startGateway(
     startTime,
     getConfig: () => currentConfig,
     emit,
+    connectors: connectorMap,
   };
 
   // Resolve web UI directory — bundled into dist/web/ by postbuild script
