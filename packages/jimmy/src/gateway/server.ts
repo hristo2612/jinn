@@ -51,6 +51,17 @@ function serveStatic(
   }
 
   if (!fs.existsSync(resolved) || fs.statSync(resolved).isDirectory()) {
+    // Next.js static export produces /chat.html, /sessions.html, etc.
+    // Try appending .html before falling back to index.html
+    const htmlPath = resolved.endsWith("/")
+      ? path.join(resolved, "index.html")
+      : resolved + ".html";
+    if (fs.existsSync(htmlPath) && !fs.statSync(htmlPath).isDirectory()) {
+      res.writeHead(200, { "Content-Type": "text/html" });
+      fs.createReadStream(htmlPath).pipe(res);
+      return true;
+    }
+
     // SPA fallback: serve index.html for non-API, non-WS routes
     const indexPath = path.join(webDir, "index.html");
     if (fs.existsSync(indexPath)) {

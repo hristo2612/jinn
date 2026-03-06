@@ -88,13 +88,15 @@ export async function handleApiRequest(
       const sessions = listSessions();
       const running = sessions.filter((s) => s.status === "running").length;
       return json(res, {
+        status: "ok",
         uptime: Math.floor((Date.now() - context.startTime) / 1000),
+        port: config.gateway.port || 7777,
         engines: {
           default: config.engines.default,
-          claude: { model: config.engines.claude.model },
-          codex: { model: config.engines.codex.model },
+          claude: { model: config.engines.claude.model, available: true },
+          codex: { model: config.engines.codex.model, available: true },
         },
-        sessions: { total: sessions.length, running },
+        sessions: { total: sessions.length, running, active: running },
       });
     }
 
