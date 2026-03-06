@@ -5,6 +5,7 @@ import { SettingsProvider } from "@/app/settings-provider"
 import { Sidebar } from "./sidebar"
 import { GlobalSearch } from "./global-search"
 import { LiveStreamWidget } from "./live-stream-widget"
+import { OnboardingWizard } from "./onboarding-wizard"
 
 export function PageLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -18,6 +19,7 @@ export function PageLayout({ children }: { children: React.ReactNode }) {
             {children}
           </main>
           <LiveStreamWidget />
+          <OnboardingWizard />
         </div>
       </SettingsProvider>
     </ThemeProvider>
