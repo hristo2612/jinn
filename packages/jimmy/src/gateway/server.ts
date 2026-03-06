@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
-import type { JimmyConfig } from "../shared/types.js";
+import type { JimmyConfig, Connector, Employee } from "../shared/types.js";
 import { loadConfig } from "../shared/config.js";
 import { configureLogger, logger } from "../shared/logger.js";
 import { initDb } from "../sessions/registry.js";
@@ -12,12 +12,10 @@ import { ClaudeEngine } from "../engines/claude.js";
 import { CodexEngine } from "../engines/codex.js";
 import { handleApiRequest, type ApiContext } from "./api.js";
 import { startWatchers, stopWatchers } from "./watcher.js";
-import type { Connector } from "../shared/types.js";
 import { SlackConnector } from "../connectors/slack/index.js";
 import { loadJobs } from "../cron/jobs.js";
 import { startScheduler, reloadScheduler, stopScheduler } from "../cron/scheduler.js";
 import { scanOrg, extractMention } from "./org.js";
-import type { Employee } from "../shared/types.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -110,7 +108,8 @@ export async function startGateway(
         botToken: config.connectors.slack.botToken,
       });
       slack.onMessage((msg) => {
-        sessionManager.route(msg, slack).catch((err) => {
+        const employee = extractMention(msg.text, employeeRegistry);
+        sessionManager.route(msg, slack, employee).catch((err) => {
           logger.error(`Slack route error: ${err instanceof Error ? err.message : err}`);
         });
       });
@@ -232,9 +231,9 @@ export async function startGateway(
       emit("cron:reloaded", {});
     },
     onOrgChange: () => {
-      logger.info("Org directory changed");
+      employeeRegistry = scanOrg();
+      logger.info(`Org directory changed, reloaded ${employeeRegistry.size} employee(s)`);
       emit("org:changed", {});
-      // TODO: integrate with employee registry in Task 7.1
     },
   });
 
