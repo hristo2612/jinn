@@ -200,7 +200,7 @@ function CodeBlock({ code, keyProp }: { code: string; keyProp: number }) {
       >
         {copied ? 'Copied!' : 'Copy'}
       </button>
-      <pre style={{
+      <pre className="code-block" style={{
         background: 'var(--fill-tertiary)',
         border: '1px solid var(--separator)',
         borderRadius: 'var(--radius-md)',
@@ -250,8 +250,9 @@ function TableBlock({ headerLine, rows, keyProp }: { headerLine: string; rows: s
                   padding: '10px 16px',
                   fontWeight: 600,
                   color: 'var(--text-primary)',
-                  whiteSpace: 'nowrap',
                   borderBottom: '1px solid var(--separator)',
+                  maxWidth: 280,
+                  wordBreak: 'break-word',
                 }}>{inlineFormat(h)}</th>
               ))}
             </tr>
@@ -264,6 +265,8 @@ function TableBlock({ headerLine, rows, keyProp }: { headerLine: string; rows: s
                     padding: '10px 16px',
                     borderBottom: ri < bodyRows.length - 1 ? '1px solid var(--separator)' : 'none',
                     color: 'var(--text-primary)',
+                    maxWidth: 280,
+                    wordBreak: 'break-word',
                   }}>{inlineFormat(cell)}</td>
                 ))}
               </tr>
@@ -365,6 +368,40 @@ function formatMessage(content: string): React.ReactNode {
   return <>{result}</>
 }
 
+/* ── Partial markdown fixer for streaming ───────────────── */
+
+/**
+ * Close unclosed markdown tokens so partial content renders cleanly.
+ * Handles: code blocks (```), inline code (`), bold (**), italic (*).
+ */
+function closePartialMarkdown(text: string): string {
+  let result = text
+
+  // Count triple backticks — if odd, close the code block
+  const tripleBackticks = (result.match(/```/g) || []).length
+  if (tripleBackticks % 2 !== 0) {
+    result += '\n```'
+  }
+
+  // Only fix inline markers outside of code blocks
+  if (tripleBackticks % 2 === 0) {
+    // Count inline backticks outside code blocks (simplified: count ` not part of ```)
+    const withoutCodeBlocks = result.replace(/```[\s\S]*?```/g, '')
+    const inlineBackticks = (withoutCodeBlocks.match(/`/g) || []).length
+    if (inlineBackticks % 2 !== 0) {
+      result += '`'
+    }
+
+    // Count ** pairs
+    const boldMarkers = (withoutCodeBlocks.match(/\*\*/g) || []).length
+    if (boldMarkers % 2 !== 0) {
+      result += '**'
+    }
+  }
+
+  return result
+}
+
 /* ── Timestamp formatting ──────────────────────────────── */
 
 function formatTimestamp(ts: number): string {
@@ -441,9 +478,10 @@ function renderMedia(media: MediaAttachment[], isUser: boolean) {
 interface ChatMessagesProps {
   messages: Message[]
   loading: boolean
+  streamingText?: string
 }
 
-export function ChatMessages({ messages, loading }: ChatMessagesProps) {
+export function ChatMessages({ messages, loading, streamingText }: ChatMessagesProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -570,7 +608,7 @@ export function ChatMessages({ messages, loading }: ChatMessagesProps) {
                     fontWeight: 'var(--weight-medium)',
                     boxShadow: 'var(--shadow-subtle)',
                   }}>
-                    {textContent}
+                    {formatMessage(textContent)}
                   </div>
                 )}
                 {media.length > 0 && (
@@ -614,8 +652,32 @@ export function ChatMessages({ messages, loading }: ChatMessagesProps) {
         )
       })}
 
+      {/* Streaming message — shows text as it arrives */}
+      {streamingText && (
+        <div style={{
+          display: 'flex',
+          justifyContent: 'flex-start',
+          padding: '0 var(--space-4)',
+          marginBottom: 'var(--space-1)',
+        }} className="assistant-msg-row">
+          <div className="assistant-msg-bubble" style={{ display: 'flex', flexDirection: 'column' }}>
+            <div style={{
+              padding: 'var(--space-3) var(--space-4)',
+              borderRadius: 'var(--radius-sm) var(--radius-lg) var(--radius-lg) var(--radius-lg)',
+              background: 'var(--material-thin)',
+              border: '1px solid var(--separator)',
+              color: 'var(--text-primary)',
+              fontSize: 'var(--text-subheadline)',
+              lineHeight: 'var(--leading-relaxed)',
+            }}>
+              {formatMessage(closePartialMarkdown(streamingText))}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Loading indicator while waiting for engine response */}
-      {loading && messages.length > 0 && (messages[messages.length - 1]?.role === 'user' || messages[messages.length - 1]?.toolCall) && (
+      {loading && !streamingText && messages.length > 0 && (messages[messages.length - 1]?.role === 'user' || messages[messages.length - 1]?.toolCall) && (
         <div style={{
           display: 'flex',
           justifyContent: 'flex-start',
@@ -667,6 +729,41 @@ export function ChatMessages({ messages, loading }: ChatMessagesProps) {
           .assistant-msg-bubble { max-width: 75%; }
           .user-msg-bubble { max-width: 75%; }
           .assistant-msg-row { padding: 0 var(--space-4) !important; }
+        }
+        /* User message contrast fixes — ensure all child elements are visible on accent background */
+        .user-msg-bubble code {
+          background: rgba(255,255,255,0.2) !important;
+          border-color: rgba(255,255,255,0.3) !important;
+          color: inherit !important;
+        }
+        .user-msg-bubble .code-block,
+        .user-msg-bubble pre {
+          background: rgba(0,0,0,0.2) !important;
+          border-color: rgba(255,255,255,0.15) !important;
+          color: rgba(255,255,255,0.95) !important;
+        }
+        .user-msg-bubble a {
+          color: inherit !important;
+          text-decoration-color: rgba(255,255,255,0.6) !important;
+        }
+        .user-msg-bubble strong { color: inherit !important; }
+        .user-msg-bubble em { color: inherit !important; opacity: 0.9; }
+        .user-msg-bubble span { color: inherit !important; }
+        .user-msg-bubble div { color: inherit !important; }
+        .user-msg-bubble th, .user-msg-bubble td { color: inherit !important; }
+        .user-msg-bubble table { border-color: rgba(255,255,255,0.2) !important; }
+        .user-msg-bubble th { border-color: rgba(255,255,255,0.2) !important; }
+        .user-msg-bubble td { border-color: rgba(255,255,255,0.15) !important; }
+        .user-msg-bubble tr { background: transparent !important; }
+        .user-msg-bubble thead tr { background: rgba(255,255,255,0.1) !important; }
+        /* Selection visibility for user messages */
+        .user-msg-bubble ::selection {
+          background: rgba(255,255,255,0.35);
+          color: inherit;
+        }
+        .user-msg-bubble ::-moz-selection {
+          background: rgba(255,255,255,0.35);
+          color: inherit;
         }
       `}</style>
     </div>

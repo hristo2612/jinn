@@ -41,6 +41,7 @@ interface Config {
   }
   connectors?: {
     slack?: { appToken?: string; botToken?: string }
+    web?: { bidirectional?: boolean; idleTimeoutMinutes?: number; hardTimeoutHours?: number }
   }
   logging?: {
     level?: string
@@ -876,6 +877,57 @@ export default function SettingsPage() {
                     placeholder="xoxb-..."
                   />
                 </FieldRow>
+
+                <div
+                  style={{
+                    borderTop: "1px solid var(--separator)",
+                    marginTop: "var(--space-3)",
+                    paddingTop: "var(--space-3)",
+                  }}
+                />
+
+                <div
+                  style={{
+                    fontSize: "var(--text-caption1)",
+                    fontWeight: "var(--weight-semibold)",
+                    color: "var(--text-tertiary)",
+                    marginBottom: "var(--space-2)",
+                  }}
+                >
+                  Web UI
+                </div>
+                <FieldRow label="Bidirectional Mode">
+                  <ToggleSwitch
+                    checked={config.connectors?.web?.bidirectional !== false}
+                    onChange={(v) =>
+                      updateConfig(["connectors", "web", "bidirectional"], v)
+                    }
+                  />
+                </FieldRow>
+                {config.connectors?.web?.bidirectional !== false && (
+                  <>
+                    <FieldRow label="Idle Timeout (min)">
+                      <SettingsInput
+                        type="number"
+                        value={String(config.connectors?.web?.idleTimeoutMinutes ?? 60)}
+                        onChange={(v) =>
+                          updateConfig(["connectors", "web", "idleTimeoutMinutes"], Number(v) || 0)
+                        }
+                        placeholder="60"
+                      />
+                    </FieldRow>
+                    <FieldRow label="Hard Timeout (hrs)">
+                      <SettingsInput
+                        type="number"
+                        value={String(config.connectors?.web?.hardTimeoutHours ?? 24)}
+                        onChange={(v) =>
+                          updateConfig(["connectors", "web", "hardTimeoutHours"], Number(v) || 0)
+                        }
+                        placeholder="24"
+                      />
+                    </FieldRow>
+                  </>
+                )}
               </Section>
 
               {/* ── Section 6: Logging ── */}

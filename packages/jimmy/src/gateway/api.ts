@@ -134,6 +134,19 @@ export async function handleApiRequest(
 
     // DELETE /api/sessions/:id
     if (method === "DELETE" && params) {
+      const session = getSession(params.id);
+      if (!session) return notFound(res);
+
+      // Kill any live bidirectional process for this session
+      const engine = context.sessionManager.getEngine(session.engine);
+      if (engine) {
+        const { isBidirectionalEngine } = await import("../shared/types.js");
+        if (isBidirectionalEngine(engine) && engine.isAlive(params.id)) {
+          logger.info(`Killing bidirectional process for deleted session ${params.id}`);
+          engine.kill(params.id);
+        }
+      }
+
       const deleted = deleteSession(params.id);
       if (!deleted) return notFound(res);
       logger.info(`Session deleted: ${params.id}`);
@@ -164,6 +177,7 @@ export async function handleApiRequest(
         prompt,
       });
       logger.info(`Web session created: ${session.id}`);
+      insertMessage(session.id, "user", prompt);
 
       // Run engine asynchronously — respond immediately, push result via WebSocket
       const engine = context.sessionManager.getEngine(engineName);
@@ -201,10 +215,49 @@ export async function handleApiRequest(
       const body = JSON.parse(await readBody(req));
       const prompt = body.message || body.prompt;
       if (!prompt) return badRequest(res, "message is required");
+      const interrupt = !!body.interrupt;
 
       const config = context.getConfig();
       const engine = context.sessionManager.getEngine(session.engine);
       if (!engine) return serverError(res, `Engine "${session.engine}" not available`);
+
+      // Persist the user message immediately
+      insertMessage(session.id, "user", prompt);
+
+      // If session is currently running, handle mid-turn
+      if (session.status === "running") {
+        const queue = context.sessionManager.getQueue();
+        const midTurnResult = queue.handleMidTurn(
+          session.sourceRef,
+          engine,
+          session.id,
+          prompt,
+          interrupt,
+        );
+
+        if (midTurnResult === "steered") {
+          context.emit("session:steered", { sessionId: session.id, message: prompt });
+          return json(res, { status: "steered", sessionId: session.id });
+        }
+
+        if (midTurnResult === "interrupted") {
+          // Kill happened — start a new turn with --resume after a brief delay
+          context.emit("session:interrupted", { sessionId: session.id });
+          setTimeout(() => {
+            context.emit("session:started", { sessionId: session.id });
+            runWebSession(session, prompt, engine, config, context).catch((err) => {
+              const errMsg = err instanceof Error ? err.message : String(err);
+              logger.error(`Web session ${session.id} error after interrupt: ${errMsg}`);
+              updateSession(session.id, { status: "error", lastError: errMsg });
+              context.emit("session:completed", { sessionId: session.id, result: null, error: errMsg });
+            });
+          }, 500);
+          return json(res, { status: "interrupted", sessionId: session.id });
+        }
+
+        // midTurnResult === "queued" — fall through to normal queue behavior
+        context.emit("session:queued", { sessionId: session.id, message: prompt });
+      }
 
       context.emit("session:started", { sessionId: session.id });
       runWebSession(session, prompt, engine, config, context).catch((err) => {
@@ -530,10 +583,8 @@ function loadTranscriptMessages(engineSessionId: string): Array<{ role: string; 
  * Run an engine for a web session and emit results via WebSocket.
  */
 import { buildContext } from "../sessions/context.js";
-import type { SyncedConversation } from "../sessions/context.js";
 import { JIMMY_HOME } from "../shared/paths.js";
 import type { Engine, Session } from "../shared/types.js";
-import { parseCommand } from "../commands/parser.js";
 
 async function runWebSession(
   session: Session,
@@ -543,9 +594,6 @@ async function runWebSession(
   context: ApiContext,
 ): Promise<void> {
   logger.info(`Web session ${session.id} running engine "${session.engine}" (model: ${session.model || "default"})`);
-
-  // Persist the user prompt
-  insertMessage(session.id, "user", prompt);
 
   updateSession(session.id, {
     status: "running",
@@ -562,26 +610,6 @@ async function runWebSession(
       employee = findEmployee(session.employee, registry);
     }
 
-    // Detect slash commands — enrich context and rewrite prompt to avoid engine CLI conflicts
-    let syncedConversation: SyncedConversation | undefined;
-    const parsed = parseCommand(prompt);
-    if (parsed) {
-      if (parsed.command === "sync" && parsed.target) {
-        const { findRecentEmployeeSession } = await import("../sessions/registry.js");
-        const recentSession = findRecentEmployeeSession(parsed.target, session.id);
-        if (recentSession) {
-          const syncMsgs = getMessages(recentSession.id);
-          if (syncMsgs.length > 0) {
-            syncedConversation = {
-              employee: parsed.target,
-              messages: syncMsgs.map((m) => ({ role: m.role, content: m.content })),
-            };
-            logger.info(`Synced ${syncMsgs.length} messages from ${parsed.target}'s session ${recentSession.id}`);
-          }
-        }
-      }
-    }
-
     const systemPrompt = buildContext({
       source: "web",
       channel: session.sourceRef,
@@ -590,7 +618,6 @@ async function runWebSession(
       connectors: Array.from(context.connectors.keys()),
       config,
       sessionId: session.id,
-      syncedConversation,
     });
 
     const engineConfig = session.engine === "codex"
@@ -604,16 +631,16 @@ async function runWebSession(
       cwd: JIMMY_HOME,
       bin: engineConfig.bin,
       model: session.model ?? engineConfig.model,
+      cliFlags: employee?.cliFlags,
+      interactive: session.engine === "claude" && (config.connectors?.web?.bidirectional !== false),
+      sessionId: session.id,
       onStream: (delta) => {
-        // Only emit tool events — text arrives as the full result on completion
-        if (delta.type === "tool_use" || delta.type === "tool_result") {
-          context.emit("session:delta", {
-            sessionId: session.id,
-            type: delta.type,
-            content: delta.content,
-            toolName: delta.toolName,
-          });
-        }
+        context.emit("session:delta", {
+          sessionId: session.id,
+          type: delta.type,
+          content: delta.content,
+          toolName: delta.toolName,
+        });
       },
     });
 

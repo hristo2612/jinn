@@ -17,6 +17,7 @@ interface ChatSidebarProps {
   selectedId: string | null
   onSelect: (id: string) => void
   onNewChat: () => void
+  onDelete?: (id: string) => void
   refreshKey: number
   onSessionsLoaded?: (sessions: Session[]) => void
 }
@@ -32,28 +33,53 @@ function formatTime(dateStr?: string): string {
   return new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
 }
 
-function statusColor(status?: string): string {
-  switch (status) {
-    case 'running': return 'var(--system-yellow)'
-    case 'idle':
-    case 'completed': return 'var(--system-green)'
-    case 'error': return 'var(--system-red)'
-    default: return 'var(--text-quaternary)'
-  }
+function getReadSessions(): Set<string> {
+  try {
+    const raw = localStorage.getItem('jimmy-read-sessions')
+    return raw ? new Set(JSON.parse(raw)) : new Set()
+  } catch { return new Set() }
+}
+
+function markSessionRead(id: string) {
+  const read = getReadSessions()
+  read.add(id)
+  // Keep only the last 500 to avoid bloat
+  const arr = Array.from(read)
+  if (arr.length > 500) arr.splice(0, arr.length - 500)
+  localStorage.setItem('jimmy-read-sessions', JSON.stringify(arr))
 }
 
 export function ChatSidebar({
   selectedId,
   onSelect,
   onNewChat,
+  onDelete,
   refreshKey,
   onSessionsLoaded,
 }: ChatSidebarProps) {
   const [sessions, setSessions] = useState<Session[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; sessionId: string } | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
+  const [hoveredId, setHoveredId] = useState<string | null>(null)
+  const [readSessions, setReadSessions] = useState<Set<string>>(new Set())
+
+  // Load read state from localStorage
+  useEffect(() => {
+    setReadSessions(getReadSessions())
+  }, [])
+
+  // Mark selected session as read
+  useEffect(() => {
+    if (selectedId) {
+      markSessionRead(selectedId)
+      setReadSessions(prev => {
+        const next = new Set(prev)
+        next.add(selectedId)
+        return next
+      })
+    }
+  }, [selectedId])
 
   useEffect(() => {
     setLoading(true)
@@ -75,18 +101,12 @@ export function ChatSidebar({
       .finally(() => setLoading(false))
   }, [refreshKey])
 
-  function handleContextMenu(e: React.MouseEvent, sessionId: string) {
-    e.preventDefault()
-    e.stopPropagation()
-    setContextMenu({ x: e.clientX, y: e.clientY, sessionId })
-  }
-
-  async function handleDeleteConfirm() {
-    if (!confirmDelete) return
+  async function handleDelete(sessionId: string) {
     try {
-      await api.deleteSession(confirmDelete)
-      setSessions((prev) => prev.filter((s) => s.id !== confirmDelete))
-      if (selectedId === confirmDelete) onNewChat()
+      await api.deleteSession(sessionId)
+      setSessions((prev) => prev.filter((s) => s.id !== sessionId))
+      if (onDelete) onDelete(sessionId)
+      else if (selectedId === sessionId) onNewChat()
     } catch { /* ignore */ }
     setConfirmDelete(null)
   }
@@ -109,9 +129,7 @@ export function ChatSidebar({
       height: '100%',
       background: 'var(--sidebar-bg)',
       borderRight: '1px solid var(--separator)',
-    }}
-    onClick={() => setContextMenu(null)}
-    >
+    }}>
       {/* Header */}
       <div style={{
         padding: 'var(--space-4) var(--space-4) var(--space-3)',
@@ -238,13 +256,24 @@ export function ChatSidebar({
         ) : (
           displayed.map((session) => {
             const isActive = session.id === selectedId
+            const isHovered = session.id === hoveredId
+            const isRunning = session.status === 'running'
+            const isRead = readSessions.has(session.id)
+            const isError = session.status === 'error'
             const timeLabel = formatTime(session.lastActivity || session.createdAt)
+
+            let dotColor: string
+            if (isRunning) dotColor = 'var(--system-blue)'
+            else if (isError) dotColor = 'var(--system-red)'
+            else if (isRead) dotColor = 'var(--text-quaternary)'
+            else dotColor = 'var(--system-green)'
 
             return (
               <button
                 key={session.id}
                 onClick={() => onSelect(session.id)}
-                onContextMenu={(e) => handleContextMenu(e, session.id)}
+                onMouseEnter={() => setHoveredId(session.id)}
+                onMouseLeave={() => setHoveredId(null)}
                 style={{
                   width: '100%',
                   display: 'flex',
@@ -256,6 +285,7 @@ export function ChatSidebar({
                   cursor: 'pointer',
                   textAlign: 'left',
                   borderLeft: isActive ? '2px solid var(--accent)' : '2px solid transparent',
+                  position: 'relative',
                 }}
               >
                 {/* Status indicator */}
@@ -263,8 +293,10 @@ export function ChatSidebar({
                   width: 8,
                   height: 8,
                   borderRadius: '50%',
-                  background: statusColor(session.status),
+                  background: dotColor,
                   flexShrink: 0,
+                  animation: isRunning ? 'sidebar-pulse 2s ease-in-out infinite' : 'none',
+                  boxShadow: isRunning ? `0 0 6px ${dotColor}` : 'none',
                 }} />
 
                 {/* Text content */}
@@ -277,13 +309,14 @@ export function ChatSidebar({
                   }}>
                     <span style={{
                       fontSize: 'var(--text-footnote)',
-                      fontWeight: 'var(--weight-semibold)',
+                      fontWeight: isRead && !isActive ? 'var(--weight-medium)' : 'var(--weight-semibold)',
                       color: 'var(--text-primary)',
                       letterSpacing: '-0.2px',
                       overflow: 'hidden',
                       textOverflow: 'ellipsis',
                       whiteSpace: 'nowrap',
-                      maxWidth: 140,
+                      flex: 1,
+                      minWidth: 0,
                     }}>
                       {session.title || session.employee || 'Jimmy'}
                     </span>
@@ -302,64 +335,42 @@ export function ChatSidebar({
                     overflow: 'hidden',
                     textOverflow: 'ellipsis',
                     whiteSpace: 'nowrap',
-                    fontFamily: 'var(--font-mono)',
                   }}>
-                    {session.id.slice(0, 12)}...
+                    {session.employee || 'Jimmy'}
                   </div>
                 </div>
+
+                {/* Delete button on hover */}
+                {isHovered && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setConfirmDelete(session.id) }}
+                    aria-label="Delete session"
+                    style={{
+                      padding: 4,
+                      borderRadius: 'var(--radius-sm)',
+                      background: 'transparent',
+                      border: 'none',
+                      cursor: 'pointer',
+                      color: 'var(--text-tertiary)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      flexShrink: 0,
+                      transition: 'color 150ms ease',
+                    }}
+                    onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--system-red)')}
+                    onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-tertiary)')}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="3 6 5 6 21 6" />
+                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                    </svg>
+                  </button>
+                )}
               </button>
             )
           })
         )}
       </div>
-
-      {/* Context menu */}
-      {contextMenu && (
-        <div
-          style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 50 }}
-          onClick={() => setContextMenu(null)}
-        >
-          <div
-            style={{
-              position: 'fixed',
-              top: contextMenu.y,
-              left: contextMenu.x,
-              background: 'var(--bg)',
-              border: '1px solid var(--separator)',
-              borderRadius: 'var(--radius-md)',
-              boxShadow: 'var(--shadow-lg)',
-              padding: 'var(--space-1)',
-              zIndex: 51,
-              minWidth: 160,
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <button
-              onClick={() => { setContextMenu(null); setConfirmDelete(contextMenu.sessionId) }}
-              style={{
-                width: '100%',
-                textAlign: 'left',
-                padding: 'var(--space-2) var(--space-3)',
-                fontSize: 'var(--text-footnote)',
-                color: 'var(--system-red)',
-                background: 'transparent',
-                border: 'none',
-                cursor: 'pointer',
-                borderRadius: 'var(--radius-sm)',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 'var(--space-2)',
-              }}
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="3 6 5 6 21 6" />
-                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-              </svg>
-              Delete Session
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* Confirm delete dialog */}
       {confirmDelete && (
@@ -395,7 +406,7 @@ export function ChatSidebar({
                 }}
               >Cancel</button>
               <button
-                onClick={handleDeleteConfirm}
+                onClick={() => handleDelete(confirmDelete)}
                 style={{
                   padding: 'var(--space-2) var(--space-4)', borderRadius: 'var(--radius-md)',
                   background: 'var(--system-red)', color: '#fff',
@@ -407,6 +418,14 @@ export function ChatSidebar({
           </div>
         </div>
       )}
+
+      {/* Pulse animation for running sessions */}
+      <style>{`
+        @keyframes sidebar-pulse {
+          0%, 100% { opacity: 1; transform: scale(1); }
+          50% { opacity: 0.5; transform: scale(0.85); }
+        }
+      `}</style>
     </div>
   )
 }

@@ -29,7 +29,9 @@ const SLASH_COMMANDS: SlashCommand[] = [
 
 interface ChatInputProps {
   disabled: boolean
-  onSend: (message: string, media?: MediaAttachment[]) => void
+  loading: boolean
+  onSend: (message: string, media?: MediaAttachment[], interrupt?: boolean) => void
+  onInterrupt: () => void
   onNewSession: () => void
   onStatusRequest: () => void
 }
@@ -92,7 +94,9 @@ async function fileToAttachment(file: File): Promise<MediaAttachment> {
 
 export function ChatInput({
   disabled,
+  loading,
   onSend,
+  onInterrupt,
   onNewSession,
   onStatusRequest,
 }: ChatInputProps) {
@@ -289,7 +293,7 @@ export function ChatInput({
       textareaRef.current.style.height = 'auto'
     }
 
-    onSend(trimmed, mediaToSend)
+    onSend(trimmed, mediaToSend, false)
   }
 
   async function handleFileAttach(e: React.ChangeEvent<HTMLInputElement>) {
@@ -511,13 +515,14 @@ export function ChatInput({
 
       <div style={{
         display: 'flex',
-        alignItems: 'flex-end',
+        alignItems: 'center',
         gap: 'var(--space-2)',
         background: 'var(--fill-secondary)',
         borderRadius: 'var(--radius-lg)',
         padding: '6px var(--space-3)',
-        border: '1px solid var(--separator)',
+        border: loading ? '1px solid var(--accent)' : '1px solid var(--separator)',
         minHeight: 44,
+        transition: 'border-color 200ms ease',
       }}>
         {/* Attach button */}
         <button
@@ -619,6 +624,32 @@ export function ChatInput({
             target.style.height = Math.min(target.scrollHeight, 120) + 'px'
           }}
         />
+
+        {/* Stop button — shown when loading */}
+        {loading && (
+          <button
+            onClick={onInterrupt}
+            aria-label="Stop"
+            style={{
+              width: 32,
+              height: 32,
+              borderRadius: '50%',
+              background: 'var(--system-red)',
+              color: '#fff',
+              border: 'none',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0,
+              transition: 'all 150ms ease',
+            }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+              <rect x="4" y="4" width="16" height="16" rx="2" />
+            </svg>
+          </button>
+        )}
 
         {/* Send button */}
         <button

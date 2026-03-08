@@ -1,9 +1,9 @@
-import path from "node:path";
-import { mkdirSync } from "node:fs";
-import Database from "better-sqlite3";
-import { v4 as uuidv4 } from "uuid";
-import { SESSIONS_DB } from "../shared/paths.js";
-import type { Session } from "../shared/types.js";
+import path from 'node:path';
+import { mkdirSync } from 'node:fs';
+import Database from 'better-sqlite3';
+import { v4 as uuidv4 } from 'uuid';
+import { SESSIONS_DB } from '../shared/paths.js';
+import type { Session } from '../shared/types.js';
 
 let db: Database.Database;
 
@@ -43,12 +43,12 @@ function rowToSession(row: Record<string, unknown>): Session {
     engine: row.engine as string,
     engineSessionId: (row.engine_session_id as string) ?? null,
     source: row.source as string,
-    sourceRef: (row.source_ref as string),
+    sourceRef: row.source_ref as string,
     employee: (row.employee as string) ?? null,
     model: (row.model as string) ?? null,
     title: (row.title as string) ?? null,
     parentSessionId: (row.parent_session_id as string) ?? null,
-    status: row.status as Session["status"],
+    status: row.status as Session['status'],
     createdAt: row.created_at as string,
     lastActivity: row.last_activity as string,
     lastError: (row.last_error as string) ?? null,
@@ -59,19 +59,19 @@ export function initDb(): Database.Database {
   if (db) return db;
   mkdirSync(path.dirname(SESSIONS_DB), { recursive: true });
   db = new Database(SESSIONS_DB);
-  db.pragma("journal_mode = WAL");
+  db.pragma('journal_mode = WAL');
   db.exec(CREATE_TABLE);
   db.exec(CREATE_MESSAGES_TABLE);
   db.exec(CREATE_MESSAGES_INDEX);
 
   // Migrate: add title column if missing
-  const cols = db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name: string }>;
+  const cols = db.prepare('PRAGMA table_info(sessions)').all() as Array<{ name: string }>;
   const colNames = new Set(cols.map((c) => c.name));
-  if (!colNames.has("title")) {
-    db.exec("ALTER TABLE sessions ADD COLUMN title TEXT");
+  if (!colNames.has('title')) {
+    db.exec('ALTER TABLE sessions ADD COLUMN title TEXT');
   }
-  if (!colNames.has("parent_session_id")) {
-    db.exec("ALTER TABLE sessions ADD COLUMN parent_session_id TEXT");
+  if (!colNames.has('parent_session_id')) {
+    db.exec('ALTER TABLE sessions ADD COLUMN parent_session_id TEXT');
   }
 
   return db;
@@ -88,16 +88,12 @@ export interface CreateSessionOpts {
 }
 
 function generateTitle(employee?: string, prompt?: string): string {
-  const name = employee || "Jimmy";
+  const name = employee || 'Jimmy';
   if (!prompt) return name;
-  const cleaned = prompt
-    .replace(/\n/g, " ")
-    .replace(/@\w+/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+  const cleaned = prompt.replace(/\n/g, ' ').replace(/@\w+/g, '').replace(/\s+/g, ' ').trim();
   if (!cleaned) return name;
   const summary = cleaned.slice(0, 30).trim();
-  return `${name} — ${summary}${cleaned.length > 30 ? "..." : ""}`;
+  return `${name} - ${summary}${cleaned.length > 30 ? '...' : ''}`;
 }
 
 export function createSession(opts: CreateSessionOpts & { prompt?: string }): Session {
@@ -122,7 +118,7 @@ export function createSession(opts: CreateSessionOpts & { prompt?: string }): Se
     model: opts.model ?? null,
     title,
     parentSessionId: opts.parentSessionId ?? null,
-    status: "idle",
+    status: 'idle',
     createdAt: now,
     lastActivity: now,
     lastError: null,
@@ -131,19 +127,19 @@ export function createSession(opts: CreateSessionOpts & { prompt?: string }): Se
 
 export function getSession(id: string): Session | undefined {
   const db = initDb();
-  const row = db.prepare("SELECT * FROM sessions WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+  const row = db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as Record<string, unknown> | undefined;
   return row ? rowToSession(row) : undefined;
 }
 
 export function getSessionBySourceRef(sourceRef: string): Session | undefined {
   const db = initDb();
-  const row = db.prepare("SELECT * FROM sessions WHERE source_ref = ? ORDER BY last_activity DESC LIMIT 1").get(sourceRef) as Record<string, unknown> | undefined;
+  const row = db.prepare('SELECT * FROM sessions WHERE source_ref = ? ORDER BY last_activity DESC LIMIT 1').get(sourceRef) as Record<string, unknown> | undefined;
   return row ? rowToSession(row) : undefined;
 }
 
 export interface UpdateSessionFields {
   engineSessionId?: string;
-  status?: Session["status"];
+  status?: Session['status'];
   lastActivity?: string;
   lastError?: string | null;
 }
@@ -154,31 +150,31 @@ export function updateSession(id: string, updates: UpdateSessionFields): Session
   const values: unknown[] = [];
 
   if (updates.engineSessionId !== undefined) {
-    sets.push("engine_session_id = ?");
+    sets.push('engine_session_id = ?');
     values.push(updates.engineSessionId);
   }
   if (updates.status !== undefined) {
-    sets.push("status = ?");
+    sets.push('status = ?');
     values.push(updates.status);
   }
   if (updates.lastActivity !== undefined) {
-    sets.push("last_activity = ?");
+    sets.push('last_activity = ?');
     values.push(updates.lastActivity);
   }
   if (updates.lastError !== undefined) {
-    sets.push("last_error = ?");
+    sets.push('last_error = ?');
     values.push(updates.lastError);
   }
 
   if (sets.length === 0) return getSession(id);
 
   values.push(id);
-  db.prepare(`UPDATE sessions SET ${sets.join(", ")} WHERE id = ?`).run(...values);
+  db.prepare(`UPDATE sessions SET ${sets.join(', ')} WHERE id = ?`).run(...values);
   return getSession(id);
 }
 
 export interface ListSessionsFilter {
-  status?: Session["status"];
+  status?: Session['status'];
   source?: string;
   engine?: string;
 }
@@ -189,19 +185,19 @@ export function listSessions(filter?: ListSessionsFilter): Session[] {
   const values: unknown[] = [];
 
   if (filter?.status) {
-    conditions.push("status = ?");
+    conditions.push('status = ?');
     values.push(filter.status);
   }
   if (filter?.source) {
-    conditions.push("source = ?");
+    conditions.push('source = ?');
     values.push(filter.source);
   }
   if (filter?.engine) {
-    conditions.push("engine = ?");
+    conditions.push('engine = ?');
     values.push(filter.engine);
   }
 
-  const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
   const rows = db.prepare(`SELECT * FROM sessions ${where} ORDER BY last_activity DESC`).all(...values) as Record<string, unknown>[];
   return rows.map(rowToSession);
 }
@@ -212,16 +208,14 @@ export function listSessions(filter?: ListSessionsFilter): Session[] {
  */
 export function recoverStaleSessions(): number {
   const db = initDb();
-  const result = db.prepare(
-    "UPDATE sessions SET status = 'idle', last_error = 'Recovered: gateway restarted while session was running' WHERE status = 'running'"
-  ).run();
+  const result = db.prepare("UPDATE sessions SET status = 'idle', last_error = 'Recovered: gateway restarted while session was running' WHERE status = 'running'").run();
   return result.changes;
 }
 
 export function deleteSession(id: string): boolean {
   const db = initDb();
-  db.prepare("DELETE FROM messages WHERE session_id = ?").run(id);
-  const result = db.prepare("DELETE FROM sessions WHERE id = ?").run(id);
+  db.prepare('DELETE FROM messages WHERE session_id = ?').run(id);
+  const result = db.prepare('DELETE FROM sessions WHERE id = ?').run(id);
   return result.changes > 0;
 }
 
@@ -235,34 +229,10 @@ export interface SessionMessage {
 export function insertMessage(sessionId: string, role: string, content: string): void {
   const db = initDb();
   const id = uuidv4();
-  db.prepare("INSERT INTO messages (id, session_id, role, content, timestamp) VALUES (?, ?, ?, ?, ?)").run(
-    id, sessionId, role, content, Date.now(),
-  );
+  db.prepare('INSERT INTO messages (id, session_id, role, content, timestamp) VALUES (?, ?, ?, ?, ?)').run(id, sessionId, role, content, Date.now());
 }
 
 export function getMessages(sessionId: string): SessionMessage[] {
   const db = initDb();
-  return db.prepare("SELECT id, role, content, timestamp FROM messages WHERE session_id = ? ORDER BY timestamp ASC").all(sessionId) as SessionMessage[];
-}
-
-/**
- * Find the most recent session for an employee, optionally excluding
- * sessions that are children of a specific parent.
- */
-export function findRecentEmployeeSession(
-  employeeName: string,
-  excludeParentId?: string,
-): Session | undefined {
-  const db = initDb();
-  let query = "SELECT * FROM sessions WHERE employee = ?";
-  const values: unknown[] = [employeeName];
-
-  if (excludeParentId) {
-    query += " AND (parent_session_id IS NULL OR parent_session_id != ?)";
-    values.push(excludeParentId);
-  }
-
-  query += " ORDER BY last_activity DESC LIMIT 1";
-  const row = db.prepare(query).get(...values) as Record<string, unknown> | undefined;
-  return row ? rowToSession(row) : undefined;
+  return db.prepare('SELECT id, role, content, timestamp FROM messages WHERE session_id = ? ORDER BY timestamp ASC').all(sessionId) as SessionMessage[];
 }

@@ -7,18 +7,15 @@ import type {
   Employee,
   Target,
 } from "../shared/types.js";
+import { isBidirectionalEngine } from "../shared/types.js";
 import {
   createSession,
   getSessionBySourceRef,
   updateSession,
   deleteSession,
   insertMessage,
-  findRecentEmployeeSession,
-  getMessages,
 } from "./registry.js";
 import { buildContext } from "./context.js";
-import type { SyncedConversation } from "./context.js";
-import { parseCommand } from "../commands/parser.js";
 import { SessionQueue } from "./queue.js";
 import { JIMMY_HOME } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
@@ -44,6 +41,13 @@ export class SessionManager {
    */
   getEngine(name: string): Engine | undefined {
     return this.engines.get(name);
+  }
+
+  /**
+   * Get the session queue (used by api.ts for mid-turn handling).
+   */
+  getQueue(): SessionQueue {
+    return this.queue;
   }
 
   /**
@@ -76,6 +80,20 @@ export class SessionManager {
     const attachmentPaths = msg.attachments
       .map((a) => a.localPath)
       .filter((p): p is string => !!p);
+
+    // If session is running and engine supports steering, steer mid-turn
+    if (session.status === "running" && this.queue.isRunning(sourceRef)) {
+      const engine = this.engines.get(session.engine);
+      if (engine && isBidirectionalEngine(engine) && engine.isAlive(session.id)) {
+        insertMessage(session.id, "user", msg.text);
+        engine.steer(session.id, msg.text);
+        await connector.addReaction(target, "zap").catch(() => {});
+        logger.info(`Steered session ${session.id} mid-turn via connector`);
+        return;
+      }
+      // One-shot mode — add clock reaction, queue will serialize
+      await connector.addReaction(target, "clock1").catch(() => {});
+    }
 
     await this.queue.enqueue(sourceRef, () =>
       this.runSession(session, msg.text, msg.user, attachmentPaths, connector, target, employee),
@@ -119,25 +137,6 @@ export class SessionManager {
     });
 
     try {
-      // Detect slash commands — enrich context and rewrite prompt to avoid engine CLI conflicts
-      let syncedConversation: SyncedConversation | undefined;
-      const parsed = parseCommand(prompt);
-      if (parsed) {
-        if (parsed.command === "sync" && parsed.target) {
-          const recentSession = findRecentEmployeeSession(parsed.target, session.id);
-          if (recentSession) {
-            const syncMsgs = getMessages(recentSession.id);
-            if (syncMsgs.length > 0) {
-              syncedConversation = {
-                employee: parsed.target,
-                messages: syncMsgs.map((m) => ({ role: m.role, content: m.content })),
-              };
-              logger.info(`Synced ${syncMsgs.length} messages from ${parsed.target}'s session ${recentSession.id}`);
-            }
-          }
-        }
-      }
-
       const systemPrompt = buildContext({
         source: session.source,
         channel: target.channel,
@@ -147,7 +146,6 @@ export class SessionManager {
         connectors: this.connectorNames,
         config: this.config,
         sessionId: session.id,
-        syncedConversation,
       });
 
       const engineConfig = session.engine === "codex"
@@ -161,6 +159,7 @@ export class SessionManager {
         cwd: JIMMY_HOME,
         bin: engineConfig.bin,
         model: session.model ?? engineConfig.model,
+        cliFlags: employee?.cliFlags,
         attachments: attachments.length > 0 ? attachments : undefined,
       });
 

@@ -12,6 +12,23 @@ export interface Engine {
   run(opts: EngineRunOpts): Promise<EngineResult>;
 }
 
+/**
+ * Engines that support bidirectional streaming implement this interface.
+ * The gateway checks for this at runtime to decide steering vs queueing.
+ */
+export interface BidirectionalEngine extends Engine {
+  /** Send a follow-up message to a running bidirectional session */
+  steer(sessionId: string, message: string): void;
+  /** Kill a running engine process (for interrupt) */
+  kill(sessionId: string): void;
+  /** Check if a bidirectional process is alive for this session */
+  isAlive(sessionId: string): boolean;
+}
+
+export function isBidirectionalEngine(engine: Engine): engine is BidirectionalEngine {
+  return "steer" in engine && "kill" in engine && "isAlive" in engine;
+}
+
 export interface EngineRunOpts {
   prompt: string;
   resumeSessionId?: string;
@@ -20,7 +37,13 @@ export interface EngineRunOpts {
   bin?: string;
   model?: string;
   attachments?: string[];
+  /** Extra CLI flags to pass to the engine binary (e.g. ["--chrome"]) */
+  cliFlags?: string[];
   onStream?: (delta: StreamDelta) => void;
+  /** Use bidirectional stdin/stdout streaming (keeps process alive across turns) */
+  interactive?: boolean;
+  /** Unique session ID for tracking bidirectional processes */
+  sessionId?: string;
 }
 
 export interface EngineResult {
@@ -109,12 +132,20 @@ export interface Employee {
   engine: string;
   model: string;
   persona: string;
+  /** Extra CLI flags passed to the engine (e.g. ["--chrome"]) */
+  cliFlags?: string[];
 }
 
 export interface Department {
   name: string;
   displayName: string;
   description: string;
+}
+
+export interface WebConnectorConfig {
+  bidirectional?: boolean;
+  idleTimeoutMinutes?: number;
+  hardTimeoutHours?: number;
 }
 
 export interface JimmyConfig {
@@ -124,6 +155,6 @@ export interface JimmyConfig {
     claude: { bin: string; model: string; effortLevel?: string };
     codex: { bin: string; model: string };
   };
-  connectors: Record<string, any>;
+  connectors: Record<string, any> & { web?: WebConnectorConfig };
   logging: { file: boolean; stdout: boolean; level: string };
 }

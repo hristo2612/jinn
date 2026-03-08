@@ -34,6 +34,7 @@ export function scanOrg(): Map<string, Employee> {
               engine: data.engine || "claude",
               model: data.model || "sonnet",
               persona: data.persona,
+              cliFlags: Array.isArray(data.cliFlags) ? data.cliFlags : undefined,
             };
             registry.set(employee.name, employee);
           }

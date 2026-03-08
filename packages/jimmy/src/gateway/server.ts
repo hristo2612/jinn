@@ -103,9 +103,19 @@ export async function startGateway(
   }
 
   // Set up engines
+  const claudeEngine = new ClaudeEngine();
   const engines = new Map<string, InstanceType<typeof ClaudeEngine> | InstanceType<typeof CodexEngine>>();
-  engines.set("claude", new ClaudeEngine());
+  engines.set("claude", claudeEngine);
   engines.set("codex", new CodexEngine());
+
+  // Configure bidirectional timeouts from config
+  const applyBidirectionalTimeouts = (cfg: JimmyConfig) => {
+    claudeEngine.setTimeouts({
+      idleTimeoutMinutes: cfg.connectors?.web?.idleTimeoutMinutes ?? 60,
+      hardTimeoutHours: cfg.connectors?.web?.hardTimeoutHours ?? 24,
+    });
+  };
+  applyBidirectionalTimeouts(config);
 
   // Derive connector names from config
   const connectorNames: string[] = [];
@@ -251,6 +261,7 @@ export async function startGateway(
       try {
         currentConfig = loadConfig();
         apiContext.config = currentConfig;
+        applyBidirectionalTimeouts(currentConfig);
         logger.info("Config reloaded successfully");
         emit("config:reloaded", {});
       } catch (err) {
@@ -286,6 +297,9 @@ export async function startGateway(
   // Return cleanup function
   return async () => {
     logger.info("Gateway cleanup starting...");
+
+    // Stop bidirectional sweep loop
+    claudeEngine.stopSweep();
 
     // Stop cron scheduler
     stopScheduler();

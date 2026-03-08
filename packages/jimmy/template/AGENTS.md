@@ -148,15 +148,13 @@ Read `~/.jimmy/docs/` for deeper understanding of the gateway architecture, conn
 
 ## Slash Commands
 
-The gateway supports slash commands that enrich your context before you respond. You don't need to implement these — the gateway handles the data fetching. You just see the enriched context and respond naturally.
+Users can type slash commands in chat. Each command has a skill playbook in `~/.jimmy/skills/<command>/SKILL.md` that teaches you how to handle it.
 
 | Command | Usage | Effect |
 |---------|-------|--------|
-| `/sync` | `/sync @employee-name` | Fetches the most recent conversation with that employee and injects it into your system prompt. You'll see it as a "Synced conversation" section. |
+| `/sync` | `/sync @employee-name` | You fetch the employee's recent conversation via the gateway API (`GET /api/sessions`), read through it, and respond with full awareness. See the sync skill for details. |
 | `/new` | `/new` | Resets the current session and starts fresh. |
 | `/status` | `/status` | Displays current session metadata. |
-
-Each command has a detailed skill playbook in `~/.jimmy/skills/<command>/SKILL.md`.
 
 ---
 

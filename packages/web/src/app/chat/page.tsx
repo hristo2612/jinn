@@ -37,9 +37,12 @@ function ChatPage() {
   const [loading, setLoading] = useState(false)
   const [refreshKey, setRefreshKey] = useState(0)
   const [mobileView, setMobileView] = useState<'sidebar' | 'chat'>('sidebar')
-  const [sessionMeta, setSessionMeta] = useState<{ engine?: string; engineSessionId?: string; model?: string } | null>(null)
+  const [sessionMeta, setSessionMeta] = useState<{ engine?: string; engineSessionId?: string; model?: string; title?: string; employee?: string } | null>(null)
+  const streamingTextRef = useRef('')
+  const [streamingText, setStreamingText] = useState('')
   const [showMoreMenu, setShowMoreMenu] = useState(false)
   const [copiedField, setCopiedField] = useState<string | null>(null)
+  const [confirmDelete, setConfirmDelete] = useState(false)
   const moreMenuRef = useRef<HTMLDivElement>(null)
   const { events } = useGateway()
   const searchParams = useSearchParams()
@@ -123,7 +126,26 @@ function ChatPage() {
     if (latest.event === 'session:delta') {
       const deltaType = String(payload.type || 'text')
 
-      if (deltaType === 'tool_use') {
+      if (deltaType === 'text') {
+        const chunk = String(payload.content || '')
+        streamingTextRef.current += chunk
+        setStreamingText(streamingTextRef.current)
+      } else if (deltaType === 'tool_use') {
+        // If we were streaming text, flush it as a message first
+        if (streamingTextRef.current) {
+          const flushed = streamingTextRef.current
+          streamingTextRef.current = ''
+          setStreamingText('')
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: crypto.randomUUID(),
+              role: 'assistant' as const,
+              content: flushed,
+              timestamp: Date.now(),
+            },
+          ])
+        }
         const toolName = String(payload.toolName || 'tool')
         setMessages((prev) => [
           ...prev,
@@ -147,22 +169,41 @@ function ChatPage() {
       }
     }
 
+    if (latest.event === 'session:interrupted') {
+      // Engine was interrupted — clear streaming, wait for new turn
+      streamingTextRef.current = ''
+      setStreamingText('')
+    }
+
     if (latest.event === 'session:completed') {
       if (isOnboarding && payload.sessionId) {
         setSelectedId(String(payload.sessionId))
       }
+
+      // Clear streaming state
+      streamingTextRef.current = ''
+      setStreamingText('')
       setLoading(false)
 
       if (payload.result) {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: crypto.randomUUID(),
-            role: 'assistant' as const,
-            content: String(payload.result),
-            timestamp: Date.now(),
-          },
-        ])
+        // Replace any partially-streamed message with the final complete result
+        setMessages((prev) => {
+          // Remove trailing non-tool assistant message if it was from streaming
+          const cleaned = [...prev]
+          const last = cleaned[cleaned.length - 1]
+          if (last && last.role === 'assistant' && !last.toolCall) {
+            cleaned.pop()
+          }
+          return [
+            ...cleaned,
+            {
+              id: crypto.randomUUID(),
+              role: 'assistant' as const,
+              content: String(payload.result),
+              timestamp: Date.now(),
+            },
+          ]
+        })
       }
       if (payload.error && !payload.result) {
         setMessages((prev) => [
@@ -186,6 +227,8 @@ function ChatPage() {
         engine: session.engine ? String(session.engine) : undefined,
         engineSessionId: session.engineSessionId ? String(session.engineSessionId) : undefined,
         model: session.model ? String(session.model) : undefined,
+        title: session.title ? String(session.title) : undefined,
+        employee: session.employee ? String(session.employee) : undefined,
       })
       const history = session.messages || session.history || []
       if (Array.isArray(history)) {
@@ -236,7 +279,7 @@ function ChatPage() {
   )
 
   const handleSend = useCallback(
-    async (message: string, media?: MediaAttachment[]) => {
+    async (message: string, media?: MediaAttachment[], interrupt?: boolean) => {
       const isOnboardingMsg = message === ONBOARDING_PROMPT
       if (!isOnboardingMsg) {
         const userMsg: Message = {
@@ -262,7 +305,7 @@ function ChatPage() {
           setSelectedId(sessionId)
           setRefreshKey((k) => k + 1)
         } else {
-          await api.sendMessage(sessionId, { message })
+          await api.sendMessage(sessionId, { message, interrupt: interrupt || undefined })
           setRefreshKey((k) => k + 1)
         }
       } catch (err) {
@@ -280,6 +323,33 @@ function ChatPage() {
     },
     [selectedId]
   )
+
+  const handleInterrupt = useCallback(() => {
+    if (!selectedId || !loading) return
+    // Send an interrupt with no new message — just stops the current turn
+    api.sendMessage(selectedId, { message: '(interrupted by user)', interrupt: true }).catch(() => {})
+    // Clear streaming state
+    streamingTextRef.current = ''
+    setStreamingText('')
+    setLoading(false)
+  }, [selectedId, loading])
+
+  const handleDeleteSession = useCallback(async (id: string) => {
+    try {
+      await api.deleteSession(id)
+      if (selectedId === id) {
+        setSelectedId(null)
+        setMessages([])
+        setLoading(false)
+        setSessionMeta(null)
+        streamingTextRef.current = ''
+        setStreamingText('')
+      }
+      setRefreshKey((k) => k + 1)
+    } catch { /* ignore */ }
+    setConfirmDelete(false)
+    setShowMoreMenu(false)
+  }, [selectedId])
 
   const handleStatusRequest = useCallback(async () => {
     if (!selectedId) {
@@ -344,6 +414,7 @@ function ChatPage() {
             selectedId={selectedId}
             onSelect={handleSelect}
             onNewChat={handleNewChat}
+            onDelete={handleDeleteSession}
             refreshKey={refreshKey}
             onSessionsLoaded={handleSessionsLoaded}
           />
@@ -362,6 +433,7 @@ function ChatPage() {
             selectedId={selectedId}
             onSelect={handleSelect}
             onNewChat={handleNewChat}
+            onDelete={handleDeleteSession}
             refreshKey={refreshKey}
             onSessionsLoaded={handleSessionsLoaded}
           />
@@ -414,14 +486,19 @@ function ChatPage() {
               Back
             </button>
 
-            <div style={{ flex: 1 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{
                 fontSize: 'var(--text-subheadline)',
                 fontWeight: 'var(--weight-semibold)',
                 color: 'var(--text-primary)',
                 letterSpacing: '-0.2px',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
               }}>
-                {selectedId ? `Session ${selectedId.slice(0, 8)}...` : 'New Chat'}
+                {selectedId
+                  ? (sessionMeta?.title || sessionMeta?.employee || 'Jimmy')
+                  : 'New Chat'}
               </div>
             </div>
 
@@ -519,6 +596,31 @@ function ChatPage() {
                         Copy CLI Resume Command
                       </button>
                     )}
+                    <div style={{ borderTop: '1px solid var(--separator)', margin: '2px 0' }} />
+                    <button
+                      onClick={() => { setShowMoreMenu(false); setConfirmDelete(true) }}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 'var(--space-2)',
+                        width: '100%',
+                        padding: 'var(--space-2) var(--space-3)',
+                        background: 'transparent',
+                        border: 'none',
+                        cursor: 'pointer',
+                        textAlign: 'left',
+                        fontSize: 'var(--text-subheadline)',
+                        color: 'var(--system-red)',
+                      }}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--fill-tertiary)')}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="3 6 5 6 21 6" />
+                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                      </svg>
+                      Delete Session
+                    </button>
                   </div>
                 )}
               </div>
@@ -526,17 +628,66 @@ function ChatPage() {
           </div>
 
           {/* Messages */}
-          <ChatMessages messages={messages} loading={loading} />
+          <ChatMessages messages={messages} loading={loading} streamingText={streamingText} />
 
           {/* Input */}
           <ChatInput
-            disabled={loading}
+            disabled={false}
+            loading={loading}
             onSend={handleSend}
+            onInterrupt={handleInterrupt}
             onNewSession={handleNewChat}
             onStatusRequest={handleStatusRequest}
           />
         </div>
       </div>
+
+      {/* Confirm delete dialog from header menu */}
+      {confirmDelete && selectedId && (
+        <div
+          style={{
+            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+            background: 'rgba(0,0,0,0.5)', zIndex: 60,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}
+          onClick={() => setConfirmDelete(false)}
+        >
+          <div
+            style={{
+              background: 'var(--bg)', borderRadius: 'var(--radius-lg)',
+              padding: 'var(--space-6)', maxWidth: 400, width: '90%',
+              boxShadow: 'var(--shadow-overlay)',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 style={{ fontSize: 'var(--text-headline)', fontWeight: 'var(--weight-bold)', color: 'var(--text-primary)', marginBottom: 'var(--space-2)' }}>
+              Delete Session?
+            </h3>
+            <p style={{ fontSize: 'var(--text-body)', color: 'var(--text-secondary)', marginBottom: 'var(--space-5)' }}>
+              This will permanently delete the session and all its messages.
+            </p>
+            <div style={{ display: 'flex', gap: 'var(--space-3)', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setConfirmDelete(false)}
+                style={{
+                  padding: 'var(--space-2) var(--space-4)', borderRadius: 'var(--radius-md)',
+                  background: 'var(--fill-tertiary)', color: 'var(--text-primary)',
+                  border: 'none', cursor: 'pointer', fontSize: 'var(--text-body)',
+                }}
+              >Cancel</button>
+              <button
+                onClick={() => handleDeleteSession(selectedId)}
+                style={{
+                  padding: 'var(--space-2) var(--space-4)', borderRadius: 'var(--radius-md)',
+                  background: 'var(--system-red)', color: '#fff',
+                  border: 'none', cursor: 'pointer', fontSize: 'var(--text-body)',
+                  fontWeight: 'var(--weight-semibold)',
+                }}
+              >Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
     </PageLayout>
   )
 }

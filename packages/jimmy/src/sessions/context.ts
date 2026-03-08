@@ -1,20 +1,15 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Employee, JimmyConfig } from "../shared/types.js";
-import { JIMMY_HOME, SKILLS_DIR, ORG_DIR, CRON_JOBS, DOCS_DIR } from "../shared/paths.js";
+import { JIMMY_HOME, ORG_DIR, CRON_JOBS, DOCS_DIR } from "../shared/paths.js";
 
-const MAX_CONTEXT_CHARS = 32000;
+const MAX_CONTEXT_CHARS = 100000;
 
 /**
  * Build a rich system prompt for engine sessions.
  * This is what makes Jimmy "smart" — the engine sees all of this context
  * before responding to the user.
  */
-export interface SyncedConversation {
-  employee: string;
-  messages: Array<{ role: string; content: string }>;
-}
-
 export function buildContext(opts: {
   source: string;
   channel: string;
@@ -24,9 +19,13 @@ export function buildContext(opts: {
   connectors?: string[];
   config?: JimmyConfig;
   sessionId?: string;
-  syncedConversation?: SyncedConversation;
 }): string {
   const sections: string[] = [];
+
+  // Compute gateway URL once — used by multiple sections
+  const gatewayUrl = opts.config
+    ? `http://${opts.config.gateway.host || "127.0.0.1"}:${opts.config.gateway.port || 7777}`
+    : "http://127.0.0.1:7777";
 
   // ── Identity ──────────────────────────────────────────────
   if (opts.employee) {
@@ -40,27 +39,17 @@ export function buildContext(opts: {
     sections.push(buildEvolutionContext());
   }
 
-  // ── CLAUDE.md (user-defined instructions) ─────────────────
-  const claudeMd = loadClaudeMd();
-  if (claudeMd) {
-    sections.push(`## User Instructions (CLAUDE.md)\n\n${claudeMd}`);
-  }
-
   // ── Session context ───────────────────────────────────────
   sections.push(buildSessionContext({ ...opts, sessionId: opts.sessionId }));
 
   // ── Configuration awareness ───────────────────────────────
   if (opts.config) {
-    sections.push(buildConfigContext(opts.config));
+    sections.push(buildConfigContext(opts.config, gatewayUrl));
   }
 
   // ── Organization ──────────────────────────────────────────
   const orgCtx = buildOrgContext();
   if (orgCtx) sections.push(orgCtx);
-
-  // ── Skills ────────────────────────────────────────────────
-  const skillsCtx = buildSkillsContext();
-  if (skillsCtx) sections.push(skillsCtx);
 
   // ── Cron jobs ─────────────────────────────────────────────
   const cronCtx = buildCronContext();
@@ -72,7 +61,7 @@ export function buildContext(opts: {
 
   // ── Connectors (Slack, etc.) ──────────────────────────────
   if (opts.connectors && opts.connectors.length > 0) {
-    sections.push(buildConnectorContext(opts.connectors));
+    sections.push(buildConnectorContext(opts.connectors, gatewayUrl));
   }
 
   // ── Local environment ────────────────────────────────────
@@ -81,16 +70,11 @@ export function buildContext(opts: {
 
   // ── Delegation protocol ──────────────────────────────────
   if (!opts.employee) {
-    sections.push(buildDelegationProtocol(opts.config));
-  }
-
-  // ── Synced conversation (from /sync command) ────────────
-  if (opts.syncedConversation) {
-    sections.push(buildSyncedConversation(opts.syncedConversation));
+    sections.push(buildDelegationProtocol(gatewayUrl));
   }
 
   // ── Gateway API reference ─────────────────────────────────
-  sections.push(buildApiReference());
+  sections.push(buildApiReference(gatewayUrl));
 
   // ── Size guard: progressively trim if over budget ─────────
   return trimContext(sections);
@@ -158,20 +142,6 @@ Your working directory is \`~/.jimmy\` (${JIMMY_HOME}). This contains:
 You can read, write, and modify any of these files to configure yourself, create new employees, add skills, etc.`;
 }
 
-function loadClaudeMd(): string | null {
-  const claudePath = path.join(JIMMY_HOME, "CLAUDE.md");
-  try {
-    const content = fs.readFileSync(claudePath, "utf-8").trim();
-    // Skip if it's just the default template
-    if (content.length < 100 && content.includes("Jimmy orchestrates Claude Code")) {
-      return null;
-    }
-    return content;
-  } catch {
-    return null;
-  }
-}
-
 function buildSessionContext(opts: {
   source: string;
   channel: string;
@@ -189,9 +159,9 @@ function buildSessionContext(opts: {
   return ctx;
 }
 
-function buildConfigContext(config: JimmyConfig): string {
+function buildConfigContext(config: JimmyConfig, gatewayUrl: string): string {
   const lines: string[] = [`## Current configuration`];
-  lines.push(`- Gateway: http://${config.gateway.host || "127.0.0.1"}:${config.gateway.port}`);
+  lines.push(`- Gateway: ${gatewayUrl}`);
   lines.push(`- Default engine: ${config.engines.default}`);
   if (config.engines.claude?.model) {
     lines.push(`- Claude model: ${config.engines.claude.model}`);
@@ -232,32 +202,6 @@ function buildOrgContext(): string | null {
   }
 }
 
-function buildSkillsContext(): string | null {
-  try {
-    const entries = fs.readdirSync(SKILLS_DIR, { withFileTypes: true });
-    const dirs = entries.filter(e => e.isDirectory());
-    if (dirs.length === 0) return null;
-
-    const lines: string[] = [`## Available skills (${dirs.length})`];
-    for (const dir of dirs) {
-      const skillPath = path.join(SKILLS_DIR, dir.name, "SKILL.md");
-      try {
-        const content = fs.readFileSync(skillPath, "utf-8").trim();
-        if (content.length <= 500) {
-          lines.push(`### ${dir.name}\n${content}`);
-        } else {
-          lines.push(`### ${dir.name}\n${content.slice(0, 500)}...\n_(full instructions: ${skillPath})_`);
-        }
-      } catch {
-        lines.push(`- ${dir.name} (no SKILL.md found)`);
-      }
-    }
-    return lines.join("\n\n");
-  } catch {
-    return null;
-  }
-}
-
 function buildCronContext(): string | null {
   try {
     const raw = fs.readFileSync(CRON_JOBS, "utf-8");
@@ -290,27 +234,12 @@ function buildKnowledgeContext(): string | null {
 
   if (allFiles.length === 0) return null;
 
-  const MAX_PER_FILE = 1000;
-  const MAX_TOTAL = 4000;
-  let totalChars = 0;
-
   const lines: string[] = [`## Knowledge base (${allFiles.length} file(s))`];
   for (const file of allFiles) {
-    if (totalChars >= MAX_TOTAL) {
-      lines.push(`\n_(${allFiles.length - lines.length + 1} more files — read them directly from \`${DOCS_DIR}/\` or \`~/.jimmy/knowledge/\`)_`);
-      break;
-    }
     try {
       const content = fs.readFileSync(file, "utf-8").trim();
       const basename = path.basename(file);
-      if (content.length <= MAX_PER_FILE) {
-        lines.push(`### ${basename}\n${content}`);
-        totalChars += content.length;
-      } else {
-        const slice = content.slice(0, MAX_PER_FILE);
-        lines.push(`### ${basename}\n${slice}...\n_(full file: ${file})_`);
-        totalChars += MAX_PER_FILE;
-      }
+      lines.push(`### ${basename}\n${content}`);
     } catch {
       lines.push(`- \`${file}\` (unreadable)`);
     }
@@ -318,19 +247,19 @@ function buildKnowledgeContext(): string | null {
   return lines.join("\n\n");
 }
 
-function buildConnectorContext(connectors: string[]): string {
+function buildConnectorContext(connectors: string[], gatewayUrl: string): string {
   const lines: string[] = [`## Available connectors: ${connectors.join(", ")}`];
   lines.push(`You can send messages and interact with external services via the Jimmy gateway API.`);
   lines.push(`Use bash with curl to call these endpoints:\n`);
 
   for (const name of connectors) {
     lines.push(`### ${name}`);
-    lines.push(`- **Send message**: \`curl -X POST http://127.0.0.1:7777/api/connectors/${name}/send -H 'Content-Type: application/json' -d '{"channel":"CHANNEL_ID","text":"message"}'\``);
+    lines.push(`- **Send message**: \`curl -X POST ${gatewayUrl}/api/connectors/${name}/send -H 'Content-Type: application/json' -d '{"channel":"CHANNEL_ID","text":"message"}'\``);
     lines.push(`- **Send threaded reply**: add \`"thread":"THREAD_TS"\` to the JSON body`);
     lines.push(`- You can proactively send messages without being asked — e.g., to notify about completed tasks, errors, or status updates`);
   }
 
-  lines.push(`\n- **List all connectors**: \`curl http://127.0.0.1:7777/api/connectors\``);
+  lines.push(`\n- **List all connectors**: \`curl ${gatewayUrl}/api/connectors\``);
   lines.push(`- Channel IDs and connector config can be found in \`~/.jimmy/config.yaml\``);
   return lines.join("\n");
 }
@@ -414,29 +343,6 @@ function buildEvolutionContext(): string {
   return lines.join("\n");
 }
 
-function buildSyncedConversation(synced: SyncedConversation): string {
-  const MAX_CHARS = 4000;
-  const lines: string[] = [
-    `## Synced conversation with @${synced.employee}`,
-    `The user used \`/sync\` to pull in the latest conversation with this employee. Here is what was discussed:\n`,
-  ];
-
-  let chars = 0;
-  for (const msg of synced.messages) {
-    const prefix = msg.role === "user" ? "**User**" : `**${synced.employee}**`;
-    const content = msg.content.length > 500 ? msg.content.slice(0, 500) + "..." : msg.content;
-    const line = `${prefix}: ${content}`;
-    if (chars + line.length > MAX_CHARS) {
-      lines.push(`\n_(conversation truncated — ${synced.messages.length} total messages)_`);
-      break;
-    }
-    lines.push(line);
-    chars += line.length;
-  }
-
-  return lines.join("\n");
-}
-
 function trimContext(sections: string[]): string {
   let result = sections.join("\n\n");
   if (result.length <= MAX_CONTEXT_CHARS) return result;
@@ -446,7 +352,6 @@ function trimContext(sections: string[]): string {
   const trimmable = [
     { marker: "## Local environment", summary: "## Local environment\nRun `ls ~/` to explore the local filesystem." },
     { marker: "## Knowledge base", summary: "## Knowledge base\nKnowledge files are in `~/.jimmy/knowledge/` and `~/.jimmy/docs/`. Read them directly when needed." },
-    { marker: "## Available skills", summary: "## Available skills\nSkills are in `~/.jimmy/skills/`. Read individual SKILL.md files when needed." },
     { marker: "## Organization", summary: "## Organization\nEmployee files are in `~/.jimmy/org/`. Read them directly when needed." },
   ];
 
@@ -462,9 +367,7 @@ function trimContext(sections: string[]): string {
   return result;
 }
 
-function buildDelegationProtocol(config?: JimmyConfig): string {
-  const host = config ? `${config.gateway.host || "127.0.0.1"}:${config.gateway.port || 7777}` : "127.0.0.1:7777";
-
+function buildDelegationProtocol(gatewayUrl: string): string {
   return `## Employee Delegation Protocol
 
 You are the COO. You NEVER become an employee — you orchestrate them. When the user mentions employees with \`@employee-name\` in their message, or when a task clearly fits an employee's role, you delegate by creating **linked child sessions**.
@@ -476,7 +379,7 @@ You are the COO. You NEVER become an employee — you orchestrate them. When the
 2. **Check for existing child sessions FIRST**: Before creating a new session, ALWAYS check if you already have a child session for this employee:
 
 \`\`\`bash
-curl -s http://${host}/api/sessions/<your-session-id>/children
+curl -s ${gatewayUrl}/api/sessions/<your-session-id>/children
 \`\`\`
 
 Look for a child with \`"employee": "<employee-name>"\`. If found, REUSE it (skip to step 5). If not found, proceed to step 3.
@@ -486,7 +389,7 @@ Look for a child with \`"employee": "<employee-name>"\`. If found, REUSE it (ski
 4. **Spawn**: Create a child session via the gateway API:
 
 \`\`\`bash
-curl -s -X POST http://${host}/api/sessions \\
+curl -s -X POST ${gatewayUrl}/api/sessions \\
   -H 'Content-Type: application/json' \\
   -d '{
     "prompt": "<your brief for the employee>",
@@ -500,7 +403,7 @@ The response includes \`{"id": "<child-session-id>", ...}\`. Save this ID.
 5. **Send message to existing child session** (when reusing):
 
 \`\`\`bash
-curl -s -X POST http://${host}/api/sessions/<child-session-id>/message \\
+curl -s -X POST ${gatewayUrl}/api/sessions/<child-session-id>/message \\
   -H 'Content-Type: application/json' \\
   -d '{"message": "<follow-up instructions>"}'
 \`\`\`
@@ -508,13 +411,17 @@ curl -s -X POST http://${host}/api/sessions/<child-session-id>/message \\
 6. **Poll**: Check if the child session is complete:
 
 \`\`\`bash
-curl -s http://${host}/api/sessions/<child-session-id>
+curl -s ${gatewayUrl}/api/sessions/<child-session-id>
 \`\`\`
 
 Look at the \`status\` field: \`"running"\` means still working, \`"idle"\` means done, \`"error"\` means failed.
 When \`"idle"\`, read the \`messages\` array — the last assistant message is the employee's response.
 
-7. **Relay**: Summarize or present the employee's response to the user. Add your own commentary if useful.
+7. **Review & Verify** (see Oversight Levels below): Before relaying, assess the employee's work based on the task's oversight level.
+
+8. **Follow up if needed**: If the work is incomplete, incorrect, or needs changes, send another message to the SAME child session (step 5) with specific feedback. Repeat steps 6-8 until satisfied.
+
+9. **Relay**: Summarize or present the employee's response to the user. Add your own commentary if useful. Include what oversight level you applied.
 
 ### IMPORTANT: Always reuse child sessions
 
@@ -535,13 +442,59 @@ You can spawn multiple child sessions in parallel (one per employee). Poll each 
 - **Long tasks** (coding, research): Tell the user the employee is working on it, then check back.
 - **Multiple employees**: Coordinate their work. Spawn sessions in parallel, collect results, synthesize.
 
+### Oversight Levels
+
+When you delegate a task, assess the appropriate oversight level BEFORE sending. This determines how much you verify the employee's work when they respond.
+
+**TRUST** — Relay directly, minimal review.
+Use when: simple questions, status checks, lookups, information retrieval, low-risk tasks, or tasks the employee has proven reliable at.
+You do: Skim the response for obvious issues, relay to user.
+
+**VERIFY** — Read critically, spot-check key outputs.
+Use when: code changes, config modifications, medium-complexity tasks, routine work, content creation.
+You do: Read the full response carefully. If code was changed, spot-check 1-2 key files (\`curl\` the gateway or read files directly). If something looks off, send a follow-up message asking the employee to fix or clarify. Only relay once satisfied.
+
+**THOROUGH** — Full review, multi-turn follow-up as needed.
+Use when: architecture decisions, breaking changes, multi-file refactors, high-severity tasks, security-sensitive work, user explicitly asks for careful review.
+You do: Read the full response. Verify actual changes (read modified files, check build output if mentioned). Challenge assumptions — don't take the response at face value. Ask follow-up questions. Run builds/tests if applicable. Multiple rounds of feedback are expected. Only relay when confident the work is correct.
+
+**How to pick the level:**
+- Consider task complexity (one-liner → TRUST, multi-file → VERIFY or THOROUGH)
+- Consider severity (can it break things? → VERIFY or THOROUGH)
+- Consider the user's tone ("quick question" → TRUST, "this is critical" → THOROUGH)
+- When in doubt, default to VERIFY — it's the safe middle ground
+- If the user says "no code changes" or "analysis only" and the employee makes code changes anyway, that's a THOROUGH-level red flag — call it out
+
+### Manager Delegation
+
+As the organization grows, you should promote reliable senior employees to **manager** rank. Managers handle their own department's delegation:
+
+**How manager delegation works:**
+1. You (COO) delegate to the **manager**, not individual employees
+2. The manager spawns their own child sessions with their reports
+3. The manager handles the verification loop for their department
+4. You review the manager's summary, not each individual employee's work
+5. This scales the org without overwhelming you
+
+**When to create a manager:**
+- A department has 3+ employees and you're spending too much time on individual delegation
+- An employee has consistently delivered high-quality work at senior rank
+- The user explicitly asks you to promote someone
+
+**Manager persona template:**
+Managers need delegation instructions in their persona. When promoting an employee to manager, add to their persona:
+- They manage their department's employees
+- They can spawn child sessions via the gateway API (include the API patterns)
+- They should apply oversight levels to their reports' work
+- They report summaries back to you (the COO)
+
 ### Your session ID
 
 Your current session ID is provided in the "Current session" section above. Use it as \`parentSessionId\` when spawning children and for the \`/children\` lookup.`;
 }
 
-function buildApiReference(): string {
-  return `## Jimmy Gateway API (http://127.0.0.1:7777)
+function buildApiReference(gatewayUrl: string): string {
+  return `## Jimmy Gateway API (${gatewayUrl})
 
 You can call these endpoints with curl to inspect and manage the gateway:
 
