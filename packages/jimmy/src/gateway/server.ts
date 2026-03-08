@@ -171,7 +171,12 @@ export async function startGateway(
     const message = JSON.stringify({ event, payload, ts: Date.now() });
     for (const client of wsClients) {
       if (client.readyState === 1) {
-        client.send(message);
+        try {
+          client.send(message);
+        } catch (err) {
+          logger.warn(`WebSocket send failed, removing dead client: ${err instanceof Error ? err.message : err}`);
+          wsClients.delete(client);
+        }
       }
     }
   };

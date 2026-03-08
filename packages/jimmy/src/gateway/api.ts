@@ -202,6 +202,14 @@ export async function handleApiRequest(
           result: null,
           error: errMsg,
         });
+      }).finally(() => {
+        // Safety net: if session is still "running" after everything, force to error
+        const current = getSession(session.id);
+        if (current && current.status === "running") {
+          logger.warn(`Session ${session.id} still "running" after completion — forcing to error`);
+          updateSession(session.id, { status: "error", lastError: "Session failed to complete (status stuck)" });
+          context.emit("session:completed", { sessionId: session.id, result: null, error: "Session failed to complete" });
+        }
       });
 
       return json(res, session, 201);
@@ -250,6 +258,13 @@ export async function handleApiRequest(
               logger.error(`Web session ${session.id} error after interrupt: ${errMsg}`);
               updateSession(session.id, { status: "error", lastError: errMsg });
               context.emit("session:completed", { sessionId: session.id, result: null, error: errMsg });
+            }).finally(() => {
+              const current = getSession(session.id);
+              if (current && current.status === "running") {
+                logger.warn(`Session ${session.id} still "running" after interrupt completion — forcing to error`);
+                updateSession(session.id, { status: "error", lastError: "Session failed to complete (status stuck)" });
+                context.emit("session:completed", { sessionId: session.id, result: null, error: "Session failed to complete" });
+              }
             });
           }, 500);
           return json(res, { status: "interrupted", sessionId: session.id });
@@ -272,6 +287,13 @@ export async function handleApiRequest(
           result: null,
           error: errMsg,
         });
+      }).finally(() => {
+        const current = getSession(session.id);
+        if (current && current.status === "running") {
+          logger.warn(`Session ${session.id} still "running" after message completion — forcing to error`);
+          updateSession(session.id, { status: "error", lastError: "Session failed to complete (status stuck)" });
+          context.emit("session:completed", { sessionId: session.id, result: null, error: "Session failed to complete" });
+        }
       });
 
       return json(res, { status: "queued", sessionId: session.id });
@@ -635,12 +657,16 @@ async function runWebSession(
       interactive: session.engine === "claude" && (config.connectors?.web?.bidirectional !== false),
       sessionId: session.id,
       onStream: (delta) => {
-        context.emit("session:delta", {
-          sessionId: session.id,
-          type: delta.type,
-          content: delta.content,
-          toolName: delta.toolName,
-        });
+        try {
+          context.emit("session:delta", {
+            sessionId: session.id,
+            type: delta.type,
+            content: delta.content,
+            toolName: delta.toolName,
+          });
+        } catch (err) {
+          logger.warn(`Failed to emit stream delta for session ${session.id}: ${err instanceof Error ? err.message : err}`);
+        }
       },
     });
 

@@ -483,9 +483,14 @@ interface ChatMessagesProps {
 
 export function ChatMessages({ messages, loading, streamingText }: ChatMessagesProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
+  const prevMsgCount = useRef(0)
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    // Instant scroll on initial load / session switch, smooth for new messages
+    const isInitialLoad = prevMsgCount.current === 0 && messages.length > 0
+    const behavior = isInitialLoad ? 'instant' as const : 'smooth' as const
+    bottomRef.current?.scrollIntoView({ behavior })
+    prevMsgCount.current = messages.length
   }, [messages, loading])
 
   if (messages.length === 0 && !loading) {

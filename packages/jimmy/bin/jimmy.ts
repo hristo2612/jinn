@@ -4,6 +4,7 @@ import { runSetup } from "../src/cli/setup.js";
 import { runStart } from "../src/cli/start.js";
 import { runStop } from "../src/cli/stop.js";
 import { runStatus } from "../src/cli/status.js";
+import { runChromeAllow } from "../src/cli/chrome-allow.js";
 
 const program = new Command();
 program
@@ -39,6 +40,14 @@ program
   .description("Show gateway status")
   .action(async () => {
     await runStatus();
+  });
+
+program
+  .command("chrome-allow")
+  .description("Pre-approve all sites for the Claude Chrome extension (no more per-site popups)")
+  .option("--no-restart", "Don't restart Chrome automatically")
+  .action(async (opts) => {
+    await runChromeAllow(opts);
   });
 
 program.parse();

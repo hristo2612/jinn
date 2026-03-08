@@ -24,6 +24,7 @@
     "@slack/bolt": "^4.3.0",
     "better-sqlite3": "^11.8.0",
     "chokidar": "^4.0.0",
+    "classic-level": "^2.0.0",
     "commander": "^13.1.0",
     "js-yaml": "^4.1.0",
     "node-cron": "^3.0.0",
