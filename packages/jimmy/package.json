@@ -1,6 +1,6 @@
 {
   "name": "jinn-cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Lightweight AI gateway daemon orchestrating Claude Code and Codex",
   "license": "MIT",
   "type": "module",
@@ -20,7 +20,6 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@jinn/web": "workspace:*",
     "@slack/bolt": "^4.3.0",
     "better-sqlite3": "^11.8.0",
     "chokidar": "^4.0.0",
