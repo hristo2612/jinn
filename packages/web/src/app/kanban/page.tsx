@@ -108,9 +108,10 @@ export default function KanbanPage() {
           }
         }
 
-        // Merge: API board data takes precedence, then localStorage for any extras
-        const localTickets = loadTickets()
-        setTickets({ ...localTickets, ...boardTickets })
+        // API is the sole source of truth on load. Do not merge localStorage —
+        // agent-made changes (moves, deletes) are only reflected in the API,
+        // and stale localStorage entries would cause ghost / wrong-state tickets.
+        setTickets(boardTickets)
       })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false))
