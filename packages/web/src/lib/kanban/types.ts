@@ -16,6 +16,8 @@ export interface KanbanTicket {
   workState: WorkState
   createdAt: number
   updatedAt: number
+  /** The department this ticket belongs to; null for tickets not yet saved to any department */
+  departmentId: string | null
 }
 
 export interface KanbanColumn {

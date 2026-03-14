@@ -15,6 +15,7 @@ import { handleApiRequest, type ApiContext } from "./api.js";
 import { initStt } from "../stt/stt.js";
 import { startWatchers, stopWatchers, syncSkillSymlinks } from "./watcher.js";
 import { SlackConnector } from "../connectors/slack/index.js";
+import { WhatsAppConnector } from "../connectors/whatsapp/index.js";
 import { loadJobs } from "../cron/jobs.js";
 import { startScheduler, reloadScheduler, stopScheduler } from "../cron/scheduler.js";
 import { scanOrg } from "./org.js";
@@ -120,6 +121,9 @@ export async function startGateway(
   if (config.connectors?.slack?.appToken && config.connectors?.slack?.botToken) {
     connectorNames.push("slack");
   }
+  if (config.connectors?.whatsapp) {
+    connectorNames.push("whatsapp");
+  }
 
   // Session manager
   const sessionManager = new SessionManager(config, engines, connectorNames);
@@ -150,6 +154,23 @@ export async function startGateway(
       connectorMap.set("slack", slack);
     } catch (err) {
       logger.error(`Failed to start Slack connector: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
+  if (config.connectors?.whatsapp) {
+    try {
+      const whatsapp = new WhatsAppConnector(config.connectors.whatsapp ?? {});
+      whatsapp.onMessage((msg) => {
+        sessionManager.route(msg, whatsapp).catch((err) => {
+          logger.error(`WhatsApp route error: ${err instanceof Error ? err.message : err}`);
+        });
+      });
+      await whatsapp.start();
+      connectors.push(whatsapp);
+      connectorMap.set("whatsapp", whatsapp);
+      logger.info("WhatsApp connector started (scan QR code if first run)");
+    } catch (err) {
+      logger.error(`Failed to start WhatsApp connector: ${err instanceof Error ? err.message : err}`);
     }
   }
 
