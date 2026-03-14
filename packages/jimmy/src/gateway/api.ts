@@ -16,6 +16,10 @@ import {
   deleteSessions,
   insertMessage,
   getMessages,
+  enqueueQueueItem,
+  cancelQueueItem,
+  getQueueItems,
+  cancelAllPendingQueueItems,
 } from "../sessions/registry.js";
 import {
   CONFIG_PATH,
@@ -238,6 +242,64 @@ export async function handleApiRequest(
       updateSession(params.id, { status: "idle", lastActivity: new Date().toISOString(), lastError: null });
       context.emit("session:stopped", { sessionId: params.id });
       return json(res, { status: "stopped", sessionId: params.id });
+    }
+
+    // DELETE /api/sessions/:id/queue/:itemId — cancel specific item
+    const queueItemParams = matchRoute("/api/sessions/:id/queue/:itemId", pathname);
+    if (method === "DELETE" && queueItemParams) {
+      const session = getSession(queueItemParams.id);
+      if (!session) return notFound(res);
+      const cancelled = cancelQueueItem(queueItemParams.itemId);
+      if (!cancelled) {
+        res.writeHead(409, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Item not found or already running" }));
+        return;
+      }
+      context.emit("queue:updated", { sessionId: queueItemParams.id, sessionKey: session.sessionKey });
+      return json(res, { status: "cancelled", itemId: queueItemParams.itemId });
+    }
+
+    // GET /api/sessions/:id/queue
+    params = matchRoute("/api/sessions/:id/queue", pathname);
+    if (method === "GET" && params) {
+      const session = getSession(params.id);
+      if (!session) return notFound(res);
+      const items = getQueueItems(session.sessionKey || session.sourceRef || session.id);
+      return json(res, items);
+    }
+
+    // DELETE /api/sessions/:id/queue — clear all pending
+    params = matchRoute("/api/sessions/:id/queue", pathname);
+    if (method === "DELETE" && params) {
+      const session = getSession(params.id);
+      if (!session) return notFound(res);
+      const sessionKey = session.sessionKey || session.sourceRef || session.id;
+      context.sessionManager.getQueue().clearQueue(sessionKey);
+      const cancelled = cancelAllPendingQueueItems(sessionKey);
+      context.emit("queue:updated", { sessionId: params.id, sessionKey, depth: 0 });
+      return json(res, { status: "cleared", cancelled });
+    }
+
+    // POST /api/sessions/:id/queue/pause
+    params = matchRoute("/api/sessions/:id/queue/pause", pathname);
+    if (method === "POST" && params) {
+      const session = getSession(params.id);
+      if (!session) return notFound(res);
+      const sessionKey = session.sessionKey || session.sourceRef || session.id;
+      context.sessionManager.getQueue().pauseQueue(sessionKey);
+      context.emit("queue:updated", { sessionId: params.id, sessionKey, paused: true });
+      return json(res, { status: "paused", sessionId: params.id });
+    }
+
+    // POST /api/sessions/:id/queue/resume
+    params = matchRoute("/api/sessions/:id/queue/resume", pathname);
+    if (method === "POST" && params) {
+      const session = getSession(params.id);
+      if (!session) return notFound(res);
+      const sessionKey = session.sessionKey || session.sourceRef || session.id;
+      context.sessionManager.getQueue().resumeQueue(sessionKey);
+      context.emit("queue:updated", { sessionId: params.id, sessionKey, paused: false });
+      return json(res, { status: "resumed", sessionId: params.id });
     }
 
     // POST /api/sessions/bulk-delete
