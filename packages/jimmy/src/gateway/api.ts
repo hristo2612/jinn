@@ -225,6 +225,21 @@ export async function handleApiRequest(
       return json(res, { status: "deleted" });
     }
 
+    // POST /api/sessions/:id/stop
+    params = matchRoute("/api/sessions/:id/stop", pathname);
+    if (method === "POST" && params) {
+      const session = getSession(params.id);
+      if (!session) return notFound(res);
+      const engine = context.sessionManager.getEngine(session.engine);
+      if (engine && isInterruptibleEngine(engine) && engine.isAlive(params.id)) {
+        engine.kill(params.id, "Interrupted by user");
+      }
+      context.sessionManager.getQueue().clearQueue(session.sessionKey || session.sourceRef || session.id);
+      updateSession(params.id, { status: "idle", lastActivity: new Date().toISOString(), lastError: null });
+      context.emit("session:stopped", { sessionId: params.id });
+      return json(res, { status: "stopped", sessionId: params.id });
+    }
+
     // POST /api/sessions/bulk-delete
     if (method === "POST" && pathname === "/api/sessions/bulk-delete") {
       const body = JSON.parse(await readBody(req));
@@ -348,6 +363,9 @@ export async function handleApiRequest(
       if (session.status === "running") {
         context.emit("session:queued", { sessionId: session.id, message: prompt });
       }
+
+      // Clear any pending cancellation so the new message runs normally.
+      context.sessionManager.getQueue().clearCancelled(session.sessionKey || session.sourceRef || session.id);
 
       dispatchWebSessionRun(session, prompt, engine, config, context);
 

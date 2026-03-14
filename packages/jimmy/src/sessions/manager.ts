@@ -197,35 +197,30 @@ export class SessionManager {
         ? result.result
         : result.error || "(No response from engine)";
 
+      const wasInterrupted = result.error?.startsWith("Interrupted");
+
       insertMessage(session.id, "assistant", responseText);
-
-      // Clean up temp MCP config
       if (mcpConfigPath) cleanupMcpConfigFile(session.id);
-
-      // Track cost
       if (result.cost || result.numTurns) {
         accumulateSessionCost(session.id, result.cost ?? 0, result.numTurns ?? 1);
       }
-
-      // Clear typing indicator before sending response
       if (decorateMessages && connector.setTypingStatus) {
         await connector.setTypingStatus(target.channel, threadTs, "").catch(() => {});
       }
-
-      await connector.replyMessage(target, responseText);
-
+      if (!wasInterrupted) {
+        await connector.replyMessage(target, responseText);
+      }
       if (decorateMessages && capabilities.reactions) {
         await connector.removeReaction(target, "eyes").catch(() => {});
       }
-
       updateSession(session.id, {
         engineSessionId: result.sessionId,
-        status: result.error ? "error" : "idle",
+        status: wasInterrupted ? "idle" : (result.error ? "error" : "idle"),
         replyContext: msg.replyContext,
         messageId: msg.messageId ?? null,
         transportMeta: msg.transportMeta ?? null,
         lastActivity: new Date().toISOString(),
-        lastError: result.error ?? null,
+        lastError: wasInterrupted ? null : (result.error ?? null),
       });
 
       logger.info(
