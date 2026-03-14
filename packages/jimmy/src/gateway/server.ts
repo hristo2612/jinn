@@ -1,4 +1,5 @@
 import http from "node:http";
+import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -329,9 +330,30 @@ export async function startGateway(
     });
   });
 
+  // Prevent macOS from sleeping while the gateway is running
+  let caffeinate: ChildProcess | null = null;
+  if (process.platform === "darwin") {
+    caffeinate = spawn("caffeinate", ["-s"], {
+      stdio: "ignore",
+      detached: false,
+    });
+    caffeinate.unref();
+    caffeinate.on("error", (err) => {
+      logger.warn(`caffeinate failed to start: ${err.message}`);
+      caffeinate = null;
+    });
+    logger.info("caffeinate started — macOS sleep prevention active");
+  }
+
   // Return cleanup function
   return async () => {
     logger.info("Gateway cleanup starting...");
+
+    // Stop caffeinate
+    if (caffeinate && caffeinate.exitCode === null) {
+      caffeinate.kill();
+      logger.info("caffeinate stopped");
+    }
 
     // Stop session limit enforcement
     clearInterval(limitsInterval);
