@@ -7,6 +7,7 @@ import { PageLayout } from '@/components/page-layout'
 import { ChatSidebar } from '@/components/chat/chat-sidebar'
 import { ChatMessages } from '@/components/chat/chat-messages'
 import { ChatInput } from '@/components/chat/chat-input'
+import { QueuePanel } from '@/components/chat/queue-panel'
 import type { Message, MediaAttachment } from '@/lib/conversations'
 import { saveIntermediateMessages, loadIntermediateMessages, clearIntermediateMessages } from '@/lib/conversations'
 import { useSettings } from '@/app/settings-provider'
@@ -51,6 +52,7 @@ function ChatPage() {
   const intermediateStartRef = useRef<number>(-1)
   // When true, user explicitly started a new chat — don't auto-select first session
   const newChatIntentRef = useRef(false)
+  const [currentSession, setCurrentSession] = useState<Record<string, unknown> | null>(null)
   const [showMoreMenu, setShowMoreMenu] = useState(false)
   const [copiedField, setCopiedField] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -203,6 +205,13 @@ function ChatPage() {
       setStreamingText('')
     }
 
+    if (latest.event === 'session:stopped') {
+      if ((latest.payload as Record<string, unknown>)?.sessionId === selectedId) {
+        setLoading(false)
+        setStreamingText('')
+      }
+    }
+
     if (latest.event === 'session:completed') {
       // Clear streaming state
       streamingTextRef.current = ''
@@ -254,6 +263,7 @@ function ChatPage() {
   const loadSession = useCallback(async (id: string) => {
     try {
       const session = (await api.getSession(id)) as Record<string, unknown>
+      setCurrentSession(session)
       setSessionMeta({
         engine: session.engine ? String(session.engine) : undefined,
         engineSessionId: session.engineSessionId ? String(session.engineSessionId) : undefined,
@@ -305,6 +315,7 @@ function ChatPage() {
     } catch {
       setMessages([])
       setSessionMeta(null)
+      setCurrentSession(null)
       intermediateStartRef.current = -1
     }
   }, [])
@@ -431,6 +442,17 @@ function ChatPage() {
     } catch { /* ignore */ }
     setConfirmDelete(false)
     setShowMoreMenu(false)
+  }, [selectedId])
+
+  const handleInterrupt = useCallback(async () => {
+    if (!selectedId) return
+    try {
+      await api.stopSession(selectedId)
+    } catch {
+      // best effort
+    }
+    setLoading(false)
+    setStreamingText('')
   }, [selectedId])
 
   const handleStatusRequest = useCallback(async () => {
@@ -713,11 +735,19 @@ function ChatPage() {
           {/* Messages */}
           <ChatMessages messages={messages} loading={loading} streamingText={streamingText} />
 
+          {/* Queue panel — shows pending messages with cancel buttons */}
+          <QueuePanel
+            sessionId={selectedId}
+            events={events}
+            paused={currentSession?.paused as boolean ?? false}
+          />
+
           {/* Input */}
           <ChatInput
             disabled={false}
             loading={loading}
             onSend={handleSend}
+            onInterrupt={handleInterrupt}
             onNewSession={handleNewChat}
             onStatusRequest={handleStatusRequest}
             skillsVersion={skillsVersion}

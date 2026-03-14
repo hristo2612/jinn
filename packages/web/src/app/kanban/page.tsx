@@ -22,6 +22,7 @@ import { TicketDetailPanel } from '@/components/kanban/ticket-detail-panel'
 export default function KanbanPage() {
   const [tickets, setTickets] = useState<KanbanStore>({})
   const [employees, setEmployees] = useState<Employee[]>([])
+  const [departments, setDepartments] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
@@ -54,6 +55,7 @@ export default function KanbanPage() {
           }),
         )
         setEmployees(details)
+        setDepartments(data.departments)
 
         // Load board tickets from all departments
         const boardTickets: KanbanStore = {}
@@ -97,6 +99,7 @@ export default function KanbanPage() {
                   workState: 'idle',
                   createdAt: item.createdAt ? new Date(item.createdAt).getTime() : Date.now(),
                   updatedAt: item.updatedAt ? new Date(item.updatedAt).getTime() : Date.now(),
+                  departmentId: dept,
                 }
               }
             }
@@ -105,9 +108,10 @@ export default function KanbanPage() {
           }
         }
 
-        // Merge: API board data takes precedence, then localStorage for any extras
-        const localTickets = loadTickets()
-        setTickets({ ...localTickets, ...boardTickets })
+        // API is the sole source of truth on load. Do not merge localStorage —
+        // agent-made changes (moves, deletes) are only reflected in the API,
+        // and stale localStorage entries would cause ghost / wrong-state tickets.
+        setTickets(boardTickets)
       })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false))
@@ -117,12 +121,55 @@ export default function KanbanPage() {
     loadData()
   }, [loadData])
 
-  // Persist tickets whenever they change
+  // Persist tickets to both localStorage and the API whenever the store changes
   useEffect(() => {
     if (!loading) {
       saveTickets(tickets)
     }
   }, [tickets, loading])
+
+  /**
+   * Persist the current ticket store back to each department's board via the
+   * gateway API. Tickets without a departmentId are silently skipped (they
+   * remain in localStorage only until a department can be assigned).
+   */
+  const persistToApi = useCallback(
+    async (store: KanbanStore) => {
+      // Group tickets by their department
+      const byDept: Record<string, KanbanTicket[]> = {}
+      for (const ticket of Object.values(store)) {
+        if (!ticket.departmentId) continue
+        if (!byDept[ticket.departmentId]) byDept[ticket.departmentId] = []
+        byDept[ticket.departmentId].push(ticket)
+      }
+
+      // Also PUT an empty array for any department that no longer has tickets
+      // so deleted tickets don't come back on the next reload
+      for (const dept of departments) {
+        if (!byDept[dept]) byDept[dept] = []
+      }
+
+      // Write each department board; errors are non-fatal (UI still works via localStorage)
+      await Promise.all(
+        Object.entries(byDept).map(([dept, deptTickets]) => {
+          const boardData = deptTickets.map((t) => ({
+            id: t.id,
+            title: t.title,
+            description: t.description,
+            status: t.status,
+            priority: t.priority,
+            assignee: t.assigneeId ?? undefined,
+            createdAt: new Date(t.createdAt).toISOString(),
+            updatedAt: new Date(t.updatedAt).toISOString(),
+          }))
+          return api.updateDepartmentBoard(dept, boardData).catch(() => {
+            // Silently ignore — department dir may not exist on disk yet
+          })
+        }),
+      )
+    },
+    [departments],
+  )
 
   // Keep selectedTicket in sync with store
   useEffect(() => {
@@ -140,25 +187,44 @@ export default function KanbanPage() {
     priority: TicketPriority
     assigneeId: string | null
   }) {
-    setTickets((prev) =>
-      createTicket(prev, {
+    // Derive the department from the assignee, falling back to the first known department
+    const assignee = employees.find((e) => e.name === data.assigneeId)
+    const departmentId = assignee?.department || departments[0] || null
+
+    setTickets((prev) => {
+      const next = createTicket(prev, {
         ...data,
         status: 'backlog',
-      }),
-    )
+        departmentId,
+      })
+      persistToApi(next)
+      return next
+    })
   }
 
   function handleMoveTicket(ticketId: string, status: TicketStatus) {
-    setTickets((prev) => moveTicket(prev, ticketId, status))
+    setTickets((prev) => {
+      const next = moveTicket(prev, ticketId, status)
+      persistToApi(next)
+      return next
+    })
   }
 
   function handleDeleteTicket(ticketId: string) {
-    setTickets((prev) => deleteTicket(prev, ticketId))
+    setTickets((prev) => {
+      const next = deleteTicket(prev, ticketId)
+      persistToApi(next)
+      return next
+    })
     setSelectedTicket(null)
   }
 
   function handleAssigneeChange(ticketId: string, assigneeId: string | null) {
-    setTickets((prev) => updateTicket(prev, ticketId, { assigneeId }))
+    setTickets((prev) => {
+      const next = updateTicket(prev, ticketId, { assigneeId })
+      persistToApi(next)
+      return next
+    })
   }
 
   function handleTicketClick(ticket: KanbanTicket) {

@@ -8,7 +8,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import type { JinnConfig, Connector, Employee } from "../shared/types.js";
 import { loadConfig } from "../shared/config.js";
 import { configureLogger, logger } from "../shared/logger.js";
-import { initDb, recoverStaleSessions } from "../sessions/registry.js";
+import { initDb, recoverStaleSessions, recoverStaleQueueItems } from "../sessions/registry.js";
 import { SessionManager } from "../sessions/manager.js";
 import { ClaudeEngine } from "../engines/claude.js";
 import { CodexEngine } from "../engines/codex.js";
@@ -107,6 +107,10 @@ export async function startGateway(
   const recovered = recoverStaleSessions();
   if (recovered > 0) {
     logger.info(`Recovered ${recovered} stale session(s) stuck in "running" state`);
+  }
+  const recoveredQueue = recoverStaleQueueItems();
+  if (recoveredQueue > 0) {
+    logger.info(`Cancelled ${recoveredQueue} stale queue item(s) from previous run`);
   }
 
   // Set up engines

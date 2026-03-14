@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
@@ -96,6 +97,21 @@ export function initDb(): Database.Database {
   db.exec(CREATE_MESSAGES_INDEX);
   migrateSessionsSchema(db);
   db.exec(CREATE_SESSION_KEY_INDEX);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS queue_items (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      session_key TEXT NOT NULL,
+      prompt TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      position INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      started_at TEXT,
+      completed_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_queue_session
+      ON queue_items (session_key, status, position);
+  `);
 
   return db;
 }
@@ -384,4 +400,71 @@ export function insertMessage(sessionId: string, role: string, content: string):
 export function getMessages(sessionId: string): SessionMessage[] {
   const db = initDb();
   return db.prepare('SELECT id, role, content, timestamp FROM messages WHERE session_id = ? ORDER BY timestamp ASC').all(sessionId) as SessionMessage[];
+}
+
+export interface QueueItem {
+  id: string;
+  sessionId: string;
+  sessionKey: string;
+  prompt: string;
+  status: "pending" | "running" | "cancelled" | "completed";
+  position: number;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
+export function enqueueQueueItem(sessionId: string, sessionKey: string, prompt: string): string {
+  const db = initDb();
+  const id = randomUUID();
+  const position = (db.prepare(
+    "SELECT COALESCE(MAX(position), 0) + 1 as pos FROM queue_items WHERE session_key = ? AND status = 'pending'"
+  ).get(sessionKey) as { pos: number }).pos;
+  db.prepare(
+    "INSERT INTO queue_items (id, session_id, session_key, prompt, status, position, created_at) VALUES (?, ?, ?, ?, 'pending', ?, ?)"
+  ).run(id, sessionId, sessionKey, prompt, position, new Date().toISOString());
+  return id;
+}
+
+export function markQueueItemRunning(itemId: string): void {
+  const db = initDb();
+  db.prepare("UPDATE queue_items SET status = 'running', started_at = ? WHERE id = ?")
+    .run(new Date().toISOString(), itemId);
+}
+
+export function markQueueItemCompleted(itemId: string): void {
+  const db = initDb();
+  db.prepare("UPDATE queue_items SET status = 'completed', completed_at = ? WHERE id = ?")
+    .run(new Date().toISOString(), itemId);
+}
+
+export function cancelQueueItem(itemId: string): boolean {
+  const db = initDb();
+  const result = db.prepare(
+    "UPDATE queue_items SET status = 'cancelled' WHERE id = ? AND status = 'pending'"
+  ).run(itemId);
+  return result.changes > 0;
+}
+
+export function getQueueItems(sessionKey: string): QueueItem[] {
+  const db = initDb();
+  return db.prepare(
+    "SELECT id, session_id as sessionId, session_key as sessionKey, prompt, status, position, created_at as createdAt, started_at as startedAt, completed_at as completedAt FROM queue_items WHERE session_key = ? AND status IN ('pending', 'running') ORDER BY position ASC"
+  ).all(sessionKey) as QueueItem[];
+}
+
+export function cancelAllPendingQueueItems(sessionKey: string): number {
+  const db = initDb();
+  const result = db.prepare(
+    "UPDATE queue_items SET status = 'cancelled' WHERE session_key = ? AND status = 'pending'"
+  ).run(sessionKey);
+  return result.changes;
+}
+
+export function recoverStaleQueueItems(): number {
+  const db = initDb();
+  const result = db.prepare(
+    "UPDATE queue_items SET status = 'cancelled' WHERE status IN ('pending', 'running')"
+  ).run();
+  return result.changes;
 }
