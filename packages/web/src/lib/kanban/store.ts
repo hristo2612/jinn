@@ -29,6 +29,7 @@ function sanitizeTicket(id: string, raw: Record<string, unknown>): KanbanTicket 
     workState,
     createdAt: typeof raw.createdAt === 'number' ? raw.createdAt : 0,
     updatedAt: typeof raw.updatedAt === 'number' ? raw.updatedAt : (typeof raw.createdAt === 'number' ? raw.createdAt : 0),
+    departmentId: typeof raw.departmentId === 'string' ? raw.departmentId : null,
   }
 }
 
@@ -81,6 +82,7 @@ export function createTicket(
       workState: 'idle',
       createdAt: now,
       updatedAt: now,
+      departmentId: ticket.departmentId ?? null,
     },
   }
 }

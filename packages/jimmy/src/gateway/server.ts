@@ -16,6 +16,7 @@ import { handleApiRequest, type ApiContext } from "./api.js";
 import { initStt } from "../stt/stt.js";
 import { startWatchers, stopWatchers, syncSkillSymlinks } from "./watcher.js";
 import { SlackConnector } from "../connectors/slack/index.js";
+import { DiscordConnector } from "../connectors/discord/index.js";
 import { loadJobs } from "../cron/jobs.js";
 import { startScheduler, reloadScheduler, stopScheduler } from "../cron/scheduler.js";
 import { scanOrg } from "./org.js";
@@ -121,6 +122,9 @@ export async function startGateway(
   if (config.connectors?.slack?.appToken && config.connectors?.slack?.botToken) {
     connectorNames.push("slack");
   }
+  if (config.connectors?.discord?.botToken) {
+    connectorNames.push("discord");
+  }
 
   // Session manager
   const sessionManager = new SessionManager(config, engines, connectorNames);
@@ -151,6 +155,23 @@ export async function startGateway(
       connectorMap.set("slack", slack);
     } catch (err) {
       logger.error(`Failed to start Slack connector: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
+  if (config.connectors?.discord?.botToken) {
+    try {
+      const discord = new DiscordConnector(config.connectors.discord);
+      discord.onMessage((msg) => {
+        sessionManager.route(msg, discord).catch((err) => {
+          logger.error(`Discord route error: ${err instanceof Error ? err.message : err}`);
+        });
+      });
+      await discord.start();
+      connectors.push(discord);
+      connectorMap.set("discord", discord);
+      logger.info("Discord connector started");
+    } catch (err) {
+      logger.error(`Failed to start Discord connector: ${err instanceof Error ? err.message : err}`);
     }
   }
 

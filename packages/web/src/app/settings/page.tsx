@@ -47,6 +47,11 @@ interface Config {
       allowFrom?: string | string[]
       ignoreOldMessagesOnBoot?: boolean
     }
+    discord?: {
+      botToken?: string
+      allowFrom?: string | string[]
+      guildId?: string
+    }
     web?: Record<string, never>
   }
   logging?: {
@@ -1297,6 +1302,58 @@ export default function SettingsPage() {
                     onChange={(v) =>
                       updateConfig(["connectors", "slack", "ignoreOldMessagesOnBoot"], v)
                     }
+                  />
+                </FieldRow>
+
+                <div
+                  style={{
+                    borderTop: "1px solid var(--separator)",
+                    marginTop: "var(--space-3)",
+                    paddingTop: "var(--space-3)",
+                  }}
+                />
+
+                <div
+                  style={{
+                    fontSize: "var(--text-caption1)",
+                    fontWeight: "var(--weight-semibold)",
+                    color: "var(--text-tertiary)",
+                    marginBottom: "var(--space-2)",
+                  }}
+                >
+                  Discord
+                </div>
+                <FieldRow label="Bot Token">
+                  <SettingsInput
+                    type="password"
+                    value={config.connectors?.discord?.botToken ?? ""}
+                    onChange={(v) =>
+                      updateConfig(["connectors", "discord", "botToken"], v)
+                    }
+                    placeholder="Bot token..."
+                  />
+                </FieldRow>
+                <FieldRow label="Allow From">
+                  <SettingsInput
+                    value={Array.isArray(config.connectors?.discord?.allowFrom)
+                      ? config.connectors?.discord?.allowFrom?.join(", ")
+                      : config.connectors?.discord?.allowFrom ?? ""}
+                    onChange={(v) =>
+                      updateConfig(
+                        ["connectors", "discord", "allowFrom"],
+                        v.trim() ? v.split(",").map((entry) => entry.trim()).filter(Boolean) : undefined,
+                      )
+                    }
+                    placeholder="User IDs, comma-separated (optional)"
+                  />
+                </FieldRow>
+                <FieldRow label="Guild ID">
+                  <SettingsInput
+                    value={config.connectors?.discord?.guildId ?? ""}
+                    onChange={(v) =>
+                      updateConfig(["connectors", "discord", "guildId"], v.trim() || undefined)
+                    }
+                    placeholder="Server/Guild ID (optional)"
                   />
                 </FieldRow>
 

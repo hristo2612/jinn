@@ -65,6 +65,8 @@ export const api = {
     post<Record<string, unknown>>("/api/sessions/stub", data),
   sendMessage: (id: string, data: Record<string, unknown>) =>
     post<Record<string, unknown>>(`/api/sessions/${id}/message`, data),
+  stopSession: (id: string) =>
+    post<{ status: string; sessionId: string }>(`/api/sessions/${id}/stop`, {}),
   getCronJobs: () => get<Record<string, unknown>[]>("/api/cron"),
   getCronRuns: (id: string) => get<Record<string, unknown>[]>(`/api/cron/${id}/runs`),
   updateCronJob: (id: string, data: Record<string, unknown>) =>

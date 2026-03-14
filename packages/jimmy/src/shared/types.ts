@@ -227,6 +227,13 @@ export interface SlackConnectorConfig {
   ignoreOldMessagesOnBoot?: boolean;
 }
 
+export interface DiscordConnectorConfig {
+  botToken: string;
+  allowFrom?: string | string[];
+  ignoreOldMessagesOnBoot?: boolean;
+  guildId?: string;
+}
+
 export interface PortalConfig {
   portalName?: string;
   operatorName?: string;
@@ -244,6 +251,7 @@ export interface JinnConfig {
   connectors: Record<string, any> & {
     web?: WebConnectorConfig;
     slack?: SlackConnectorConfig;
+    discord?: DiscordConnectorConfig;
   };
   logging: { file: boolean; stdout: boolean; level: string };
   mcp?: McpGlobalConfig;
