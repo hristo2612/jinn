@@ -4,6 +4,8 @@ export class SessionQueue {
   private running = new Set<string>();
   /** Track how many tasks exist per session key, including the active one. */
   private pending = new Map<string, number>();
+  /** Track which session keys have been cancelled — queued tasks are skipped. */
+  private cancelled = new Set<string>();
 
   /**
    * Check if a session is currently running.
@@ -25,6 +27,23 @@ export class SessionQueue {
   }
 
   /**
+   * Add a session key to the cancelled set and remove it from pending.
+   * Any queued tasks for this key will be skipped when they next execute.
+   */
+  clearQueue(sessionKey: string): void {
+    this.cancelled.add(sessionKey);
+    this.pending.delete(sessionKey);
+  }
+
+  /**
+   * Remove a session key from the cancelled set.
+   * Call this before dispatching a new message so subsequent tasks run normally.
+   */
+  clearCancelled(sessionKey: string): void {
+    this.cancelled.delete(sessionKey);
+  }
+
+  /**
    * Enqueue a task for a session. Tasks are serialized per session key.
    */
   async enqueue(sessionKey: string, fn: () => Promise<void>): Promise<void> {
@@ -34,7 +53,9 @@ export class SessionQueue {
       async () => {
         this.running.add(sessionKey);
         try {
-          await fn();
+          if (!this.cancelled.has(sessionKey)) {
+            await fn();
+          }
         } finally {
           this.running.delete(sessionKey);
           this.decrementPending(sessionKey);
@@ -43,7 +64,9 @@ export class SessionQueue {
       async () => {
         this.running.add(sessionKey);
         try {
-          await fn();
+          if (!this.cancelled.has(sessionKey)) {
+            await fn();
+          }
         } finally {
           this.running.delete(sessionKey);
           this.decrementPending(sessionKey);

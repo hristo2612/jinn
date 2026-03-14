@@ -203,6 +203,13 @@ function ChatPage() {
       setStreamingText('')
     }
 
+    if (latest.event === 'session:stopped') {
+      if ((latest.payload as Record<string, unknown>)?.sessionId === selectedId) {
+        setLoading(false)
+        setStreamingText('')
+      }
+    }
+
     if (latest.event === 'session:completed') {
       // Clear streaming state
       streamingTextRef.current = ''
@@ -431,6 +438,17 @@ function ChatPage() {
     } catch { /* ignore */ }
     setConfirmDelete(false)
     setShowMoreMenu(false)
+  }, [selectedId])
+
+  const handleInterrupt = useCallback(async () => {
+    if (!selectedId) return
+    try {
+      await api.stopSession(selectedId)
+    } catch {
+      // best effort
+    }
+    setLoading(false)
+    setStreamingText('')
   }, [selectedId])
 
   const handleStatusRequest = useCallback(async () => {
@@ -718,6 +736,7 @@ function ChatPage() {
             disabled={false}
             loading={loading}
             onSend={handleSend}
+            onInterrupt={handleInterrupt}
             onNewSession={handleNewChat}
             onStatusRequest={handleStatusRequest}
             skillsVersion={skillsVersion}
