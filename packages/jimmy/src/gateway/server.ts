@@ -9,7 +9,7 @@ import type { JinnConfig, Connector, Employee } from "../shared/types.js";
 import { loadConfig } from "../shared/config.js";
 import { configureLogger, logger } from "../shared/logger.js";
 import { initDb, recoverStaleSessions, recoverStaleQueueItems, getInterruptedSessions, listSessions, updateSession } from "../sessions/registry.js";
-import { SessionManager } from "../sessions/manager.js";
+import { SessionManager, type RouteOptions } from "../sessions/manager.js";
 import { ClaudeEngine } from "../engines/claude.js";
 import { CodexEngine } from "../engines/codex.js";
 import { handleApiRequest, resumePendingWebQueueItems, type ApiContext } from "./api.js";
@@ -17,7 +17,7 @@ import { ensureFilesDir } from "./files.js";
 import { initStt } from "../stt/stt.js";
 import { startWatchers, stopWatchers, syncSkillSymlinks } from "./watcher.js";
 import { SlackConnector } from "../connectors/slack/index.js";
-import { DiscordConnector } from "../connectors/discord/index.js";
+import { DiscordConnector, type DiscordConnectorConfig } from "../connectors/discord/index.js";
 import { RemoteDiscordConnector } from "../connectors/discord/remote.js";
 import { WhatsAppConnector } from "../connectors/whatsapp/index.js";
 import { loadJobs } from "../cron/jobs.js";
@@ -166,7 +166,12 @@ export async function startGateway(
         ignoreOldMessagesOnBoot: config.connectors.slack.ignoreOldMessagesOnBoot,
       });
       slack.onMessage((msg) => {
-        sessionManager.route(msg, slack).catch((err) => {
+        const routeOpts: RouteOptions = {};
+        if (config.connectors.slack?.employee) {
+          const emp = employeeRegistry.get(config.connectors.slack.employee);
+          if (emp) routeOpts.employee = emp;
+        }
+        sessionManager.route(msg, slack, routeOpts).catch((err) => {
           logger.error(`Slack route error: ${err instanceof Error ? err.message : err}`);
         });
       });
@@ -186,7 +191,12 @@ export async function startGateway(
         channelId: config.connectors.discord.channelId,
       });
       discord.onMessage((msg) => {
-        sessionManager.route(msg, discord).catch((err) => {
+        const routeOpts: RouteOptions = {};
+        if (config.connectors.discord?.employee) {
+          const emp = employeeRegistry.get(config.connectors.discord.employee);
+          if (emp) routeOpts.employee = emp;
+        }
+        sessionManager.route(msg, discord, routeOpts).catch((err) => {
           logger.error(`Discord route error: ${err instanceof Error ? err.message : err}`);
         });
       });
@@ -200,9 +210,14 @@ export async function startGateway(
   } else if (config.connectors?.discord?.botToken) {
     // Primary mode: direct Discord bot connection
     try {
-      const discord = new DiscordConnector(config.connectors.discord as import("../connectors/discord/index.js").DiscordConnectorConfig);
+      const discord = new DiscordConnector(config.connectors.discord as DiscordConnectorConfig);
       discord.onMessage((msg) => {
-        sessionManager.route(msg, discord).catch((err) => {
+        const routeOpts: RouteOptions = {};
+        if (config.connectors.discord?.employee) {
+          const emp = employeeRegistry.get(config.connectors.discord.employee);
+          if (emp) routeOpts.employee = emp;
+        }
+        sessionManager.route(msg, discord, routeOpts).catch((err) => {
           logger.error(`Discord route error: ${err instanceof Error ? err.message : err}`);
         });
       });
@@ -217,7 +232,12 @@ export async function startGateway(
     try {
       const discord = new RemoteDiscordConnector({ proxyVia: config.connectors.discord.proxyVia });
       discord.onMessage((msg) => {
-        sessionManager.route(msg, discord).catch((err) => {
+        const routeOpts: RouteOptions = {};
+        if (config.connectors.discord?.employee) {
+          const emp = employeeRegistry.get(config.connectors.discord.employee);
+          if (emp) routeOpts.employee = emp;
+        }
+        sessionManager.route(msg, discord, routeOpts).catch((err) => {
           logger.error(`Discord (remote) route error: ${err instanceof Error ? err.message : err}`);
         });
       });
@@ -234,7 +254,12 @@ export async function startGateway(
     try {
       const whatsapp = new WhatsAppConnector(config.connectors.whatsapp ?? {});
       whatsapp.onMessage((msg) => {
-        sessionManager.route(msg, whatsapp).catch((err) => {
+        const routeOpts: RouteOptions = {};
+        if (config.connectors.whatsapp?.employee) {
+          const emp = employeeRegistry.get(config.connectors.whatsapp.employee);
+          if (emp) routeOpts.employee = emp;
+        }
+        sessionManager.route(msg, whatsapp, routeOpts).catch((err) => {
           logger.error(`WhatsApp route error: ${err instanceof Error ? err.message : err}`);
         });
       });
@@ -244,6 +269,85 @@ export async function startGateway(
       logger.info("WhatsApp connector started (scan QR code if first run)");
     } catch (err) {
       logger.error(`Failed to start WhatsApp connector: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
+  // Process named connector instances (allows multiple connectors of the same type)
+  if (config.connectors?.instances) {
+    for (const instance of config.connectors.instances) {
+      const { id, type, employee, ...typeConfig } = instance;
+      if (!id || !type) {
+        logger.warn(`Skipping connector instance without id or type`);
+        continue;
+      }
+      if (connectorMap.has(id)) {
+        logger.warn(`Duplicate connector instance id "${id}", skipping`);
+        continue;
+      }
+
+      try {
+        let connector: Connector;
+        switch (type) {
+          case "discord": {
+            const discordConfig = { ...typeConfig, id } as DiscordConnectorConfig;
+            const discord = new DiscordConnector(discordConfig);
+            discord.onMessage((msg) => {
+              const routeOpts: RouteOptions = {};
+              if (employee) {
+                const emp = employeeRegistry.get(employee);
+                if (emp) routeOpts.employee = emp;
+              }
+              sessionManager.route(msg, discord, routeOpts).catch((err) => {
+                logger.error(`${id} route error: ${err instanceof Error ? err.message : err}`);
+              });
+            });
+            await discord.start();
+            connector = discord;
+            break;
+          }
+          case "slack": {
+            const slackConfig = { ...typeConfig, id } as any;
+            const slack = new SlackConnector(slackConfig);
+            slack.onMessage((msg) => {
+              const routeOpts: RouteOptions = {};
+              if (employee) {
+                const emp = employeeRegistry.get(employee);
+                if (emp) routeOpts.employee = emp;
+              }
+              sessionManager.route(msg, slack, routeOpts).catch((err) => {
+                logger.error(`${id} route error: ${err instanceof Error ? err.message : err}`);
+              });
+            });
+            await slack.start();
+            connector = slack;
+            break;
+          }
+          case "whatsapp": {
+            const whatsapp = new WhatsAppConnector({ ...typeConfig } as any);
+            whatsapp.onMessage((msg) => {
+              const routeOpts: RouteOptions = {};
+              if (employee) {
+                const emp = employeeRegistry.get(employee);
+                if (emp) routeOpts.employee = emp;
+              }
+              sessionManager.route(msg, whatsapp, routeOpts).catch((err) => {
+                logger.error(`${id} route error: ${err instanceof Error ? err.message : err}`);
+              });
+            });
+            await whatsapp.start();
+            connector = whatsapp;
+            break;
+          }
+          default:
+            logger.warn(`Unknown connector type "${type}" for instance "${id}"`);
+            continue;
+        }
+        connectors.push(connector);
+        connectorMap.set(id, connector);
+        logger.info(`Connector instance "${id}" (type: ${type}, employee: ${employee || "default"}) started`);
+      } catch (err) {
+        logger.error(`Failed to start connector instance "${id}": ${err instanceof Error ? err.message : err}`);
+      }
     }
   }
 

@@ -66,6 +66,19 @@ interface Config {
       allowFrom?: string[]
     }
     web?: Record<string, never>
+    instances?: Array<{
+      id: string
+      type: "discord" | "slack" | "whatsapp"
+      employee?: string
+      botToken?: string
+      allowFrom?: string | string[]
+      guildId?: string
+      channelId?: string
+      appToken?: string
+      authDir?: string
+      ignoreOldMessagesOnBoot?: boolean
+      [key: string]: unknown
+    }>
   }
   logging?: {
     level?: string
@@ -443,6 +456,17 @@ export default function SettingsPage() {
   // WhatsApp QR code state
   const [waQr, setWaQr] = useState<string | null>(null)
   const [waStatus, setWaStatus] = useState<string>("unknown")
+
+  // Employees list for instance binding
+  const [employees, setEmployees] = useState<Array<{name: string, displayName: string}>>([])
+
+  useEffect(() => {
+    api.getOrg().then((org: any) => {
+      if (org?.employees) {
+        setEmployees(org.employees.map((e: any) => ({ name: e.name, displayName: e.displayName || e.name })))
+      }
+    }).catch(() => {})
+  }, [])
 
   // Sync local values when settings change externally (e.g., reset)
   useEffect(() => {
@@ -1173,6 +1197,194 @@ export default function SettingsPage() {
                     ✓ Connected
                   </div>
                 )}
+
+                {/* Connector Instances */}
+                <div className="border-t border-[var(--separator)] mt-[var(--space-3)] pt-[var(--space-3)]" />
+                <div className="flex items-center justify-between mb-[var(--space-2)]">
+                  <div className="text-[length:var(--text-caption1)] font-[var(--weight-semibold)] text-[var(--text-tertiary)]">
+                    Connector Instances
+                  </div>
+                  <button
+                    className="text-[length:var(--text-caption1)] font-[var(--weight-semibold)] text-[var(--accent)] hover:opacity-80 transition-opacity"
+                    onClick={() => {
+                      const instances = [...(config.connectors?.instances || [])]
+                      const id = `discord-${instances.length + 1}`
+                      instances.push({ id, type: "discord" })
+                      updateConfig(["connectors", "instances"], instances)
+                    }}
+                  >
+                    + Add Instance
+                  </button>
+                </div>
+                <div className="text-[length:var(--text-caption2)] text-[var(--text-tertiary)] mb-[var(--space-3)]">
+                  Add multiple connector instances of the same type, each bound to a specific employee.
+                </div>
+                {(config.connectors?.instances || []).map((instance: any, idx: number) => (
+                  <div
+                    key={instance.id || idx}
+                    className="mb-[var(--space-4)] p-[var(--space-3)] rounded-[var(--radius-md)] border border-[var(--separator)] bg-[var(--bg-secondary)]"
+                  >
+                    <div className="flex items-center justify-between mb-[var(--space-2)]">
+                      <div className="text-[length:var(--text-subheadline)] font-[var(--weight-semibold)] text-[var(--text-primary)]">
+                        {instance.id || `Instance ${idx + 1}`}
+                      </div>
+                      <button
+                        className="text-[var(--system-red)] hover:opacity-80 transition-opacity p-[var(--space-1)]"
+                        onClick={() => {
+                          const instances = [...(config.connectors?.instances || [])]
+                          instances.splice(idx, 1)
+                          updateConfig(["connectors", "instances"], instances.length > 0 ? instances : undefined)
+                        }}
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                    <FieldRow label="Instance ID">
+                      <SettingsInput
+                        value={instance.id ?? ""}
+                        onChange={(v) => {
+                          const instances = [...(config.connectors?.instances || [])]
+                          instances[idx] = { ...instances[idx], id: v }
+                          updateConfig(["connectors", "instances"], instances)
+                        }}
+                        placeholder="e.g. discord-vox"
+                      />
+                    </FieldRow>
+                    <FieldRow label="Type">
+                      <SettingsSelect
+                        value={instance.type ?? "discord"}
+                        onChange={(v) => {
+                          const instances = [...(config.connectors?.instances || [])]
+                          instances[idx] = { ...instances[idx], type: v as "discord" | "slack" | "whatsapp" }
+                          updateConfig(["connectors", "instances"], instances)
+                        }}
+                        options={[
+                          { value: "discord", label: "Discord" },
+                          { value: "slack", label: "Slack" },
+                          { value: "whatsapp", label: "WhatsApp" },
+                        ]}
+                      />
+                    </FieldRow>
+                    <FieldRow label="Employee">
+                      <SettingsSelect
+                        value={instance.employee ?? ""}
+                        onChange={(v) => {
+                          const instances = [...(config.connectors?.instances || [])]
+                          instances[idx] = { ...instances[idx], employee: v || undefined }
+                          updateConfig(["connectors", "instances"], instances)
+                        }}
+                        options={[
+                          { value: "", label: "Default (COO)" },
+                          ...employees.map((e) => ({ value: e.name, label: e.displayName })),
+                        ]}
+                      />
+                    </FieldRow>
+                    {/* Type-specific fields */}
+                    {(instance.type === "discord" || !instance.type) && (
+                      <>
+                        <FieldRow label="Bot Token">
+                          <SettingsInput
+                            type="password"
+                            value={instance.botToken ?? ""}
+                            onChange={(v) => {
+                              const instances = [...(config.connectors?.instances || [])]
+                              instances[idx] = { ...instances[idx], botToken: v }
+                              updateConfig(["connectors", "instances"], instances)
+                            }}
+                            placeholder="Bot token..."
+                          />
+                        </FieldRow>
+                        <FieldRow label="Guild ID">
+                          <SettingsInput
+                            value={instance.guildId ?? ""}
+                            onChange={(v) => {
+                              const instances = [...(config.connectors?.instances || [])]
+                              instances[idx] = { ...instances[idx], guildId: v.trim() || undefined }
+                              updateConfig(["connectors", "instances"], instances)
+                            }}
+                            placeholder="Server/Guild ID"
+                          />
+                        </FieldRow>
+                        <FieldRow label="Channel ID">
+                          <SettingsInput
+                            value={instance.channelId ?? ""}
+                            onChange={(v) => {
+                              const instances = [...(config.connectors?.instances || [])]
+                              instances[idx] = { ...instances[idx], channelId: v.trim() || undefined }
+                              updateConfig(["connectors", "instances"], instances)
+                            }}
+                            placeholder="Restrict to channel (optional)"
+                          />
+                        </FieldRow>
+                        <FieldRow label="Allow From">
+                          <SettingsInput
+                            value={Array.isArray(instance.allowFrom) ? instance.allowFrom.join(", ") : instance.allowFrom ?? ""}
+                            onChange={(v) => {
+                              const instances = [...(config.connectors?.instances || [])]
+                              instances[idx] = { ...instances[idx], allowFrom: v.trim() ? v.split(",").map((s: string) => s.trim()).filter(Boolean) : undefined }
+                              updateConfig(["connectors", "instances"], instances)
+                            }}
+                            placeholder="User IDs, comma-separated (optional)"
+                          />
+                        </FieldRow>
+                      </>
+                    )}
+                    {instance.type === "slack" && (
+                      <>
+                        <FieldRow label="App Token">
+                          <SettingsInput
+                            type="password"
+                            value={instance.appToken ?? ""}
+                            onChange={(v) => {
+                              const instances = [...(config.connectors?.instances || [])]
+                              instances[idx] = { ...instances[idx], appToken: v }
+                              updateConfig(["connectors", "instances"], instances)
+                            }}
+                            placeholder="xapp-..."
+                          />
+                        </FieldRow>
+                        <FieldRow label="Bot Token">
+                          <SettingsInput
+                            type="password"
+                            value={instance.botToken ?? ""}
+                            onChange={(v) => {
+                              const instances = [...(config.connectors?.instances || [])]
+                              instances[idx] = { ...instances[idx], botToken: v }
+                              updateConfig(["connectors", "instances"], instances)
+                            }}
+                            placeholder="xoxb-..."
+                          />
+                        </FieldRow>
+                      </>
+                    )}
+                    {instance.type === "whatsapp" && (
+                      <>
+                        <FieldRow label="Auth Directory">
+                          <SettingsInput
+                            value={instance.authDir ?? ""}
+                            onChange={(v) => {
+                              const instances = [...(config.connectors?.instances || [])]
+                              instances[idx] = { ...instances[idx], authDir: v.trim() || undefined }
+                              updateConfig(["connectors", "instances"], instances)
+                            }}
+                            placeholder="Default: ~/.jinn/.whatsapp-auth"
+                          />
+                        </FieldRow>
+                        <FieldRow label="Allow From">
+                          <SettingsInput
+                            value={Array.isArray(instance.allowFrom) ? instance.allowFrom.join(", ") : ""}
+                            onChange={(v) => {
+                              const instances = [...(config.connectors?.instances || [])]
+                              instances[idx] = { ...instances[idx], allowFrom: v.trim() ? v.split(",").map((s: string) => s.trim()).filter(Boolean) : undefined }
+                              updateConfig(["connectors", "instances"], instances)
+                            }}
+                            placeholder="Phone JIDs, comma-separated"
+                          />
+                        </FieldRow>
+                      </>
+                    )}
+                  </div>
+                ))}
 
                 <div
                   className="border-t border-[var(--separator)] mt-[var(--space-3)] pt-[var(--space-3)]"

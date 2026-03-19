@@ -1,13 +1,13 @@
 import type { Message } from "discord.js";
 
-export function deriveSessionKey(message: Message): string {
+export function deriveSessionKey(message: Message, prefix = "discord"): string {
   if (message.channel.isDMBased()) {
-    return `discord:dm:${message.author.id}`;
+    return `${prefix}:dm:${message.author.id}`;
   }
   if (message.channel.isThread()) {
-    return `discord:thread:${message.channel.id}`;
+    return `${prefix}:thread:${message.channel.id}`;
   }
-  return `discord:${message.channel.id}`;
+  return `${prefix}:${message.channel.id}`;
 }
 
 export function buildReplyContext(message: Message): Record<string, string | null> {
