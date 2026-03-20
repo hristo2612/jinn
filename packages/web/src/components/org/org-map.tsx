@@ -22,11 +22,11 @@ interface OrgMapProps {
 
 const NODE_W = 220
 const NODE_H = 80
-const INNER_GAP = 16
-const GROUP_PAD_X = 28
-const GROUP_PAD_TOP = 48
-const GROUP_PAD_BOTTOM = 24
-const COLS = 2 // max columns for members inside a group
+const INNER_GAP = 14
+const GROUP_PAD_X = 24
+const GROUP_LABEL_H = 28
+const GROUP_PAD_BOTTOM = 18
+const COLS = 2
 
 // ── Gather department info from tree ─────────────────────────
 
@@ -34,15 +34,16 @@ interface DeptInfo {
   path: string
   displayName: string
   managerName?: string
-  memberNames: string[] // non-manager employees
+  memberNames: string[]
   childPaths: string[]
   parentPath?: string
+  depth: number
 }
 
-function gatherDepts(tree: OrgTreeNode[], parent?: string): DeptInfo[] {
+function gatherDepts(tree: OrgTreeNode[], parent?: string, depth = 0): DeptInfo[] {
   const result: DeptInfo[] = []
   for (const node of tree) {
-    const info: DeptInfo = {
+    result.push({
       path: node.path,
       displayName: node.displayName || node.name,
       managerName: node.manager?.name,
@@ -51,58 +52,23 @@ function gatherDepts(tree: OrgTreeNode[], parent?: string): DeptInfo[] {
         .map((e) => e.name),
       childPaths: node.children.map((c) => c.path),
       parentPath: parent,
-    }
-    result.push(info)
-    result.push(...gatherDepts(node.children, node.path))
+      depth,
+    })
+    result.push(...gatherDepts(node.children, node.path, depth + 1))
   }
   return result
 }
 
-// ── Compute inner size for a department group ────────────────
+// ── Member-only group size (manager is outside) ──────────────
 
-function groupInnerSize(memberCount: number): { w: number; h: number } {
-  if (memberCount === 0) return { w: NODE_W, h: 0 }
+function memberGroupSize(memberCount: number): { w: number; h: number } {
+  if (memberCount === 0) return { w: NODE_W + GROUP_PAD_X * 2, h: 0 }
   const cols = Math.min(memberCount, COLS)
   const rows = Math.ceil(memberCount / cols)
-  const w = cols * NODE_W + (cols - 1) * INNER_GAP
-  const h = rows * NODE_H + (rows - 1) * INNER_GAP
-  return { w, h }
-}
-
-function groupSize(memberCount: number): { w: number; h: number } {
-  // Manager sits at top inside the group, then members below in grid
-  const inner = groupInnerSize(memberCount)
-  const contentW = Math.max(NODE_W, inner.w) // at least manager width
-  const contentH = NODE_H + (memberCount > 0 ? INNER_GAP + inner.h : 0)
   return {
-    w: contentW + GROUP_PAD_X * 2,
-    h: contentH + GROUP_PAD_TOP + GROUP_PAD_BOTTOM,
+    w: cols * NODE_W + (cols - 1) * INNER_GAP + GROUP_PAD_X * 2,
+    h: rows * NODE_H + (rows - 1) * INNER_GAP + GROUP_LABEL_H + GROUP_PAD_BOTTOM,
   }
-}
-
-// ── Extract hierarchy edges between managers/directors ────────
-
-function extractManagerEdges(
-  depts: DeptInfo[],
-  executiveName?: string,
-): [string, string][] {
-  const pairs: [string, string][] = []
-  const deptByPath = new Map(depts.map((d) => [d.path, d]))
-
-  for (const dept of depts) {
-    if (!dept.managerName) continue
-    // Connect to parent department's manager
-    if (dept.parentPath) {
-      const parent = deptByPath.get(dept.parentPath)
-      if (parent?.managerName) {
-        pairs.push([parent.managerName, dept.managerName])
-      }
-    } else if (executiveName) {
-      // Top-level dept → executive
-      pairs.push([executiveName, dept.managerName])
-    }
-  }
-  return pairs
 }
 
 // ── Build tree layout ─────────────────────────────────────────
@@ -117,195 +83,209 @@ function buildTreeLayout(
   const executive = employees.find((e) => e.rank === "executive")
   const empMap = new Map(employees.map((e) => [e.name, e]))
 
-  // ── With tree data: group-based layout ──
+  // ── With tree data: separated manager/group layout ──
   if (orgTree?.tree) {
     const depts = gatherDepts(orgTree.tree)
     const deptByPath = new Map(depts.map((d) => [d.path, d]))
 
-    // Dagre layout with department groups as compound nodes + executive
+    // Dagre graph: managers as individual nodes, member-groups as separate nodes
+    // Edges: executive → managers, manager → child-managers, manager → own member-group
     const g = new dagre.graphlib.Graph().setDefaultEdgeLabel(() => ({}))
-    g.setGraph({ rankdir: "TB", nodesep: 60, ranksep: 120, marginx: 60, marginy: 60 })
+    g.setGraph({ rankdir: "TB", nodesep: 50, ranksep: 90, marginx: 50, marginy: 50 })
 
-    // Executive node
+    // Executive
     if (executive) {
-      g.setNode(executive.name, { width: NODE_W + 40, height: NODE_H })
+      g.setNode(executive.name, { width: NODE_W, height: NODE_H })
     }
 
-    // One Dagre node per department group (sized to fit its members)
     for (const dept of depts) {
-      const size = groupSize(dept.memberNames.length)
-      g.setNode(`grp:${dept.path}`, { width: size.w, height: size.h })
+      // Manager as standalone node
+      if (dept.managerName) {
+        g.setNode(dept.managerName, { width: NODE_W, height: NODE_H })
+      }
+      // Member group (only if has members)
+      if (dept.memberNames.length > 0) {
+        const sz = memberGroupSize(dept.memberNames.length)
+        g.setNode(`grp:${dept.path}`, { width: sz.w, height: sz.h })
+      }
     }
 
-    // Edges: executive → top-level group managers, parent group → child group
+    // Edges for Dagre ranking
     for (const dept of depts) {
+      if (!dept.managerName) continue
+
+      // Executive → top-level managers
+      if (!dept.parentPath && executive) {
+        g.setEdge(executive.name, dept.managerName)
+      }
+      // Parent manager → child manager
       if (dept.parentPath) {
-        g.setEdge(`grp:${dept.parentPath}`, `grp:${dept.path}`)
-      } else if (executive) {
-        g.setEdge(executive.name, `grp:${dept.path}`)
+        const parentDept = deptByPath.get(dept.parentPath)
+        if (parentDept?.managerName) {
+          g.setEdge(parentDept.managerName, dept.managerName)
+        }
+      }
+      // Manager → own member group (keeps group directly below manager)
+      if (dept.memberNames.length > 0) {
+        g.setEdge(dept.managerName, `grp:${dept.path}`)
       }
     }
 
     dagre.layout(g)
 
-    // Read group positions from Dagre
-    const groupPositions = new Map<string, { x: number; y: number; w: number; h: number }>()
-    for (const dept of depts) {
-      const dagreNode = g.node(`grp:${dept.path}`)
-      if (!dagreNode) continue
-      const size = groupSize(dept.memberNames.length)
-      groupPositions.set(dept.path, {
-        x: dagreNode.x - size.w / 2,
-        y: dagreNode.y - size.h / 2,
-        w: size.w,
-        h: size.h,
-      })
-    }
-
     const nodes: Node[] = []
     const edges: Edge[] = []
 
-    // Executive node (absolute position)
+    // ── Place executive ──
     if (executive) {
-      const exPos = g.node(executive.name)
-      if (exPos) {
+      const p = g.node(executive.name)
+      if (p) {
         nodes.push({
           id: executive.name,
           type: "employeeNode",
           data: executive as unknown as Record<string, unknown>,
-          position: { x: exPos.x - NODE_W / 2, y: exPos.y - NODE_H / 2 },
+          position: { x: p.x - NODE_W / 2, y: p.y - NODE_H / 2 },
           selected: executive.name === selectedName,
-          zIndex: 1,
+          zIndex: 2,
         })
       }
     }
 
-    // Department group nodes + employee children
+    // ── Place managers (standalone) and member groups ──
     for (const dept of depts) {
-      const gPos = groupPositions.get(dept.path)
-      if (!gPos) continue
-
-      const groupId = `grp:${dept.path}`
-
-      // Group background node
-      nodes.push({
-        id: groupId,
-        type: "departmentGroup",
-        data: { label: dept.displayName },
-        position: { x: gPos.x, y: gPos.y },
-        style: {
-          width: gPos.w,
-          height: gPos.h,
-          background: "var(--fill-quaternary)",
-          borderRadius: 12,
-          border: "1px solid var(--separator)",
-          padding: 0,
-        },
-        selectable: false,
-        draggable: false,
-        zIndex: -1,
-      })
-
-      // Manager node (centered at top inside group, relative position)
+      // Manager node (standalone, not inside any group)
       if (dept.managerName && empMap.has(dept.managerName)) {
         const mgr = empMap.get(dept.managerName)!
-        nodes.push({
-          id: mgr.name,
-          type: "employeeNode",
-          data: mgr as unknown as Record<string, unknown>,
-          position: {
-            x: (gPos.w - NODE_W) / 2,
-            y: GROUP_PAD_TOP,
-          },
-          parentId: groupId,
-          extent: "parent" as const,
-          selected: mgr.name === selectedName,
-          zIndex: 1,
-          draggable: false,
-        })
+        const p = g.node(dept.managerName)
+        if (p) {
+          nodes.push({
+            id: mgr.name,
+            type: "employeeNode",
+            data: mgr as unknown as Record<string, unknown>,
+            position: { x: p.x - NODE_W / 2, y: p.y - NODE_H / 2 },
+            selected: mgr.name === selectedName,
+            zIndex: 2,
+            draggable: false,
+          })
+        }
       }
 
-      // Member nodes (grid below manager, relative positions)
-      const cols = Math.min(dept.memberNames.length, COLS)
-      const gridW = cols * NODE_W + (cols - 1) * INNER_GAP
-      const gridStartX = (gPos.w - gridW) / 2
-      const gridStartY = GROUP_PAD_TOP + NODE_H + INNER_GAP
+      // Member group box + member nodes inside
+      if (dept.memberNames.length > 0) {
+        const gNode = g.node(`grp:${dept.path}`)
+        if (!gNode) continue
 
-      dept.memberNames.forEach((name, i) => {
-        const emp = empMap.get(name)
-        if (!emp) return
-        const col = i % COLS
-        const row = Math.floor(i / COLS)
+        const sz = memberGroupSize(dept.memberNames.length)
+        const groupId = `grp:${dept.path}`
+        const gx = gNode.x - sz.w / 2
+        const gy = gNode.y - sz.h / 2
+
+        // Group background
         nodes.push({
-          id: emp.name,
-          type: "employeeNode",
-          data: emp as unknown as Record<string, unknown>,
-          position: {
-            x: gridStartX + col * (NODE_W + INNER_GAP),
-            y: gridStartY + row * (NODE_H + INNER_GAP),
+          id: groupId,
+          type: "departmentGroup",
+          data: { label: dept.displayName },
+          position: { x: gx, y: gy },
+          style: {
+            width: sz.w,
+            height: sz.h,
+            background: "var(--fill-quaternary)",
+            borderRadius: 12,
+            border: "1px solid var(--separator)",
+            padding: 0,
           },
-          parentId: groupId,
-          extent: "parent" as const,
-          selected: emp.name === selectedName,
-          zIndex: 1,
+          selectable: false,
           draggable: false,
+          zIndex: 0,
         })
-      })
-    }
 
-    // Edges: executive → top-level group, parent group → child group
-    for (const dept of depts) {
-      if (!dept.parentPath && executive) {
-        // Executive → top-level department group
-        const isHighlighted = selectedName === executive.name || selectedName === dept.managerName
-        edges.push({
-          id: `chain-exec-${dept.path}`,
-          source: executive.name,
-          target: `grp:${dept.path}`,
-          type: "smoothstep",
-          style: {
-            stroke: isHighlighted ? "var(--accent)" : "var(--text-quaternary)",
-            strokeWidth: isHighlighted ? 2.5 : 1.8,
-            opacity: isHighlighted ? 1 : 0.5,
-          },
-          animated: isHighlighted,
-        })
-      } else if (dept.parentPath) {
-        // Parent group → child group
-        const parentDept = deptByPath.get(dept.parentPath)
-        const isHighlighted = selectedName === parentDept?.managerName || selectedName === dept.managerName
-        edges.push({
-          id: `chain-${dept.parentPath}-${dept.path}`,
-          source: `grp:${dept.parentPath}`,
-          target: `grp:${dept.path}`,
-          type: "smoothstep",
-          style: {
-            stroke: isHighlighted ? "var(--accent)" : "var(--text-quaternary)",
-            strokeWidth: isHighlighted ? 2.5 : 1.8,
-            opacity: isHighlighted ? 1 : 0.5,
-          },
-          animated: isHighlighted,
+        // Members inside group (relative positions)
+        const cols = Math.min(dept.memberNames.length, COLS)
+        const gridW = cols * NODE_W + (cols - 1) * INNER_GAP
+        const gridStartX = (sz.w - gridW) / 2
+        const gridStartY = GROUP_LABEL_H
+
+        dept.memberNames.forEach((name, i) => {
+          const emp = empMap.get(name)
+          if (!emp) return
+          const col = i % COLS
+          const row = Math.floor(i / COLS)
+          nodes.push({
+            id: emp.name,
+            type: "employeeNode",
+            data: emp as unknown as Record<string, unknown>,
+            position: {
+              x: gridStartX + col * (NODE_W + INNER_GAP),
+              y: gridStartY + row * (NODE_H + INNER_GAP),
+            },
+            parentId: groupId,
+            extent: "parent" as const,
+            selected: emp.name === selectedName,
+            zIndex: 1,
+            draggable: false,
+          })
         })
       }
     }
 
-    // Internal edges: manager → members within each group
+    // ── Chain of command edges (manager → manager) ──
+    // These route in open space between levels — no group crossing
+
     for (const dept of depts) {
       if (!dept.managerName) continue
+
+      if (!dept.parentPath && executive) {
+        const hl = selectedName === executive.name || selectedName === dept.managerName
+        edges.push({
+          id: `chain-exec-${dept.managerName}`,
+          source: executive.name,
+          target: dept.managerName,
+          type: "smoothstep",
+          style: {
+            stroke: hl ? "var(--accent)" : "var(--text-secondary)",
+            strokeWidth: hl ? 3 : 2,
+            opacity: hl ? 1 : 0.55,
+          },
+          animated: hl,
+        })
+      } else if (dept.parentPath) {
+        const parentDept = deptByPath.get(dept.parentPath)
+        if (parentDept?.managerName) {
+          const hl = selectedName === parentDept.managerName || selectedName === dept.managerName
+          edges.push({
+            id: `chain-${parentDept.managerName}-${dept.managerName}`,
+            source: parentDept.managerName,
+            target: dept.managerName,
+            type: "smoothstep",
+            style: {
+              stroke: hl ? "var(--accent)" : "var(--text-secondary)",
+              strokeWidth: hl ? 3 : 2,
+              opacity: hl ? 1 : 0.55,
+            },
+            animated: hl,
+          })
+        }
+      }
+    }
+
+    // ── Manager → member group edges (subtle connector) ──
+
+    for (const dept of depts) {
+      if (!dept.managerName || dept.memberNames.length === 0) continue
       for (const memberName of dept.memberNames) {
         if (!empMap.has(memberName)) continue
-        const isHighlighted = selectedName === dept.managerName || selectedName === memberName
+        const hl = selectedName === dept.managerName || selectedName === memberName
         edges.push({
-          id: `mgr-${dept.managerName}-${memberName}`,
+          id: `team-${dept.managerName}-${memberName}`,
           source: dept.managerName,
           target: memberName,
           type: "smoothstep",
           style: {
-            stroke: isHighlighted ? "var(--accent)" : "var(--text-quaternary)",
-            strokeWidth: isHighlighted ? 2 : 1,
-            opacity: isHighlighted ? 1 : 0.3,
+            stroke: hl ? "var(--accent)" : "var(--text-quaternary)",
+            strokeWidth: hl ? 2 : 1,
+            opacity: hl ? 1 : 0.2,
           },
-          animated: isHighlighted,
+          animated: hl,
         })
       }
     }
@@ -319,25 +299,19 @@ function buildTreeLayout(
 
   const g = new dagre.graphlib.Graph().setDefaultEdgeLabel(() => ({}))
   g.setGraph({ rankdir: "TB", nodesep: 50, ranksep: 100, marginx: 40, marginy: 40 })
-
-  for (const id of allIds) {
-    g.setNode(id, { width: NODE_W, height: NODE_H })
-  }
-  for (const [src, tgt] of hierEdges) {
-    if (empMap.has(src) && empMap.has(tgt)) g.setEdge(src, tgt)
-  }
+  for (const id of allIds) g.setNode(id, { width: NODE_W, height: NODE_H })
+  for (const [s, t] of hierEdges) if (empMap.has(s) && empMap.has(t)) g.setEdge(s, t)
   dagre.layout(g)
 
   const nodes: Node[] = allIds
     .map((id) => {
       const emp = empMap.get(id)
-      const pos = g.node(id)
-      if (!emp || !pos) return null
+      const p = g.node(id)
+      if (!emp || !p) return null
       return {
-        id: emp.name,
-        type: "employeeNode",
+        id: emp.name, type: "employeeNode",
         data: emp as unknown as Record<string, unknown>,
-        position: { x: pos.x - NODE_W / 2, y: pos.y - NODE_H / 2 },
+        position: { x: p.x - NODE_W / 2, y: p.y - NODE_H / 2 },
         selected: emp.name === selectedName,
       } as Node
     })
@@ -346,21 +320,15 @@ function buildTreeLayout(
   const nodeIdSet = new Set(nodes.map((n) => n.id))
   const edges: Edge[] = hierEdges
     .filter(([s, t]) => nodeIdSet.has(s) && nodeIdSet.has(t))
-    .map(([src, tgt]) => {
-      const hl = selectedName === src || selectedName === tgt
-      return {
-        id: `hier-${src}-${tgt}`,
-        source: src,
-        target: tgt,
-        type: "smoothstep",
-        style: {
-          stroke: hl ? "var(--accent)" : "var(--text-quaternary)",
-          strokeWidth: hl ? 2.5 : 1.5,
-          opacity: hl ? 1 : 0.5,
-        },
-        animated: hl,
-      }
-    })
+    .map(([src, tgt]) => ({
+      id: `hier-${src}-${tgt}`, source: src, target: tgt, type: "smoothstep",
+      style: {
+        stroke: selectedName === src || selectedName === tgt ? "var(--accent)" : "var(--text-quaternary)",
+        strokeWidth: selectedName === src || selectedName === tgt ? 2.5 : 1.5,
+        opacity: selectedName === src || selectedName === tgt ? 1 : 0.5,
+      },
+      animated: selectedName === src || selectedName === tgt,
+    }))
 
   return { nodes, edges }
 }
