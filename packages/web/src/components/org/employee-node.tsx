@@ -47,10 +47,12 @@ export function EmployeeNode({ data, selected }: NodeProps) {
 export function DepartmentGroupNode({ data }: NodeProps) {
   const { label } = data as { label: string } & Record<string, unknown>
   return (
-    <div className="w-full h-full relative pointer-events-none">
-      <div className="absolute top-[14px] left-[16px] text-[11px] font-[600] tracking-[0.06em] uppercase text-[var(--text-tertiary)] select-none opacity-60">
+    <div className="w-full h-full relative">
+      <div className="absolute top-[14px] left-[16px] text-[11px] font-[600] tracking-[0.06em] uppercase text-[var(--text-tertiary)] select-none opacity-60 pointer-events-none">
         {label}
       </div>
+      <Handle type="target" position={Position.Top} style={{ opacity: 0, top: 0 }} />
+      <Handle type="source" position={Position.Bottom} style={{ opacity: 0, bottom: 0 }} />
     </div>
   )
 }

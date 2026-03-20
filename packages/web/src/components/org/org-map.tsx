@@ -59,15 +59,18 @@ function gatherDepts(tree: OrgTreeNode[], parent?: string, depth = 0): DeptInfo[
   return result
 }
 
-// ── Member-only group size (manager is outside) ──────────────
+// ── Full group size (manager + members inside) ──────────────
 
-function memberGroupSize(memberCount: number): { w: number; h: number } {
-  if (memberCount === 0) return { w: NODE_W + GROUP_PAD_X * 2, h: 0 }
-  const cols = Math.min(memberCount, COLS)
-  const rows = Math.ceil(memberCount / cols)
+const GROUP_MGR_TOP = 40 // space for label + manager
+
+function fullGroupSize(memberCount: number): { w: number; h: number } {
+  const cols = Math.min(Math.max(memberCount, 1), COLS)
+  const rows = memberCount > 0 ? Math.ceil(memberCount / cols) : 0
+  const membersH = rows > 0 ? rows * NODE_H + (rows - 1) * INNER_GAP : 0
+  const contentW = Math.max(NODE_W, cols * NODE_W + (cols - 1) * INNER_GAP)
   return {
-    w: cols * NODE_W + (cols - 1) * INNER_GAP + GROUP_PAD_X * 2,
-    h: rows * NODE_H + (rows - 1) * INNER_GAP + GROUP_LABEL_H + GROUP_PAD_BOTTOM,
+    w: contentW + GROUP_PAD_X * 2,
+    h: GROUP_MGR_TOP + NODE_H + (membersH > 0 ? INNER_GAP + membersH : 0) + GROUP_PAD_BOTTOM,
   }
 }
 
@@ -83,51 +86,34 @@ function buildTreeLayout(
   const executive = employees.find((e) => e.rank === "executive")
   const empMap = new Map(employees.map((e) => [e.name, e]))
 
-  // ── With tree data: separated manager/group layout ──
+  // ── With tree data: group-based layout, managers inside boxes ──
   if (orgTree?.tree) {
     const depts = gatherDepts(orgTree.tree)
     const deptByPath = new Map(depts.map((d) => [d.path, d]))
 
-    // Dagre graph: managers as individual nodes, member-groups as separate nodes
-    // Edges: executive → managers, manager → child-managers, manager → own member-group
+    // Dagre: executive as root → top-level groups → sub-groups
     const g = new dagre.graphlib.Graph().setDefaultEdgeLabel(() => ({}))
-    g.setGraph({ rankdir: "TB", nodesep: 50, ranksep: 90, marginx: 50, marginy: 50 })
+    g.setGraph({ rankdir: "TB", nodesep: 60, ranksep: 120, marginx: 60, marginy: 60 })
 
-    // Executive
+    // Executive is a real Dagre node at the root
     if (executive) {
-      g.setNode(executive.name, { width: NODE_W, height: NODE_H })
+      g.setNode(executive.name, { width: NODE_W + 40, height: NODE_H })
     }
 
+    // Group sizes precomputed
+    const groupSizes = new Map<string, { w: number; h: number }>()
     for (const dept of depts) {
-      // Manager as standalone node
-      if (dept.managerName) {
-        g.setNode(dept.managerName, { width: NODE_W, height: NODE_H })
-      }
-      // Member group (only if has members)
-      if (dept.memberNames.length > 0) {
-        const sz = memberGroupSize(dept.memberNames.length)
-        g.setNode(`grp:${dept.path}`, { width: sz.w, height: sz.h })
-      }
+      const sz = fullGroupSize(dept.memberNames.length)
+      groupSizes.set(dept.path, sz)
+      g.setNode(`grp:${dept.path}`, { width: sz.w, height: sz.h })
     }
 
-    // Edges for Dagre ranking
+    // Dagre edges: executive → top-level groups, parent group → child group
     for (const dept of depts) {
-      if (!dept.managerName) continue
-
-      // Executive → top-level managers
-      if (!dept.parentPath && executive) {
-        g.setEdge(executive.name, dept.managerName)
-      }
-      // Parent manager → child manager
       if (dept.parentPath) {
-        const parentDept = deptByPath.get(dept.parentPath)
-        if (parentDept?.managerName) {
-          g.setEdge(parentDept.managerName, dept.managerName)
-        }
-      }
-      // Manager → own member group (keeps group directly below manager)
-      if (dept.memberNames.length > 0) {
-        g.setEdge(dept.managerName, `grp:${dept.path}`)
+        g.setEdge(`grp:${dept.parentPath}`, `grp:${dept.path}`)
+      } else if (executive) {
+        g.setEdge(executive.name, `grp:${dept.path}`)
       }
     }
 
@@ -136,7 +122,7 @@ function buildTreeLayout(
     const nodes: Node[] = []
     const edges: Edge[] = []
 
-    // ── Place executive ──
+    // ── Executive — positioned by Dagre at the true root ──
     if (executive) {
       const p = g.node(executive.name)
       if (p) {
@@ -151,59 +137,58 @@ function buildTreeLayout(
       }
     }
 
-    // ── Place managers (standalone) and member groups ──
+    // ── Department groups (manager + members inside) ──
     for (const dept of depts) {
-      // Manager node (standalone, not inside any group)
-      if (dept.managerName && empMap.has(dept.managerName)) {
+      const dagreNode = g.node(`grp:${dept.path}`)
+      if (!dagreNode) continue
+
+      const sz = groupSizes.get(dept.path)!
+      const groupId = `grp:${dept.path}`
+      const gx = dagreNode.x - sz.w / 2
+      const gy = dagreNode.y - sz.h / 2
+
+      // Group background
+      nodes.push({
+        id: groupId,
+        type: "departmentGroup",
+        data: { label: dept.displayName },
+        position: { x: gx, y: gy },
+        style: {
+          width: sz.w,
+          height: sz.h,
+          background: "var(--fill-quaternary)",
+          borderRadius: 12,
+          border: "1px solid var(--separator)",
+          padding: 0,
+        },
+        selectable: false,
+        draggable: false,
+        zIndex: 0,
+      })
+
+      // Manager inside group (top, centered) — skip if executive (already placed as root)
+      const isExecManager = executive && dept.managerName === executive.name
+      if (dept.managerName && empMap.has(dept.managerName) && !isExecManager) {
         const mgr = empMap.get(dept.managerName)!
-        const p = g.node(dept.managerName)
-        if (p) {
-          nodes.push({
-            id: mgr.name,
-            type: "employeeNode",
-            data: mgr as unknown as Record<string, unknown>,
-            position: { x: p.x - NODE_W / 2, y: p.y - NODE_H / 2 },
-            selected: mgr.name === selectedName,
-            zIndex: 2,
-            draggable: false,
-          })
-        }
+        nodes.push({
+          id: mgr.name,
+          type: "employeeNode",
+          data: mgr as unknown as Record<string, unknown>,
+          position: { x: (sz.w - NODE_W) / 2, y: GROUP_MGR_TOP },
+          parentId: groupId,
+          extent: "parent" as const,
+          selected: mgr.name === selectedName,
+          zIndex: 1,
+          draggable: false,
+        })
       }
 
-      // Member group box + member nodes inside
+      // Members inside group (grid below manager, or at top if manager is executive)
       if (dept.memberNames.length > 0) {
-        const gNode = g.node(`grp:${dept.path}`)
-        if (!gNode) continue
-
-        const sz = memberGroupSize(dept.memberNames.length)
-        const groupId = `grp:${dept.path}`
-        const gx = gNode.x - sz.w / 2
-        const gy = gNode.y - sz.h / 2
-
-        // Group background
-        nodes.push({
-          id: groupId,
-          type: "departmentGroup",
-          data: { label: dept.displayName },
-          position: { x: gx, y: gy },
-          style: {
-            width: sz.w,
-            height: sz.h,
-            background: "var(--fill-quaternary)",
-            borderRadius: 12,
-            border: "1px solid var(--separator)",
-            padding: 0,
-          },
-          selectable: false,
-          draggable: false,
-          zIndex: 0,
-        })
-
-        // Members inside group (relative positions)
         const cols = Math.min(dept.memberNames.length, COLS)
         const gridW = cols * NODE_W + (cols - 1) * INNER_GAP
         const gridStartX = (sz.w - gridW) / 2
-        const gridStartY = GROUP_LABEL_H
+        const gridStartY = isExecManager ? GROUP_MGR_TOP : GROUP_MGR_TOP + NODE_H + INNER_GAP
 
         dept.memberNames.forEach((name, i) => {
           const emp = empMap.get(name)
@@ -228,65 +213,82 @@ function buildTreeLayout(
       }
     }
 
-    // ── Chain of command edges (manager → manager) ──
-    // These route in open space between levels — no group crossing
+    // ════════════════════════════════════════════════════════════
+    // EDGES — two distinct visual types
+    // ════════════════════════════════════════════════════════════
+
+    // Build a lookup: employee name → department path (for selection context)
+    const empToDept = new Map<string, string>()
+    for (const dept of depts) {
+      if (dept.managerName) empToDept.set(dept.managerName, dept.path)
+      for (const m of dept.memberNames) empToDept.set(m, dept.path)
+    }
+    const selectedDept = selectedName ? empToDept.get(selectedName) : null
+
+    // 1) CHAIN OF COMMAND (group → group, solid lines between boxes)
+    //    Routes cleanly between group boundaries, never through other groups
 
     for (const dept of depts) {
-      if (!dept.managerName) continue
-
       if (!dept.parentPath && executive) {
-        const hl = selectedName === executive.name || selectedName === dept.managerName
+        // Executive → top-level group
+        const groupId = `grp:${dept.path}`
+        const hl = selectedDept === dept.path || selectedName === executive.name
         edges.push({
-          id: `chain-exec-${dept.managerName}`,
+          id: `cmd-exec-${dept.path}`,
           source: executive.name,
-          target: dept.managerName,
+          target: groupId,
           type: "smoothstep",
+          zIndex: 10,
           style: {
             stroke: hl ? "var(--accent)" : "var(--text-secondary)",
-            strokeWidth: hl ? 3 : 2,
-            opacity: hl ? 1 : 0.55,
+            strokeWidth: hl ? 2.5 : 1.8,
+            opacity: hl ? 1 : 0.5,
           },
           animated: hl,
         })
       } else if (dept.parentPath) {
-        const parentDept = deptByPath.get(dept.parentPath)
-        if (parentDept?.managerName) {
-          const hl = selectedName === parentDept.managerName || selectedName === dept.managerName
-          edges.push({
-            id: `chain-${parentDept.managerName}-${dept.managerName}`,
-            source: parentDept.managerName,
-            target: dept.managerName,
-            type: "smoothstep",
-            style: {
-              stroke: hl ? "var(--accent)" : "var(--text-secondary)",
-              strokeWidth: hl ? 3 : 2,
-              opacity: hl ? 1 : 0.55,
-            },
-            animated: hl,
-          })
-        }
-      }
-    }
-
-    // ── Manager → member group edges (subtle connector) ──
-
-    for (const dept of depts) {
-      if (!dept.managerName || dept.memberNames.length === 0) continue
-      for (const memberName of dept.memberNames) {
-        if (!empMap.has(memberName)) continue
-        const hl = selectedName === dept.managerName || selectedName === memberName
+        // Parent group → child group
+        const parentGroupId = `grp:${dept.parentPath}`
+        const childGroupId = `grp:${dept.path}`
+        const hl = selectedDept === dept.path || selectedDept === dept.parentPath
         edges.push({
-          id: `team-${dept.managerName}-${memberName}`,
-          source: dept.managerName,
-          target: memberName,
+          id: `cmd-${dept.parentPath}-${dept.path}`,
+          source: parentGroupId,
+          target: childGroupId,
           type: "smoothstep",
+          zIndex: 10,
           style: {
-            stroke: hl ? "var(--accent)" : "var(--text-quaternary)",
-            strokeWidth: hl ? 2 : 1,
-            opacity: hl ? 1 : 0.2,
+            stroke: hl ? "var(--accent)" : "var(--text-secondary)",
+            strokeWidth: hl ? 2.5 : 1.8,
+            opacity: hl ? 1 : 0.5,
           },
           animated: hl,
         })
+      }
+    }
+
+    // 2) SERVICE LINKS (manager → members, only visible when group is selected)
+    //    Dashed, thin — appears on click to show internal structure
+
+    if (selectedDept) {
+      const selDept = deptByPath.get(selectedDept)
+      if (selDept?.managerName) {
+        for (const memberName of selDept.memberNames) {
+          if (!empMap.has(memberName)) continue
+          edges.push({
+            id: `svc-${selDept.managerName}-${memberName}`,
+            source: selDept.managerName,
+            target: memberName,
+            type: "smoothstep",
+            zIndex: 5,
+            style: {
+              stroke: "var(--accent)",
+              strokeWidth: 1.5,
+              strokeDasharray: "5 3",
+              opacity: 0.7,
+            },
+          })
+        }
       }
     }
 

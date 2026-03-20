@@ -607,10 +607,22 @@ export async function handleApiRequest(
       const prompt = body.prompt || body.message;
       if (!prompt) return badRequest(res, "prompt or message is required");
       const config = context.getConfig();
-      const engineName = body.engine || config.engines.default;
+      // Resolve employee engine/model if specified
+      let engineName = body.engine || config.engines.default;
+      let modelName = body.model || undefined;
+      if (body.employee) {
+        const { scanOrg } = await import("./org.js");
+        const emps = scanOrg();
+        const emp = emps.get(body.employee);
+        if (emp) {
+          engineName = body.engine || emp.engine || config.engines.default;
+          modelName = body.model || emp.model || undefined;
+        }
+      }
       const sessionKey = `web:${Date.now()}`;
       const session = createSession({
         engine: engineName,
+        model: modelName,
         source: "web",
         sourceRef: sessionKey,
         connector: "web",
