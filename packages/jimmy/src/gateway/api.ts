@@ -49,6 +49,7 @@ import { WhatsAppConnector } from "../connectors/whatsapp/index.js";
 import { handleFilesRequest, ensureFilesDir } from "./files.js";
 import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed, notifyDiscordChannel } from "../sessions/callbacks.js";
 import { loadInstances } from "../cli/instances.js";
+import { buildRoutePath, resolveManagerChain } from "./services.js";
 
 export interface ApiContext {
   config: JinnConfig;
@@ -914,6 +915,102 @@ export async function handleApiRequest(
         .map((emp) => ({ name: emp.name, displayName: emp.displayName, rank: emp.rank }));
 
       return json(res, { tree: roots, unassigned });
+    }
+
+    // GET /api/org/services — list all cross-department services
+    if (method === "GET" && pathname === "/api/org/services") {
+      const { scanOrgFull } = await import("./org.js");
+      const { departments, services } = scanOrgFull();
+      const result = Array.from(services).map(([svcName, deptPath]) => {
+        const dept = departments.get(deptPath);
+        return {
+          name: svcName,
+          department: {
+            path: deptPath,
+            displayName: dept?.displayName || deptPath,
+            manager: dept?.manager || null,
+          },
+        };
+      });
+      return json(res, { services: result });
+    }
+
+    // POST /api/org/cross-request — create a cross-service request
+    if (method === "POST" && pathname === "/api/org/cross-request") {
+      const parsed = await readJsonBody(req, res);
+      if (!parsed.ok) return;
+      const body = parsed.body as any;
+      const { fromEmployee, service, prompt, parentSessionId } = body;
+      if (!fromEmployee || !service || !prompt) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Missing required fields: fromEmployee, service, prompt" }));
+        return;
+      }
+
+      const { scanOrgFull } = await import("./org.js");
+      const { employees: empMap, departments, services } = scanOrgFull();
+
+      const requester = empMap.get(fromEmployee);
+      if (!requester) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: `Employee "${fromEmployee}" not found` }));
+        return;
+      }
+
+      const targetDeptPath = services.get(service);
+      if (!targetDeptPath) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          error: `Service "${service}" not found`,
+          available: Array.from(services.keys()),
+        }));
+        return;
+      }
+
+      const targetDept = departments.get(targetDeptPath);
+      if (!targetDept?.manager) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: `Target department "${targetDeptPath}" has no manager` }));
+        return;
+      }
+
+      // Build the route path and manager chain
+      const fromDept = requester.orgPath || "";
+      const routePath = buildRoutePath(fromDept, targetDeptPath, departments);
+      const managerChain = resolveManagerChain(routePath, departments, empMap);
+
+      // Create a session targeting the target department's manager
+      const crossBrief = `## Cross-service request
+
+**From**: ${requester.displayName} (${requester.department})
+**Service requested**: ${service}
+**Routing**: ${routePath.map(p => departments.get(p)?.displayName || p).join(" → ")}
+
+### Request
+${prompt}
+
+---
+Handle this request as a priority task from your chain of command. Assign it to the most appropriate team member and deliver the result.`;
+
+      const session = createSession({
+        prompt: crossBrief,
+        engine: "claude",
+        source: "cross-request",
+        sourceRef: `cross:${fromEmployee}:${service}`,
+        employee: targetDept.manager,
+        parentSessionId: parentSessionId || undefined,
+        title: `Cross-request: ${fromEmployee} → ${service}`,
+      });
+      const sessionId = session.id;
+
+      return json(res, {
+        sessionId,
+        route: routePath,
+        managers: managerChain.map(m => ({ name: m.name, displayName: m.displayName, department: m.department })),
+        targetDepartment: targetDeptPath,
+        targetManager: targetDept.manager,
+        service,
+      });
     }
 
     // GET /api/org/employees/:name

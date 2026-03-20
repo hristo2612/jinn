@@ -230,6 +230,8 @@ export interface Department {
   children: string[];
   /** Direct employee names in this department */
   employees: string[];
+  /** Services/capabilities this department provides to other departments */
+  provides?: string[];
 }
 
 /** Stdio-based MCP server (spawned as child process) */

@@ -8,6 +8,8 @@ import { logger } from "../shared/logger.js";
 export interface OrgScanResult {
   employees: Map<string, Employee>;
   departments: Map<string, Department>;
+  /** Service name → department path that provides it */
+  services: Map<string, string>;
 }
 
 /**
@@ -27,7 +29,7 @@ export function scanOrgFull(): OrgScanResult {
   const employees = new Map<string, Employee>();
   const departments = new Map<string, Department>();
 
-  if (!fs.existsSync(ORG_DIR)) return { employees, departments };
+  if (!fs.existsSync(ORG_DIR)) return { employees, departments, services: new Map() };
 
   // ── Pass 1: Scan all employee YAML files ──────────────────────
   function scanEmployees(dir: string) {
@@ -98,6 +100,7 @@ export function scanOrgFull(): OrgScanResult {
             parent,
             children: [],
             employees: [],
+            provides: Array.isArray(data?.provides) ? data.provides : undefined,
           };
           departments.set(relPath, dept);
         } catch (err) {
@@ -140,7 +143,18 @@ export function scanOrgFull(): OrgScanResult {
     }
   }
 
-  return { employees, departments };
+  // ── Pass 5: Build service registry ────────────────────────────
+  const services = new Map<string, string>();
+  for (const [deptPath, dept] of departments) {
+    for (const svc of dept.provides ?? []) {
+      if (services.has(svc)) {
+        logger.warn(`Service "${svc}" declared by both ${services.get(svc)} and ${deptPath}`);
+      }
+      services.set(svc, deptPath);
+    }
+  }
+
+  return { employees, departments, services };
 }
 
 export function findEmployee(

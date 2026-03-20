@@ -147,6 +147,19 @@ export function buildContext(opts: {
     });
   }
 
+  // ── STANDARD: Cross-department services ────────────────────
+  if (opts.employee) {
+    const svcCtx = buildServicesContext(opts.employee, gatewayUrl);
+    if (svcCtx) {
+      sections.push({
+        tier: Tier.STANDARD,
+        marker: "## Available cross-department services",
+        content: svcCtx,
+        summary: `## Cross-department services\nUse \`POST ${gatewayUrl}/api/org/cross-request\` to request services from other departments.`,
+      });
+    }
+  }
+
   // ── STANDARD: Language override for skills ──────────────────
   if (language !== "English") {
     sections.push({
@@ -679,6 +692,32 @@ When a department has 3+ employees, promote a senior to **manager**. Managers ha
 Your current session ID is in the "Current session" section above. Use it as \`parentSessionId\`.${effortOverrideNote}`;
 }
 
+function buildServicesContext(employee: Employee, gatewayUrl: string): string | null {
+  try {
+    const { departments, services } = scanOrgFull();
+    if (services.size === 0) return null;
+
+    const lines: string[] = ["## Available cross-department services"];
+    lines.push("Other departments provide the following services. To request one, ask your manager or use the cross-request API:");
+    lines.push(`\`POST ${gatewayUrl}/api/org/cross-request\` with \`{"fromEmployee": "${employee.name}", "service": "<name>", "prompt": "<what you need>"}\``);
+    lines.push("");
+
+    for (const [svcName, deptPath] of services) {
+      // Skip services from own department
+      if (deptPath === employee.orgPath) continue;
+      const dept = departments.get(deptPath);
+      lines.push(`- **${svcName}** — provided by ${dept?.displayName || deptPath} (manager: ${dept?.manager || "none"})`);
+    }
+
+    // If no external services, skip
+    if (lines.length <= 4) return null;
+
+    return lines.join("\n");
+  } catch {
+    return null;
+  }
+}
+
 function buildApiReference(gatewayUrl: string, portalName: string): string {
   return `## ${portalName} Gateway API (${gatewayUrl})
 
@@ -697,6 +736,8 @@ You can call these endpoints with curl to inspect and manage the gateway:
 | \`/api/cron/:id/runs\` | GET | Cron run history |
 | \`/api/org\` | GET | Organization structure |
 | \`/api/org/employees/:name\` | GET | Employee details |
+| \`/api/org/services\` | GET | List cross-department services |
+| \`/api/org/cross-request\` | POST | Create cross-service request (\`{fromEmployee, service, prompt}\`) |
 | \`/api/skills\` | GET | List skills |
 | \`/api/skills/:name\` | GET | Skill content |
 | \`/api/config\` | GET | Current config |
