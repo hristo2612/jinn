@@ -463,7 +463,7 @@ export default function SettingsPage() {
   useEffect(() => {
     api.getOrg().then((org: any) => {
       if (org?.employees) {
-        setEmployees(org.employees.map((e: any) => ({ name: e.name, displayName: e.displayName || e.name })))
+        setEmployees(org.employees.map((e: any) => typeof e === 'string' ? { name: e, displayName: e } : { name: e.name, displayName: e.displayName || e.name }))
       }
     }).catch(() => {})
   }, [])
@@ -1204,17 +1204,37 @@ export default function SettingsPage() {
                   <div className="text-[length:var(--text-caption1)] font-[var(--weight-semibold)] text-[var(--text-tertiary)]">
                     Connector Instances
                   </div>
-                  <button
-                    className="text-[length:var(--text-caption1)] font-[var(--weight-semibold)] text-[var(--accent)] hover:opacity-80 transition-opacity"
-                    onClick={() => {
-                      const instances = [...(config.connectors?.instances || [])]
-                      const id = `discord-${instances.length + 1}`
-                      instances.push({ id, type: "discord" })
-                      updateConfig(["connectors", "instances"], instances)
-                    }}
-                  >
-                    + Add Instance
-                  </button>
+                  <div className="flex items-center gap-[var(--space-2)]">
+                    <button
+                      className="text-[length:var(--text-caption1)] font-[var(--weight-semibold)] text-[var(--text-secondary)] hover:text-[var(--accent)] transition-colors flex items-center gap-1"
+                      onClick={async () => {
+                        try {
+                          const result = await api.reloadConnectors()
+                          const parts: string[] = []
+                          if (result.stopped.length) parts.push(`Stopped: ${result.stopped.join(", ")}`)
+                          if (result.started.length) parts.push(`Started: ${result.started.join(", ")}`)
+                          if (result.errors.length) parts.push(`Errors: ${result.errors.join(", ")}`)
+                          alert(parts.length ? parts.join("\n") : "No connector instances to reload")
+                        } catch {
+                          alert("Failed to reload connectors")
+                        }
+                      }}
+                    >
+                      <RotateCcw size={12} />
+                      Reload
+                    </button>
+                    <button
+                      className="text-[length:var(--text-caption1)] font-[var(--weight-semibold)] text-[var(--accent)] hover:opacity-80 transition-opacity"
+                      onClick={() => {
+                        const instances = [...(config.connectors?.instances || [])]
+                        const id = `discord-${instances.length + 1}`
+                        instances.push({ id, type: "discord" })
+                        updateConfig(["connectors", "instances"], instances)
+                      }}
+                    >
+                      + Add Instance
+                    </button>
+                  </div>
                 </div>
                 <div className="text-[length:var(--text-caption2)] text-[var(--text-tertiary)] mb-[var(--space-3)]">
                   Add multiple connector instances of the same type, each bound to a specific employee.
