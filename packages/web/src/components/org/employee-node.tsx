@@ -10,7 +10,7 @@ export function EmployeeNode({ data, selected }: NodeProps) {
 
   return (
     <div
-      className="bg-[var(--material-regular)] backdrop-blur-[20px] backdrop-saturate-[180%] [-webkit-backdrop-filter:blur(20px)_saturate(180%)] rounded-[var(--radius-md,12px)] py-[var(--space-3)] px-[var(--space-4)] w-[240px] cursor-pointer relative transition-shadow duration-150 ease-in-out"
+      className="bg-[var(--material-regular)] backdrop-blur-[20px] backdrop-saturate-[180%] [-webkit-backdrop-filter:blur(20px)_saturate(180%)] rounded-[var(--radius-md,12px)] py-[var(--space-3)] px-[var(--space-4)] w-[220px] cursor-pointer relative transition-shadow duration-150 ease-in-out"
       style={{
         border: `1px solid ${selected ? "var(--accent)" : "var(--separator)"}`,
         boxShadow: selected
@@ -47,10 +47,12 @@ export function EmployeeNode({ data, selected }: NodeProps) {
 export function DepartmentGroupNode({ data }: NodeProps) {
   const { label } = data as { label: string } & Record<string, unknown>
   return (
-    <div className="w-full h-full relative">
-      <div className="absolute top-[10px] left-0 right-0 text-center text-[length:var(--text-caption2)] font-[var(--weight-semibold)] tracking-[var(--tracking-wide)] uppercase text-[var(--text-tertiary)] select-none pointer-events-none">
+    <div className="w-full h-full relative pointer-events-none">
+      <div className="absolute top-[14px] left-[16px] text-[11px] font-[600] tracking-[0.06em] uppercase text-[var(--text-tertiary)] select-none opacity-60">
         {label}
       </div>
+      <Handle type="target" position={Position.Top} style={{ opacity: 0 }} />
+      <Handle type="source" position={Position.Bottom} style={{ opacity: 0 }} />
     </div>
   )
 }
