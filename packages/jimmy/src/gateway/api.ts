@@ -845,85 +845,123 @@ export async function handleApiRequest(
 
     // GET /api/org
     if (method === "GET" && pathname === "/api/org") {
-      if (!fs.existsSync(ORG_DIR)) return json(res, { departments: [], employees: [] });
-      const entries = fs.readdirSync(ORG_DIR, { withFileTypes: true });
-      const departments = entries
-        .filter((e) => e.isDirectory())
-        .map((e) => e.name);
-      const employees: string[] = [];
-      // Scan root-level YAML files
-      for (const e of entries) {
-        if (e.isFile() && (e.name.endsWith(".yaml") || e.name.endsWith(".yml"))) {
-          employees.push(e.name.replace(/\.ya?ml$/, ""));
-        }
-      }
-      // Scan employees/ subdirectory
-      const employeesDir = path.join(ORG_DIR, "employees");
-      if (fs.existsSync(employeesDir)) {
-        const empEntries = fs.readdirSync(employeesDir, { withFileTypes: true });
-        for (const e of empEntries) {
-          if (e.isFile() && (e.name.endsWith(".yaml") || e.name.endsWith(".yml"))) {
-            employees.push(e.name.replace(/\.ya?ml$/, ""));
-          }
-        }
-      }
-      // Scan inside each department directory for YAML files (excluding department.yaml)
-      for (const dept of departments) {
-        const deptDir = path.join(ORG_DIR, dept);
-        const deptEntries = fs.readdirSync(deptDir, { withFileTypes: true });
-        for (const e of deptEntries) {
-          if (e.isFile() && (e.name.endsWith(".yaml") || e.name.endsWith(".yml")) && e.name !== "department.yaml") {
-            employees.push(e.name.replace(/\.ya?ml$/, ""));
-          }
-        }
-      }
+      const { scanOrgFull } = await import("./org.js");
+      const { employees: empMap, departments: deptMap } = scanOrgFull();
+      const departments = Array.from(deptMap.keys()); // paths like "nexamon-studio/design"
+      const employees = Array.from(empMap.keys());
       return json(res, { departments, employees });
+    }
+
+    // GET /api/org/tree — nested org hierarchy
+    if (method === "GET" && pathname === "/api/org/tree") {
+      const { scanOrgFull } = await import("./org.js");
+      const { employees: empMap, departments: deptMap } = scanOrgFull();
+
+      interface DeptNode {
+        name: string;
+        displayName: string;
+        description?: string;
+        path: string;
+        manager?: { name: string; displayName: string; rank: string } | null;
+        employees: { name: string; displayName: string; rank: string }[];
+        children: DeptNode[];
+      }
+
+      function buildNode(deptPath: string): DeptNode | null {
+        const dept = deptMap.get(deptPath);
+        if (!dept) return null;
+
+        const managerEmp = dept.manager ? empMap.get(dept.manager) : undefined;
+        const node: DeptNode = {
+          name: dept.name,
+          displayName: dept.displayName,
+          description: dept.description,
+          path: dept.path,
+          manager: managerEmp
+            ? { name: managerEmp.name, displayName: managerEmp.displayName, rank: managerEmp.rank }
+            : dept.manager ? { name: dept.manager, displayName: dept.manager, rank: "unknown" } : null,
+          employees: dept.employees
+            .filter((eName) => eName !== dept.manager) // manager listed separately
+            .map((eName) => {
+              const emp = empMap.get(eName);
+              return emp
+                ? { name: emp.name, displayName: emp.displayName, rank: emp.rank }
+                : { name: eName, displayName: eName, rank: "unknown" };
+            }),
+          children: dept.children
+            .map((childPath) => buildNode(childPath))
+            .filter((n): n is DeptNode => n !== null),
+        };
+        return node;
+      }
+
+      // Root departments: those with no parent
+      const roots: DeptNode[] = [];
+      for (const [deptPath, dept] of deptMap) {
+        if (!dept.parent || !deptMap.has(dept.parent)) {
+          const node = buildNode(deptPath);
+          if (node) roots.push(node);
+        }
+      }
+
+      // Also include unassigned employees (orgPath undefined or not matching any dept)
+      const assignedEmployees = new Set<string>();
+      for (const dept of deptMap.values()) {
+        for (const eName of dept.employees) assignedEmployees.add(eName);
+      }
+      const unassigned = Array.from(empMap.values())
+        .filter((emp) => !assignedEmployees.has(emp.name))
+        .map((emp) => ({ name: emp.name, displayName: emp.displayName, rank: emp.rank }));
+
+      return json(res, { tree: roots, unassigned });
     }
 
     // GET /api/org/employees/:name
     params = matchRoute("/api/org/employees/:name", pathname);
     if (method === "GET" && params) {
-      const candidates = [
-        path.join(ORG_DIR, "employees", `${params.name}.yaml`),
-        path.join(ORG_DIR, "employees", `${params.name}.yml`),
-        path.join(ORG_DIR, `${params.name}.yaml`),
-        path.join(ORG_DIR, `${params.name}.yml`),
-      ];
-      // Also search inside each department directory
-      if (fs.existsSync(ORG_DIR)) {
-        const dirs = fs.readdirSync(ORG_DIR, { withFileTypes: true }).filter((e) => e.isDirectory());
-        for (const dir of dirs) {
-          candidates.push(path.join(ORG_DIR, dir.name, `${params.name}.yaml`));
-          candidates.push(path.join(ORG_DIR, dir.name, `${params.name}.yml`));
+      // Recursive search for employee YAML at any depth
+      const findEmployeeFile = (dir: string, name: string): string | null => {
+        if (!fs.existsSync(dir)) return null;
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          const fullPath = path.join(dir, entry.name);
+          if (entry.isFile() && (entry.name === `${name}.yaml` || entry.name === `${name}.yml`) && entry.name !== "department.yaml") {
+            return fullPath;
+          }
+          if (entry.isDirectory()) {
+            const found = findEmployeeFile(fullPath, name);
+            if (found) return found;
+          }
         }
-      }
-      const filePath = candidates.find((c) => fs.existsSync(c));
+        return null;
+      };
+      const filePath = findEmployeeFile(ORG_DIR, params.name);
       if (!filePath) return notFound(res);
       const content = yaml.load(fs.readFileSync(filePath, "utf-8"));
       return json(res, content);
     }
 
-    // GET /api/org/departments/:name/board
-    params = matchRoute("/api/org/departments/:name/board", pathname);
-    if (method === "GET" && params) {
-      const boardPath = path.join(ORG_DIR, params.name, "board.json");
+    // GET /api/org/departments/*/board — supports nested paths like nexamon-studio/design
+    if (method === "GET" && pathname.startsWith("/api/org/departments/") && pathname.endsWith("/board")) {
+      const deptPath = pathname.slice("/api/org/departments/".length, -"/board".length);
+      const boardPath = path.join(ORG_DIR, deptPath, "board.json");
       if (!fs.existsSync(boardPath)) return notFound(res);
       const board = JSON.parse(fs.readFileSync(boardPath, "utf-8"));
       return json(res, board);
     }
 
-    // PUT /api/org/departments/:name/board
-    if (method === "PUT" && matchRoute("/api/org/departments/:name/board", pathname)) {
-      const p = matchRoute("/api/org/departments/:name/board", pathname)!;
-      const boardPath = path.join(ORG_DIR, p.name, "board.json");
-      const deptDir = path.join(ORG_DIR, p.name);
+    // PUT /api/org/departments/*/board — supports nested paths
+    if (method === "PUT" && pathname.startsWith("/api/org/departments/") && pathname.endsWith("/board")) {
+      const deptPath = pathname.slice("/api/org/departments/".length, -"/board".length);
+      const deptDir = path.join(ORG_DIR, deptPath);
       if (!fs.existsSync(deptDir)) return notFound(res);
       const _parsed = await readJsonBody(req, res);
       if (!_parsed.ok) return;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const body = _parsed.body as any;
+      const boardPath = path.join(deptDir, "board.json");
       fs.writeFileSync(boardPath, JSON.stringify(body, null, 2));
-      context.emit("board:updated", { department: p.name });
+      context.emit("board:updated", { department: deptPath });
       return json(res, { status: "ok" });
     }
 

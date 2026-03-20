@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Employee, JinnConfig } from "../shared/types.js";
 import { JINN_HOME, ORG_DIR, CRON_JOBS, DOCS_DIR } from "../shared/paths.js";
+import { scanOrgFull } from "../gateway/org.js";
 
 /**
  * Token budget strategy:
@@ -234,7 +235,80 @@ You can:
 - Access skills, knowledge base, and documentation
 - Collaborate with other employees by mentioning them or creating sessions
 
-Be proactive, take initiative, and deliver results. You're not a chatbot — you're a worker.`;
+Be proactive, take initiative, and deliver results. You're not a chatbot — you're a worker.
+
+${buildChainOfCommand(employee)}`;
+}
+
+/**
+ * Build the chain of command section for an employee's system prompt.
+ */
+function buildChainOfCommand(employee: Employee): string {
+  try {
+    const { employees, departments } = scanOrgFull();
+    const orgPath = employee.orgPath;
+    if (!orgPath) return "";
+
+    const dept = departments.get(orgPath);
+    if (!dept) return "";
+
+    const lines: string[] = ["## Chain of command"];
+
+    // Find top-level division (walk up the parent chain)
+    let topDept = dept;
+    while (topDept.parent && departments.has(topDept.parent)) {
+      topDept = departments.get(topDept.parent)!;
+    }
+
+    if (topDept.path !== dept.path) {
+      const topManager = topDept.manager ? employees.get(topDept.manager) : undefined;
+      const topManagerStr = topManager ? `${topManager.displayName}` : topDept.manager || "unassigned";
+      lines.push(`- **Division**: ${topDept.displayName} (directed by ${topManagerStr})`);
+    }
+
+    lines.push(`- **Team**: ${dept.displayName}`);
+
+    // Your manager
+    if (employee.reportsTo) {
+      const manager = employees.get(employee.reportsTo);
+      if (manager) {
+        lines.push(`- **Your manager**: ${manager.displayName} (${manager.rank})`);
+      } else {
+        lines.push(`- **Your manager**: ${employee.reportsTo}`);
+      }
+    }
+
+    // Direct reports: employees whose reportsTo is this employee
+    const directReports: Employee[] = [];
+    for (const [, emp] of employees) {
+      if (emp.reportsTo === employee.name) {
+        directReports.push(emp);
+      }
+    }
+    if (directReports.length > 0) {
+      const reportsList = directReports.map((r) => `${r.displayName} (${r.rank})`).join(", ");
+      lines.push(`- **Your direct reports**: ${reportsList}`);
+    }
+
+    // Escalation path
+    const escalation: string[] = [];
+    let current = employee.reportsTo;
+    const visited = new Set<string>();
+    while (current && !visited.has(current)) {
+      visited.add(current);
+      const mgr = employees.get(current);
+      escalation.push(mgr ? mgr.displayName : current);
+      current = mgr?.reportsTo;
+    }
+    escalation.push("Noxis (COO)");
+    // Deduplicate in case Noxis is already in the chain
+    const uniqueEscalation = [...new Set(escalation)];
+    lines.push(`- **Escalation path**: ${uniqueEscalation.join(" -> ")}`);
+
+    return lines.join("\n");
+  } catch {
+    return "";
+  }
 }
 
 function buildIdentity(portalName: string, operatorName?: string, language?: string): string {

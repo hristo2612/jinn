@@ -59,7 +59,7 @@ export function FeedView({ employees, selectedName, onSelect }: FeedViewProps) {
   return (
     <div className="h-full overflow-y-auto p-[var(--space-6)]">
       <div className="mb-[var(--space-5)] flex gap-[var(--space-3)]">
-        {(["executive", "manager", "senior", "employee"] as const).map(
+        {(["executive", "director", "manager", "lead", "senior", "employee"] as const).map(
           (rank) => {
             const count = employees.filter((e) => e.rank === rank).length
             return (

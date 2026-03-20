@@ -2,7 +2,7 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import dynamic from "next/dynamic";
 import { api } from "@/lib/api";
-import type { Employee, OrgData } from "@/lib/api";
+import type { Employee, OrgData, OrgTreeData } from "@/lib/api";
 import { EmployeeDetail } from "@/components/org/employee-detail";
 import { GridView } from "@/components/org/grid-view";
 import { FeedView } from "@/components/org/feed-view";
@@ -27,6 +27,7 @@ const OrgMap = dynamic(
 export default function OrgPage() {
   useBreadcrumbs([{ label: 'Organization' }])
   const [employees, setEmployees] = useState<Employee[]>([]);
+  const [orgTree, setOrgTree] = useState<OrgTreeData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Employee | null>(null);
@@ -37,9 +38,11 @@ export default function OrgPage() {
   const loadData = useCallback(() => {
     setLoading(true);
     setError(null);
-    api
-      .getOrg()
-      .then(async (data: OrgData) => {
+    Promise.all([
+      api.getOrg(),
+      api.getOrgTree().catch(() => null),
+    ])
+      .then(async ([data, treeData]: [OrgData, OrgTreeData | null]) => {
         const details = await Promise.all(
           data.employees.map(async (name) => {
             try {
@@ -67,6 +70,7 @@ export default function OrgPage() {
           persona: "COO and AI gateway daemon",
         };
         setEmployees([coo, ...details]);
+        setOrgTree(treeData);
       })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
@@ -145,6 +149,7 @@ export default function OrgPage() {
                   employees={employees}
                   selectedName={selected?.name ?? null}
                   onNodeClick={handleSelectEmployee}
+                  orgTree={orgTree}
                 />
               )}
             </TabsContent>
