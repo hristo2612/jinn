@@ -616,6 +616,7 @@ export async function startGateway(
       try {
         currentConfig = loadConfig();
         apiContext.config = currentConfig;
+        sessionManager.updateConfig(currentConfig);
         logger.info("Config reloaded successfully");
         emit("config:reloaded", {});
       } catch (err) {

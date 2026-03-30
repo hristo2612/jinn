@@ -118,6 +118,10 @@ export class SessionManager {
     this.connectorNames = connectorNames;
   }
 
+  updateConfig(config: JinnConfig): void {
+    this.config = config;
+  }
+
   setConnectorProvider(provider: () => Map<string, Connector>): void {
     this.connectorProvider = provider;
   }
