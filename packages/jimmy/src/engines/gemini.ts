@@ -264,6 +264,13 @@ export class GeminiEngine implements InterruptibleEngine {
       return null;
     }
 
+    // Message output
+    if (msgType === "message" && msg.delta === true && msg.role === "assistant") {
+      const text = String(msg.content || "");
+      if (text) return { type: "text", delta: { type: "text", content: text } };
+      return null;
+    }
+
     // Tool use start
     if (msgType === "tool.start" || msgType === "tool_use" || msgType === "function_call") {
       const toolName = String(msg.name || msg.tool_name || msg.toolName || "unknown");
