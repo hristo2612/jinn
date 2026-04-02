@@ -40,6 +40,7 @@ interface Config {
     default?: string
     claude?: { bin?: string; model?: string; effortLevel?: string }
     codex?: { bin?: string; model?: string; effortLevel?: string }
+    gemini?: { bin?: string; model?: string }
   }
   sessions?: {
     maxDurationMinutes?: number
@@ -919,6 +920,7 @@ export default function SettingsPage() {
                     options={[
                       { value: "claude", label: "Claude" },
                       { value: "codex", label: "Codex" },
+                      { value: "gemini", label: "Gemini" },
                     ]}
                   />
                 </FieldRow>
@@ -1014,6 +1016,40 @@ export default function SettingsPage() {
                       { value: "medium", label: "Medium" },
                       { value: "high", label: "High" },
                       { value: "xhigh", label: "Extra High" },
+                    ]}
+                  />
+                </FieldRow>
+
+                <div
+                  className="border-t border-[var(--separator)] mt-[var(--space-3)] pt-[var(--space-3)]"
+                />
+
+                <div
+                  className="text-[length:var(--text-caption1)] font-[var(--weight-semibold)] text-[var(--text-tertiary)] mb-[var(--space-2)]"
+                >
+                  Gemini
+                </div>
+                <FieldRow label="Binary Path">
+                  <SettingsInput
+                    value={config.engines?.gemini?.bin ?? ""}
+                    onChange={(v) =>
+                      updateConfig(["engines", "gemini", "bin"], v)
+                    }
+                    placeholder="gemini"
+                  />
+                </FieldRow>
+                <FieldRow label="Model">
+                  <SettingsSelect
+                    value={config.engines?.gemini?.model ?? "gpt-5.4"}
+                    onChange={(v) =>
+                      updateConfig(["engines", "gemini", "model"], v)
+                    }
+                    options={[
+                      { value: "gemini-3.1-pro-preview", label: "3.1 Pro Preview" },
+                      { value: "gemini-3-flash-preview", label: "3 Flash Preview" },
+                      { value: "gemini-2.5-pro", label: "2.5 Pro" },
+                      { value: "gemini-2.5-flash", label: "2.5 Flash" },
+                      { value: "gemini-2.5-flash-lite", label: "2.5 Flash Lite" },
                     ]}
                   />
                 </FieldRow>
