@@ -115,6 +115,13 @@ export class SlackConnector implements Connector {
         return;
       }
 
+      // In channels, only process thread replies (continuing a conversation).
+      // Root channel messages are handled by app_mention instead.
+      if ((event as any).channel_type !== "im" && !(event as any).thread_ts) {
+        logger.debug(`[slack] Skipping root channel message (use @mention instead)`);
+        return;
+      }
+
       const sessionKey = deriveSessionKey(event as any);
       const replyContext = buildReplyContext(event as any);
 
@@ -184,6 +191,83 @@ export class SlackConnector implements Connector {
 
       this.handler(msg);
     });
+
+    // Handle @mentions in channels
+    this.app.event("app_mention", async ({ event }) => {
+      logger.info(`[slack] Received app_mention: user=${event.user} channel=${event.channel} text="${(event.text || "").slice(0, 50)}"`);
+
+      if (!this.handler) {
+        logger.info(`[slack] No handler registered, dropping mention`);
+        return;
+      }
+      if (this.ignoreOldMessagesOnBoot && isOldSlackMessage(event.ts, this.bootTimeMs)) {
+        logger.debug(`Ignoring old Slack mention ${event.ts}`);
+        return;
+      }
+      if (this.allowedUsers && !this.allowedUsers.has(event.user)) {
+        logger.debug(`Ignoring Slack mention from unauthorized user ${event.user}`);
+        return;
+      }
+
+      // Strip the @mention from the text
+      const mentionText = (event.text || "").replace(/<@[A-Z0-9]+>/g, "").trim();
+      if (!mentionText) {
+        logger.debug(`[slack] Empty mention text after stripping @, ignoring`);
+        return;
+      }
+
+      const sessionKey = deriveSessionKey(event as any);
+      const replyContext = buildReplyContext(event as any);
+      const channelName = await this.resolveChannelName(event.channel);
+
+      // Download attachments if present
+      const attachments = [];
+      if ((event as any).files) {
+        for (const file of (event as any).files) {
+          try {
+            const localPath = await downloadAttachment(
+              file.url_private,
+              this.app.client.token!,
+              TMP_DIR,
+            );
+            attachments.push({
+              name: file.name,
+              url: file.url_private,
+              mimeType: file.mimetype,
+              localPath,
+            });
+          } catch (err) {
+            logger.warn(`Failed to download attachment: ${err}`);
+          }
+        }
+      }
+
+      const msg: IncomingMessage = {
+        connector: this.name,
+        source: "slack",
+        sessionKey,
+        replyContext,
+        messageId: event.ts,
+        channel: event.channel,
+        thread: (event as any).thread_ts,
+        user: event.user,
+        userId: event.user,
+        text: mentionText,
+        attachments,
+        raw: event,
+        transportMeta: {
+          channelType: (event as any).channel_type || "channel",
+          team: (event as any).team || null,
+          channelName: channelName || null,
+        },
+      };
+
+      this.handler(msg);
+    });
+
+    // In channels, only process thread replies (continuing a conversation).
+    // Root channel messages are handled by app_mention instead.
+    // This is added as a post-filter in the existing app.message() handler above.
 
     // Fetch bot's own user ID for filtering self-reactions
     try {
