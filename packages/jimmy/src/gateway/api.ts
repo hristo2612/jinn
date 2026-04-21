@@ -2444,6 +2444,31 @@ async function runWebSession(
       notifyParentSession(completedSession, { result: result.result, error: result.error ?? null, cost: result.cost, durationMs: result.durationMs }, { alwaysNotify: employee?.alwaysNotify });
     }
 
+    // Deliver the assistant response back to the originating connector (e.g. Slack thread)
+    // for sessions that did not originate from the web UI. Without this, runs triggered via
+    // the internal message endpoint (notification callbacks, cron follow-ups, etc.) persist
+    // only to the DB and never reach the user's chat client.
+    if (
+      result.result &&
+      !result.error &&
+      currentSession.source &&
+      currentSession.source !== "web" &&
+      currentSession.connector &&
+      currentSession.replyContext
+    ) {
+      const connector = context.connectors.get(currentSession.connector);
+      if (connector) {
+        try {
+          const target = connector.reconstructTarget(currentSession.replyContext);
+          await connector.replyMessage(target, result.result);
+        } catch (err) {
+          logger.warn(
+            `Failed to deliver web-dispatched response for session ${currentSession.id} via connector "${currentSession.connector}": ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+    }
+
     context.emit("session:completed", {
       sessionId: currentSession.id,
       employee: currentSession.employee || config.portal?.portalName || "Jinn",
