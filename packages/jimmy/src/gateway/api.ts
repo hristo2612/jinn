@@ -647,6 +647,16 @@ export async function handleApiRequest(
       const config = context.getConfig();
       const engineName = body.engine || config.engines.default;
       const sessionKey = `web:${Date.now()}`;
+      let resolvedModel: string | undefined = body.model;
+      if (!resolvedModel && body.employee) {
+        try {
+          const { scanOrg, findEmployee } = await import("./org.js");
+          const emp = findEmployee(body.employee, scanOrg());
+          if (emp?.model) resolvedModel = emp.model;
+        } catch {
+          /* fall through to engine default */
+        }
+      }
       const session = createSession({
         engine: engineName,
         source: "web",
@@ -655,14 +665,12 @@ export async function handleApiRequest(
         sessionKey,
         replyContext: { source: "web" },
         employee: body.employee,
-        // Honor body.model so API clients can pin per-employee models.
-        // See POST /api/sessions handler below for the full rationale. Fixes #38.
-        model: body.model,
+        model: resolvedModel,
         title: body.title,
         portalName: config.portal?.portalName,
       });
       insertMessage(session.id, "assistant", greeting);
-      logger.info(`Stub session created: ${session.id} (model=${body.model || "default"})`);
+      logger.info(`Stub session created: ${session.id} (model=${resolvedModel || "default"})`);
       return json(res, serializeSession(session, context), 201);
     }
 
@@ -677,6 +685,20 @@ export async function handleApiRequest(
       const config = context.getConfig();
       const engineName = body.engine || config.engines.default;
       const sessionKey = `web:${Date.now()}`;
+      // Resolve model: explicit body.model wins, otherwise fall back to the
+      // employee's configured model from org/<employee>.yaml. Without this,
+      // runWebSession defaults to config.engines.<engine>.model and ignores
+      // per-employee routing (e.g. sonnet-tagged employees still run opus).
+      let resolvedModel: string | undefined = body.model;
+      if (!resolvedModel && body.employee) {
+        try {
+          const { scanOrg, findEmployee } = await import("./org.js");
+          const emp = findEmployee(body.employee, scanOrg());
+          if (emp?.model) resolvedModel = emp.model;
+        } catch {
+          /* fall through to engine default */
+        }
+      }
       const session = createSession({
         engine: engineName,
         source: "web",
@@ -687,16 +709,11 @@ export async function handleApiRequest(
         employee: body.employee,
         parentSessionId: body.parentSessionId,
         effortLevel: body.effortLevel,
-        // Honor body.model so API clients can pin per-employee models
-        // (e.g. MCP servers that look up org/<employee>.yaml and pass the
-        // employee's configured model). Without this, runWebSession falls
-        // back to config.engines.claude.model, breaking per-employee routing.
-        // Fixes #38.
-        model: body.model,
+        model: resolvedModel,
         prompt,
         portalName: config.portal?.portalName,
       });
-      logger.info(`Web session created: ${session.id} (model=${body.model || "default"})`);
+      logger.info(`Web session created: ${session.id} (model=${resolvedModel || "default"})`);
       insertMessage(session.id, "user", prompt);
 
       // Run engine asynchronously — respond immediately, push result via WebSocket
