@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import {
-  Home, MessageSquare, Users, LayoutGrid, Clock,
+  MessageSquare, Users, LayoutGrid, Clock,
   Activity, Zap, Settings, Plus, Hash,
 } from "lucide-react"
 import {
@@ -47,8 +47,7 @@ function saveRecent(item: RecentItem) {
 }
 
 const STATIC_PAGES = [
-  { id: "page-home", label: "Dashboard", icon: Home, href: "/" },
-  { id: "page-chat", label: "Chat", icon: MessageSquare, href: "/chat" },
+  { id: "page-chat", label: "Chat", icon: MessageSquare, href: "/" },
   { id: "page-org", label: "Organization", icon: Users, href: "/org" },
   { id: "page-kanban", label: "Kanban", icon: LayoutGrid, href: "/kanban" },
   { id: "page-cron", label: "Cron", icon: Clock, href: "/cron" },
@@ -141,7 +140,7 @@ export function GlobalSearch() {
 
               {/* Actions */}
               <CommandGroup heading="Actions">
-                <CommandItem onSelect={() => { setOpen(false); goTo('/chat') }}>
+                <CommandItem onSelect={() => { setOpen(false); goTo('/') }}>
                   <Plus size={16} className="mr-2 opacity-50" />
                   New Chat
                 </CommandItem>
@@ -171,7 +170,7 @@ export function GlobalSearch() {
                     return (
                       <CommandItem
                         key={id}
-                        onSelect={() => navigate('/chat', { id: `session-${id}`, label: title, href: '/chat', type: 'session' })}
+                        onSelect={() => navigate('/', { id: `session-${id}`, label: title, href: '/', type: 'session' })}
                       >
                         <MessageSquare size={16} className="mr-2 opacity-50" />
                         {title}

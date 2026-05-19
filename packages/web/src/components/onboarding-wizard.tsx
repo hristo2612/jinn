@@ -133,7 +133,7 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
       }
       setVisible(false)
       onClose?.()
-      navigate("/chat")
+      navigate("/")
     }
   }, [
     step,

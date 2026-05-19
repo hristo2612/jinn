@@ -1,8 +1,7 @@
 import { lazy, Suspense } from 'react'
 import { createRoot } from 'react-dom/client'
-import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { ClientProviders } from './routes/client-providers'
-import DashboardPage from './routes/page'
 import './routes/globals.css'
 
 const ChatPage = lazy(() => import('./routes/chat/page'))
@@ -19,8 +18,8 @@ function App() {
       <ClientProviders>
         <Suspense fallback={null}>
           <Routes>
-            <Route path="/" element={<DashboardPage />} />
-            <Route path="/chat" element={<ChatPage />} />
+            <Route path="/" element={<ChatPage />} />
+            <Route path="/chat" element={<Navigate to="/" replace />} />
             <Route path="/cron" element={<CronPage />} />
             <Route path="/kanban" element={<KanbanPage />} />
             <Route path="/logs" element={<LogsPage />} />
