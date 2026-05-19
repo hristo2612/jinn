@@ -10,6 +10,11 @@ import type { SessionManager } from "../sessions/manager.js";
 import { buildContext } from "../sessions/context.js";
 import {
   listSessions,
+  listRecentPerGroup,
+  listSessionsForGroup,
+  getSessionGroupCounts,
+  searchSessions,
+  listChildSessions,
   getSession,
   createSession,
   updateSession,
@@ -45,6 +50,7 @@ import { resolveEffort } from "../shared/effort.js";
 import { detectRateLimit } from "../shared/rateLimit.js";
 import { getClaudeExpectedResetAt } from "../shared/usageAwareness.js";
 import { handleRateLimit } from "../sessions/rate-limit-handler.js";
+import { pickEncoding, compressBuffer, MIN_COMPRESS_BYTES } from "./compress.js";
 import { loadJobs, saveJobs } from "../cron/jobs.js";
 import { reloadScheduler } from "../cron/scheduler.js";
 import { runCronJob } from "../cron/runner.js";
@@ -277,9 +283,26 @@ function resolveAttachmentPaths(fileIds: unknown): string[] {
   return paths;
 }
 
+/** Per-request Accept-Encoding, stashed by handleApiRequest so json() can compress. */
+type ResWithEncoding = ServerResponse & { __acceptEncoding?: string };
+
 function json(res: ServerResponse, data: unknown, status = 200): void {
+  const body = Buffer.from(JSON.stringify(data));
+  const enc =
+    body.length >= MIN_COMPRESS_BYTES
+      ? pickEncoding((res as ResWithEncoding).__acceptEncoding)
+      : null;
+  if (enc) {
+    res.writeHead(status, {
+      "Content-Type": "application/json",
+      "Content-Encoding": enc,
+      Vary: "Accept-Encoding",
+    });
+    res.end(compressBuffer(enc, body));
+    return;
+  }
   res.writeHead(status, { "Content-Type": "application/json" });
-  res.end(JSON.stringify(data));
+  res.end(body);
 }
 
 function notFound(res: ServerResponse): void {
@@ -394,6 +417,8 @@ export async function handleApiRequest(
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
   const pathname = url.pathname;
   const method = req.method || "GET";
+  // Stash so json() can compress large responses without threading req everywhere.
+  (res as ResWithEncoding).__acceptEncoding = req.headers["accept-encoding"];
 
   try {
     // GET /api/status
@@ -435,9 +460,34 @@ export async function handleApiRequest(
     }
 
     // GET /api/sessions
+    //   ?group=<employee|__direct__|__cron__>&offset=M&limit=N → one group's page (sidebar "load more")
+    //   ?limit=0                                              → every session (power-user escape hatch)
+    //   (default)                                             → top PER_GROUP recent per group + counts
     if (method === "GET" && pathname === "/api/sessions") {
-      const sessions = listSessions();
-      return json(res, sessions.map((session) => serializeSession(session, context)));
+      const query = url.searchParams.get("q");
+      if (query && query.trim()) {
+        const matches = searchSessions(query.trim());
+        return json(res, matches.map((session) => serializeSession(session, context)));
+      }
+      const group = url.searchParams.get("group");
+      const rawLimit = url.searchParams.get("limit");
+      if (group) {
+        const limit = Math.max(1, parseInt(rawLimit || "50", 10) || 50);
+        const offset = Math.max(0, parseInt(url.searchParams.get("offset") || "0", 10) || 0);
+        const page = listSessionsForGroup(group, limit, offset);
+        return json(res, page.map((session) => serializeSession(session, context)));
+      }
+      if (rawLimit === "0") {
+        const all = listSessions();
+        return json(res, all.map((session) => serializeSession(session, context)));
+      }
+      const PER_GROUP = 8;
+      const sessions = listRecentPerGroup(PER_GROUP);
+      return json(res, {
+        sessions: sessions.map((session) => serializeSession(session, context)),
+        counts: getSessionGroupCounts(),
+        perGroup: PER_GROUP,
+      });
     }
 
     // GET /api/sessions/interrupted — list sessions that can be resumed after a restart
@@ -683,7 +733,7 @@ export async function handleApiRequest(
     // GET /api/sessions/:id/children
     params = matchRoute("/api/sessions/:id/children", pathname);
     if (method === "GET" && params) {
-      const children = listSessions().filter((s) => s.parentSessionId === params!.id);
+      const children = listChildSessions(params.id);
       return json(res, children.map((child) => serializeSession(child, context)));
     }
 

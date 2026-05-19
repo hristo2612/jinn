@@ -21,6 +21,7 @@ import { writeGatewayInfo, readGatewayInfo, updateGatewayPtyPids } from "./gatew
 import { seedTrust, cleanupSessionSettings } from "../shared/claude-settings.js";
 import { GATEWAY_INFO_FILE, HOOK_RELAY_SCRIPT, JINN_HOME, CLAUDE_SETTINGS_DIR } from "../shared/paths.js";
 import { handleApiRequest, resumePendingWebQueueItems, type ApiContext } from "./api.js";
+import { pickEncoding, isCompressibleExt, compressStream } from "./compress.js";
 import { attachPtyWebSocket } from "./pty-ws.js";
 import { ensureFilesDir } from "./files.js";
 import { initStt } from "../stt/stt.js";
@@ -92,7 +93,16 @@ function serveStatic(
 
   const ext = path.extname(resolved);
   const contentType = MIME_TYPES[ext] || "application/octet-stream";
-  res.writeHead(200, { "Content-Type": contentType, "Cache-Control": cacheControl });
+  const enc = isCompressibleExt(ext) ? pickEncoding(req.headers["accept-encoding"]) : null;
+  const headers: Record<string, string> = { "Content-Type": contentType, "Cache-Control": cacheControl };
+  if (enc) {
+    headers["Content-Encoding"] = enc;
+    headers["Vary"] = "Accept-Encoding";
+    res.writeHead(200, headers);
+    fs.createReadStream(resolved).pipe(compressStream(enc)).pipe(res);
+    return true;
+  }
+  res.writeHead(200, headers);
   fs.createReadStream(resolved).pipe(res);
   return true;
 }
