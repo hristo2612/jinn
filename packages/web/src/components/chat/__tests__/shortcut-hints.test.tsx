@@ -12,6 +12,8 @@ function withQueryClient(ui: React.ReactNode) {
 // Mock all heavy dependencies so we can render ChatSidebar in isolation
 vi.mock('@/hooks/use-sessions', () => ({
   useSessions: () => ({ data: [], isLoading: false }),
+  useSessionCounts: () => ({ data: { counts: {}, perGroup: 8 } }),
+  useSessionSearch: () => ({ data: undefined }),
   useUpdateSession: () => ({ mutate: vi.fn() }),
   useDeleteSession: () => ({ mutateAsync: vi.fn() }),
   useBulkDeleteSessions: () => ({ mutateAsync: vi.fn() }),

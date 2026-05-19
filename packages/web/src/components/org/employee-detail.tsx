@@ -62,13 +62,8 @@ export function EmployeeDetail({ name, prefetched }: { name: string; prefetched?
       setEmployee(prefetched);
       setLoading(true);
       setError(null);
-      api.getSessions()
-        .then((allSessions) => {
-          const empSessions = (allSessions as SessionData[]).filter(
-            (s) => s.employee === name || (!s.employee && name === prefetched.name),
-          );
-          setSessions(empSessions.slice(0, 10));
-        })
+      api.getSessionsForGroup(name, 0, 10)
+        .then((empSessions) => setSessions(empSessions as SessionData[]))
         .catch(() => setSessions([]))
         .finally(() => setLoading(false));
       return;
@@ -77,13 +72,10 @@ export function EmployeeDetail({ name, prefetched }: { name: string; prefetched?
     setLoading(true);
     setError(null);
 
-    Promise.all([api.getEmployee(name), api.getSessions()])
-      .then(([emp, allSessions]) => {
+    Promise.all([api.getEmployee(name), api.getSessionsForGroup(name, 0, 10)])
+      .then(([emp, empSessions]) => {
         setEmployee(emp);
-        const empSessions = (allSessions as SessionData[]).filter(
-          (s) => s.employee === name,
-        );
-        setSessions(empSessions.slice(0, 10));
+        setSessions(empSessions as SessionData[]);
       })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));

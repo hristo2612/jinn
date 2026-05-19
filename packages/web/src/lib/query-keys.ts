@@ -1,6 +1,7 @@
 export const queryKeys = {
   sessions: {
     all: ['sessions'] as const,
+    search: (q: string) => ['sessions', 'search', q] as const,
     detail: (id: string) => ['sessions', id] as const,
     children: (id: string) => ['sessions', id, 'children'] as const,
     transcript: (id: string) => ['sessions', id, 'transcript'] as const,
