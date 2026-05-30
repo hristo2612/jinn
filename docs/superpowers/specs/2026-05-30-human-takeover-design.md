@@ -216,6 +216,27 @@ Hristo fixes it, clicks [Resume]
 **New (workspace):** `~/.jinn/skills/request-human-help/SKILL.md`.
 **New (ops):** kickstart enable script + pf anchor + LaunchDaemon (documented in skill/spec).
 
+## Known limitations (accepted for v1)
+
+- **Card targets the blocked session.** If a *child employee* session is the one
+  blocked, the assist card posts to that child session — which Hristo may not be
+  actively viewing. The Slack `#work-items` ping is the discovery fallback. This is
+  acceptable for v1: the primary case is the COO driving the browser, which posts to
+  the session Hristo is already watching. A future enhancement could *also* bubble the
+  card to the parent session (`parentSessionId`); **not built now.**
+- **Session-ID resolution (resolved, not a gap):** an agent finds its own session id in
+  the always-included "## Current session" context section (`Session ID: <uuid>`),
+  injected for COO and employees alike via `buildContext({ sessionId })`
+  (`manager.ts:255/263/352`). The skill reads it from context — no `/whoami` endpoint needed.
+
+## pf hardening note (FIX 1)
+
+The pf rule MUST be scoped `block in quick on !lo0 proto tcp from any to any port 5900`.
+A bare `from any to any port 5900` also matches `lo0` and would sever the gateway's own
+`127.0.0.1:5900` connection, breaking takeover. Tailscale arrives on `utun*`, so `!lo0`
+blocks the tailnet while leaving loopback open. Verified by V7: takeover still works
+(loopback) AND the other Mac is refused (tailnet).
+
 ## Out of scope (YAGNI)
 
 - App-layer auth across all gateway endpoints (separate cross-cutting change — flagged).

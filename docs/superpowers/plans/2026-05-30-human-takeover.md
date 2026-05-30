@@ -140,6 +140,14 @@ describe('AssistRegistry', () => {
     expect(torndown).toBe(r.id);
   });
 
+  it('onResolve returns an unsubscribe that removes the hook (no leak)', () => {
+    let calls = 0;
+    const off = reg.onResolve(() => { calls++; });
+    off();
+    reg.resolve(reg.create({ sessionId: 's1', reason: 'x' }).id);
+    expect(calls).toBe(0);
+  });
+
   it('does not double-resolve', () => {
     const r = reg.create({ sessionId: 's1', reason: 'x' });
     expect(reg.resolve(r.id)).toBe(true);
@@ -178,8 +186,13 @@ export class AssistRegistry {
   private records = new Map<string, AssistRecord>();
   private resolveHooks: Array<(r: AssistRecord) => void> = [];
 
-  onResolve(hook: (r: AssistRecord) => void): void {
+  /** Returns an unsubscribe fn — callers MUST call it to avoid hook accumulation. */
+  onResolve(hook: (r: AssistRecord) => void): () => void {
     this.resolveHooks.push(hook);
+    return () => {
+      const i = this.resolveHooks.indexOf(hook);
+      if (i >= 0) this.resolveHooks.splice(i, 1);
+    };
   }
 
   create(input: { sessionId: string; reason: string; url?: string }): AssistRecord {
@@ -475,10 +488,19 @@ description: Use when an agent is blocked by something only a human can clear �
 
 When you cannot proceed without a human (captcha / login / 2FA / native dialog):
 
+## 0. Find your own session ID
+
+Read it from your context: the **"## Current session"** section contains a line
+`- Session ID: <uuid>`. That uuid is `SID` below. Every session — COO and spawned
+employee child alike — has this line injected (it's an always-included, never-trimmed
+context section). If for some reason it's absent, fall back to the newest non-idle
+session: `curl -s http://0.0.0.0:7777/api/sessions | jq -r '.[0].id'` — but the
+context line is authoritative; prefer it.
+
 ## 1. Fire the request
 
 ```bash
-SID="<your session id>"   # the current session
+SID="<the Session ID from your Current session context section>"
 REASON="Cloudflare captcha on checkout page"
 URL="https://example.com/checkout"   # optional, the page that needs eyes
 RESP=$(curl -s -X POST "http://0.0.0.0:7777/api/sessions/$SID/assist/request" \
@@ -1016,8 +1038,10 @@ import { readFileSync } from 'node:fs';
           logger.warn(`VNC bridge failed: ${err instanceof Error ? err.message : err}`);
           try { ws.close(); } catch {}
         });
-        // Auto-close when this assist resolves.
-        assist.onResolve((r) => { if (r.id === reqId) { try { ws.close(); } catch {} } });
+        // Auto-close when THIS assist resolves. FIX 3: scope the hook to this
+        // connection and remove it on ws close so resolveHooks never accumulates.
+        const off = assist.onResolve((r) => { if (r.id === reqId) { try { ws.close(); } catch {} } });
+        ws.on('close', off);
       });
       return;
     }
@@ -1291,7 +1315,7 @@ s.on('data', (buf) => {
 s.on('error', (e) => { console.log('probe error:', e.message); process.exit(1); });
 ```
 
-- [ ] **Step 2: Write `pf-restrict-5900.sh` + LaunchDaemon** (restrict 5900 to localhost, reversible, reboot-persistent). The pf anchor blocks inbound 5900 on non-loopback so only the gateway (localhost) reaches screensharingd:
+- [ ] **Step 2: Write `pf-restrict-5900.sh` + LaunchDaemon** (restrict 5900 to localhost, reversible, reboot-persistent). The pf anchor blocks inbound 5900 on **non-loopback** interfaces so only the gateway (localhost → 127.0.0.1:5900) reaches screensharingd. **FIX 1:** the rule is scoped `on !lo0` — a bare `from any to any port 5900` would also match lo0 and sever the gateway's own loopback connection, breaking takeover. Tailscale arrives on `utun*`, so `!lo0` still blocks the tailnet while leaving loopback open.
 
 `packages/jinn/scripts/pf-restrict-5900.sh`:
 
@@ -1299,9 +1323,8 @@ s.on('error', (e) => { console.log('probe error:', e.message); process.exit(1); 
 #!/usr/bin/env bash
 set -euo pipefail
 ANCHOR="/etc/pf.anchors/com.jinn.vnc"
-echo "block in quick proto tcp from any to any port 5900" | sudo tee "$ANCHOR" >/dev/null
-echo "pass in quick proto tcp from 127.0.0.1 to 127.0.0.1 port 5900" | sudo tee -a /dev/null >/dev/null
-# Loopback is exempt from pf 'in' on lo0 by default; the block above only affects real ifaces.
+# Block 5900 on every interface EXCEPT loopback (gateway reaches screensharingd via 127.0.0.1).
+echo "block in quick on !lo0 proto tcp from any to any port 5900" | sudo tee "$ANCHOR" >/dev/null
 if ! grep -q 'com.jinn.vnc' /etc/pf.conf; then
   echo 'anchor "com.jinn.vnc"' | sudo tee -a /etc/pf.conf >/dev/null
   echo 'load anchor "com.jinn.vnc" from "/etc/pf.anchors/com.jinn.vnc"' | sudo tee -a /etc/pf.conf >/dev/null
@@ -1352,7 +1375,9 @@ git commit -m "feat(ops): scripted VNC legacy enable (+ re-probe) and pf 5900 ha
 - [ ] **V4 — take control:** click [Take control] → noVNC modal shows the mini's live screen; mouse/keyboard work. Confirm the tunnel only opens while pending (try the `wss` URL after resolve → upgrade rejected).
 - [ ] **V5 — resume:** click [Resume agent] → card flips to ✅ Resolved; tunnel closes; a polling agent's `GET` returns `resolved`.
 - [ ] **V6 — timeout path:** create an assist, wait >10 min (or temporarily lower the sweep window) → card shows ⏱️ timed out; `GET` returns `timed_out`.
-- [ ] **V7 — hardening:** from the *other* Mac, `nc -vz jimmys-mac-mini.tail0b18b3.ts.net 5900` → refused/blocked after pf rule; takeover still works (it rides the gateway WS, not direct 5900).
+- [ ] **V7 — hardening (BOTH must pass after pf is applied):**
+  - (a) **Loopback still open:** trigger a takeover → noVNC modal still shows the live screen (gateway → `127.0.0.1:5900` not severed by the `!lo0` rule). If this fails, FIX 1 regressed — the rule is matching loopback.
+  - (b) **Tailnet refused:** from the *other* Mac, `nc -vz jimmys-mac-mini.tail0b18b3.ts.net 5900` → connection refused/timed out. Direct VNC over the tailnet is blocked; takeover only works through the gateway WS.
 - [ ] **V8 — full suite:** `pnpm test && pnpm typecheck && pnpm lint` all green.
 
 ---
