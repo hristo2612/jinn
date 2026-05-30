@@ -60,6 +60,7 @@ import { handleFilesRequest, handleSessionAttachment, fileIdsToMedia, rehomeAtta
 import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed, notifyDiscordChannel } from "../sessions/callbacks.js";
 import { loadInstances } from "../cli/instances.js";
 import { handleHookPost, LOOPBACK as HOOK_LOOPBACK } from "./hook-endpoint.js";
+import { handleAssistRoutes } from "./assist-routes.js";
 
 /** Max bytes accepted on /api/internal/hook (loopback-only relay payloads are tiny). */
 const HOOK_BODY_MAX_BYTES = 64 * 1024;
@@ -71,6 +72,8 @@ export interface ApiContext {
   getConfig: () => JinnConfig;
   emit: (event: string, payload: unknown) => void;
   connectors: Map<string, import("../shared/types.js").Connector>;
+  /** Human-in-the-loop assist registry (takeover requests). */
+  assist: import("./assist.js").AssistRegistry;
   reloadConnectorInstances?: () => Promise<{ started: string[]; stopped: string[]; errors: string[] }>;
   hookRegistry?: import("./hook-registry.js").HookRegistry;
   hookSecret?: string;
@@ -947,6 +950,27 @@ export async function handleApiRequest(
       dispatchWebSessionRun(session, prompt, engine, config, context, { queueItemId, attachments: attachmentPaths.length > 0 ? attachmentPaths : undefined });
 
       return json(res, { status: "queued", sessionId: session.id });
+    }
+
+    // Assist (human-in-the-loop takeover) routes:
+    //   POST /api/sessions/:id/assist/request, POST /api/assist/:reqId/resolve, GET /api/assist/:reqId
+    if (pathname.includes("/assist/") || pathname.startsWith("/api/assist/")) {
+      let parsedBody: unknown;
+      if (method === "POST") {
+        const _parsed = await readJsonBody(req, res);
+        if (!_parsed.ok) return;
+        parsedBody = _parsed.body;
+      }
+      const handled = await handleAssistRoutes(method, pathname, parsedBody as any, res, {
+        assist: context.assist,
+        emit: context.emit,
+        insertMessage,
+        connectors: context.connectors as unknown as Map<
+          string,
+          { sendMessage: (t: { channel: string }, text: string) => Promise<unknown> }
+        >,
+      });
+      if (handled) return;
     }
 
     // POST /api/sessions/:id/attachments — running agent pushes a file/image into the chat.

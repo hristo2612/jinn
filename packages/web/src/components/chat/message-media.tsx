@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react'
 import type { MediaAttachment } from '@/lib/conversations'
 import { FileAttachment } from './file-attachment'
 import { VoiceMessage } from './voice-message'
+import { AssistRequestCard } from './assist-request-card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
 
@@ -147,6 +148,7 @@ export function MessageMedia({ media, isUser }: { media: MediaAttachment[]; isUs
   const images = media.filter((m) => m.type === 'image')
   const audio = media.filter((m) => m.type === 'audio')
   const files = media.filter((m) => m.type === 'file')
+  const assists = media.filter((m) => m.type === 'assist-request')
 
   return (
     <>
@@ -196,6 +198,12 @@ export function MessageMedia({ media, isUser }: { media: MediaAttachment[]; isUs
           ))}
         </div>
       )}
+
+      {assists.map((m, mi) => (
+        <div key={`assist-${mi}`} className="mt-[var(--space-2)] max-w-[360px]">
+          <AssistRequestCard reqId={m.reqId!} reason={m.reason ?? 'Help needed'} url={m.url || undefined} status={m.status} />
+        </div>
+      ))}
 
       {lightbox && <ImageLightbox url={lightbox.url} name={lightbox.name} onClose={close} />}
     </>

@@ -21,6 +21,7 @@ import { writeGatewayInfo, readGatewayInfo, updateGatewayPtyPids } from "./gatew
 import { seedTrust, cleanupSessionSettings } from "../shared/claude-settings.js";
 import { GATEWAY_INFO_FILE, HOOK_RELAY_SCRIPT, JINN_HOME, CLAUDE_SETTINGS_DIR } from "../shared/paths.js";
 import { handleApiRequest, resumePendingWebQueueItems, type ApiContext } from "./api.js";
+import { AssistRegistry } from "./assist.js";
 import { pickEncoding, isCompressibleExt, compressStream } from "./compress.js";
 import { attachPtyWebSocket } from "./pty-ws.js";
 import { ensureFilesDir, cleanupOldUploads } from "./files.js";
@@ -683,6 +684,19 @@ export async function startGateway(
     }
   };
 
+  // Human-in-the-loop assist registry (takeover requests).
+  const assist = new AssistRegistry();
+  // Flip pending → timed_out after 10 min so the UI + GET status stay truthful and
+  // the request-human-help skill's poll loop terminates. Emit so cards update live.
+  const assistSweep = setInterval(() => {
+    const flipped = assist.sweepTimeouts(Date.now(), 10 * 60 * 1000);
+    for (const id of flipped) {
+      const rec = assist.get(id);
+      if (rec) emit("session:assist-resolved", { reqId: id, sessionId: rec.sessionId, status: "timed_out" });
+    }
+  }, 30_000);
+  assistSweep.unref?.();
+
   // API context
   const apiContext: ApiContext = {
     config: currentConfig,
@@ -691,6 +705,7 @@ export async function startGateway(
     getConfig: () => currentConfig,
     emit,
     connectors: connectorMap,
+    assist,
     reloadConnectorInstances,
     hookRegistry,
     hookSecret: gatewayInfo.secret,

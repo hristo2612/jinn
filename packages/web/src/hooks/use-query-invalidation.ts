@@ -43,6 +43,14 @@ export function useQueryInvalidation() {
         case 'skills:changed':
           pendingRef.current.add('skills')
           break
+        case 'session:assist-requested':
+        case 'session:assist-resolved':
+          // Refresh the session's messages so a reloaded/other client sees the card.
+          // The card itself also reacts to these events live for its own reqId.
+          if (p?.sessionId) {
+            qc.invalidateQueries({ queryKey: queryKeys.sessions.detail(p.sessionId as string) })
+          }
+          break
         default:
           return // No invalidation for unknown events
       }

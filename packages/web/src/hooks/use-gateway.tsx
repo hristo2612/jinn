@@ -24,7 +24,7 @@ interface GatewayContextValue {
   subscribe: (fn: Listener) => () => void;
 }
 
-const GatewayContext = createContext<GatewayContextValue | null>(null);
+export const GatewayContext = createContext<GatewayContextValue | null>(null);
 
 /**
  * Events that still need to flow through the legacy `events` context array.
