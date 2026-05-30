@@ -46,8 +46,8 @@
 - `packages/jinn/scripts/enable-vnc-legacy.sh` (kickstart + re-probe)
 - `packages/jinn/scripts/pf-restrict-5900.sh` + `com.jinn.pf-5900.plist` (LaunchDaemon)
 
-**Run all server tests:** `cd ~/Projects/jinn && pnpm --filter jinn test`
-**Run all web tests:** `cd ~/Projects/jinn && pnpm --filter web test`
+**Run all server tests:** `cd ~/Projects/jinn && pnpm --filter jinn-cli test`
+**Run all web tests:** `cd ~/Projects/jinn && pnpm --filter @jinn/web test`
 **Typecheck:** `pnpm typecheck`
 
 ---
@@ -94,7 +94,7 @@ export interface MessageMedia {
 
 - [ ] **Step 3: Typecheck**
 
-Run: `cd ~/Projects/jinn && pnpm --filter jinn typecheck`
+Run: `cd ~/Projects/jinn && pnpm --filter jinn-cli typecheck`
 Expected: PASS (no consumers break — fields are optional, union widened).
 
 - [ ] **Step 4: Commit**
@@ -173,7 +173,7 @@ describe('AssistRegistry', () => {
 
 - [ ] **Step 2: Run it — confirm it fails**
 
-Run: `pnpm --filter jinn test assist.test`
+Run: `pnpm --filter jinn-cli test assist.test`
 Expected: FAIL — cannot find module `../assist.js`.
 
 - [ ] **Step 3: Implement** `packages/jinn/src/gateway/assist.ts`:
@@ -243,7 +243,7 @@ export class AssistRegistry {
 
 - [ ] **Step 4: Run tests — confirm pass**
 
-Run: `pnpm --filter jinn test assist.test`
+Run: `pnpm --filter jinn-cli test assist.test`
 Expected: PASS (5 tests).
 
 - [ ] **Step 5: Commit**
@@ -342,7 +342,7 @@ describe('assist routes', () => {
 
 - [ ] **Step 3: Run it — confirm it fails**
 
-Run: `pnpm --filter jinn test assist-routes`
+Run: `pnpm --filter jinn-cli test assist-routes`
 Expected: FAIL — cannot find `../assist-routes.js`.
 
 - [ ] **Step 4: Implement the handler** in a focused module `packages/jinn/src/gateway/assist-routes.ts` (keeps `api.ts` lean; api.ts just delegates). It takes parsed inputs so it is unit-testable without `http`:
@@ -424,7 +424,7 @@ export async function handleAssistRoutes(
 
 - [ ] **Step 5: Run tests — confirm pass**
 
-Run: `pnpm --filter jinn test assist-routes`
+Run: `pnpm --filter jinn-cli test assist-routes`
 Expected: PASS (5 tests).
 
 - [ ] **Step 6: Wire into `api.ts`.** Near the top of the request dispatch (before the attachments block ~L952), add a delegation. `insertMessage` is imported in `api.ts` already via the sessions registry; if not, add `import { insertMessage } from '../sessions/registry.js';`. Insert:
@@ -459,8 +459,8 @@ import { handleAssistRoutes } from './assist-routes.js';
 
 - [ ] **Step 7: Typecheck**
 
-Run: `pnpm --filter jinn typecheck`
-Expected: PASS. (If `ApiContext.assist` is unset anywhere it's constructed, Task 8 wires it — typecheck of server.ts may fail until then; that's expected and fixed in Task 8. Run `pnpm --filter jinn test` to confirm route tests stay green.)
+Run: `pnpm --filter jinn-cli typecheck`
+Expected: PASS. (If `ApiContext.assist` is unset anywhere it's constructed, Task 8 wires it — typecheck of server.ts may fail until then; that's expected and fixed in Task 8. Run `pnpm --filter jinn-cli test` to confirm route tests stay green.)
 
 - [ ] **Step 8: Commit**
 
@@ -604,7 +604,7 @@ describe('AssistRequestCard', () => {
 
 - [ ] **Step 3: Run it — confirm it fails**
 
-Run: `pnpm --filter web test assist-request-card`
+Run: `pnpm --filter @jinn/web test assist-request-card`
 Expected: FAIL — module not found.
 
 - [ ] **Step 4: Implement** `packages/web/src/components/chat/assist-request-card.tsx`:
@@ -688,7 +688,7 @@ import { AssistRequestCard } from './assist-request-card'
 
 - [ ] **Step 7: Run tests — confirm pass**
 
-Run: `pnpm --filter web test assist-request-card`
+Run: `pnpm --filter @jinn/web test assist-request-card`
 Expected: PASS (3 tests).
 
 - [ ] **Step 8: Wire live WS updates.** In the chat pane that owns `createGatewaySocket` (search `createGatewaySocket(` under `packages/web/src`), on `session:assist-resolved` / `session:assist-requested`, refetch or patch the message list for that session so the card flips without reload. Minimal approach: on either event, invalidate the conversation query for `payload.sessionId` (React Query `queryClient.invalidateQueries`). Add to the existing `onEvent` switch:
@@ -725,7 +725,7 @@ git commit -m "feat(web): assist-request chat card with live status + resume"
 - [ ] **Step 1: Add the dep**
 
 ```bash
-pnpm --filter jinn add des.js
+pnpm --filter jinn-cli add des.js
 ```
 
 - [ ] **Step 2: Write the failing test** (uses the verified known-answer vector):
@@ -757,7 +757,7 @@ describe('vnc type-2 DES auth', () => {
 
 - [ ] **Step 3: Run it — confirm it fails**
 
-Run: `pnpm --filter jinn test rfb-auth`
+Run: `pnpm --filter jinn-cli test rfb-auth`
 Expected: FAIL — module not found.
 
 - [ ] **Step 4: Implement** `packages/jinn/src/gateway/rfb-auth.ts`:
@@ -789,7 +789,7 @@ export function vncDesResponse(password: string, challenge: Buffer): Buffer {
 
 - [ ] **Step 5: Run tests — confirm pass**
 
-Run: `pnpm --filter jinn test rfb-auth`
+Run: `pnpm --filter jinn-cli test rfb-auth`
 Expected: PASS (3 tests).
 
 - [ ] **Step 6: Commit**
@@ -901,7 +901,7 @@ function tick(ms = 30) { return new Promise((r) => setTimeout(r, ms)); }
 
 - [ ] **Step 2: Run it — confirm it fails**
 
-Run: `pnpm --filter jinn test vnc-proxy`
+Run: `pnpm --filter jinn-cli test vnc-proxy`
 Expected: FAIL — module not found.
 
 - [ ] **Step 3: Implement** `packages/jinn/src/gateway/vnc-proxy.ts`. The bridge: (a) connect to real server, do type-2 auth using `vncDesResponse`, capture ServerInit; (b) on the client side negotiate version → None → SecurityResult → consume ClientInit → forward ServerInit; (c) pipe transparently. Implement as a promise that resolves when both handshakes complete and piping is wired.
@@ -980,7 +980,7 @@ export async function runRfbBridge(opts: RfbBridgeOpts): Promise<void> {
 
 - [ ] **Step 4: Run tests — confirm pass**
 
-Run: `pnpm --filter jinn test vnc-proxy`
+Run: `pnpm --filter jinn-cli test vnc-proxy`
 Expected: PASS. If `readN`/`unshift` interleaving flakes, increase `tick()` to 50ms — the state machine is event-ordered, not timing-dependent, so a green run is deterministic.
 
 - [ ] **Step 5: Commit**
@@ -1118,7 +1118,7 @@ for (const id of flipped) {
 
 - [ ] **Step 5: Typecheck + full server test run**
 
-Run: `pnpm --filter jinn typecheck && pnpm --filter jinn test`
+Run: `pnpm --filter jinn-cli typecheck && pnpm --filter jinn-cli test`
 Expected: PASS (assist, assist-routes, rfb-auth, vnc-proxy, sweep test all green; server.ts typechecks with `assist` now provided to `ApiContext`).
 
 - [ ] **Step 6: Commit**
@@ -1140,7 +1140,7 @@ git commit -m "feat(vnc): gate /api/assist/:id/vnc upgrade on pending assist + t
 - [ ] **Step 1: Add the dep**
 
 ```bash
-pnpm --filter web add @novnc/novnc
+pnpm --filter @jinn/web add @novnc/novnc
 ```
 
 - [ ] **Step 2: Write the failing test** (mock noVNC so jsdom doesn't need canvas/WebGL):
@@ -1186,7 +1186,7 @@ describe('TakeoverModal', () => {
 
 - [ ] **Step 3: Run it — confirm it fails**
 
-Run: `pnpm --filter web test takeover-modal`
+Run: `pnpm --filter @jinn/web test takeover-modal`
 Expected: FAIL — stub renders null, no RFB.
 
 - [ ] **Step 4: Implement** `packages/web/src/components/chat/takeover-modal.tsx`:
@@ -1248,12 +1248,12 @@ export function TakeoverModal(props: { reqId: string; onResume: () => void; onCl
 
 - [ ] **Step 5: Run tests — confirm pass**
 
-Run: `pnpm --filter web test takeover-modal`
+Run: `pnpm --filter @jinn/web test takeover-modal`
 Expected: PASS (2 tests).
 
 - [ ] **Step 6: Vite build sanity** (ensure the dynamic import + dep resolve):
 
-Run: `pnpm --filter web build`
+Run: `pnpm --filter @jinn/web build`
 Expected: build succeeds; `@novnc/novnc` lands in a lazy chunk (not the main bundle).
 
 - [ ] **Step 7: Commit**

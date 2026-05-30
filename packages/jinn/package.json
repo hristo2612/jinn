@@ -28,6 +28,7 @@
     "busboy": "^1.6.0",
     "chokidar": "^4.0.0",
     "commander": "^13.1.0",
+    "des.js": "^1.1.0",
     "discord.js": "^14.25.1",
     "js-yaml": "^4.1.0",
     "node-cron": "^3.0.0",

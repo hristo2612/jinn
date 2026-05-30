@@ -586,11 +586,15 @@ export function deleteSessions(ids: string[]): number {
 
 /** Attachment descriptor stored alongside a message and rendered by the web UI. */
 export interface MessageMedia {
-  type: 'image' | 'audio' | 'file';
+  type: 'image' | 'audio' | 'file' | 'assist-request';
   url: string;
   name?: string;
   mimeType?: string;
   size?: number;
+  // assist-request fields (human-in-the-loop takeover):
+  reqId?: string;
+  reason?: string;
+  status?: 'pending' | 'resolved' | 'timed_out';
 }
 
 export interface SessionMessage {

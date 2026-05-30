@@ -432,3 +432,16 @@ export interface JinnConfig {
   };
   remotes?: Record<string, { url: string; label?: string }>;
 }
+
+// ── Human-in-the-loop assist (takeover) ───────────────────────
+export type AssistStatus = 'pending' | 'resolved' | 'timed_out';
+
+export interface AssistRecord {
+  id: string; // reqId
+  sessionId: string;
+  reason: string;
+  url?: string;
+  status: AssistStatus;
+  createdAt: number;
+  resolvedAt?: number;
+}
