@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Re-applies the pf config (incl. the com.jinn.vnc anchor) at boot so the 5900
+  restriction survives reboot. Install:
+    sudo cp packages/jinn/scripts/com.jinn.pf-5900.plist /Library/LaunchDaemons/
+    sudo launchctl load /Library/LaunchDaemons/com.jinn.pf-5900.plist
+  Uninstall:
+    sudo launchctl unload /Library/LaunchDaemons/com.jinn.pf-5900.plist
+    sudo rm /Library/LaunchDaemons/com.jinn.pf-5900.plist
+-->
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.jinn.pf-5900</string>
+  <key>RunAtLoad</key><true/>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/sbin/pfctl</string>
+    <string>-f</string>
+    <string>/etc/pf.conf</string>
+    <string>-e</string>
+  </array>
+</dict></plist>

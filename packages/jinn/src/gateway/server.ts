@@ -5,7 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
-import { WebSocketServer, type WebSocket } from "ws";
+import { WebSocketServer, createWebSocketStream, type WebSocket } from "ws";
+import { runRfbBridge } from "./vnc-proxy.js";
 import type { JinnConfig, Connector, Employee } from "../shared/types.js";
 import { loadConfig, normalizeClaudeEngineConfig } from "../shared/config.js";
 import { configureLogger, logger } from "../shared/logger.js";
@@ -22,6 +23,7 @@ import { seedTrust, cleanupSessionSettings } from "../shared/claude-settings.js"
 import { GATEWAY_INFO_FILE, HOOK_RELAY_SCRIPT, JINN_HOME, CLAUDE_SETTINGS_DIR } from "../shared/paths.js";
 import { handleApiRequest, resumePendingWebQueueItems, type ApiContext } from "./api.js";
 import { AssistRegistry } from "./assist.js";
+import { loadVncPassword } from "./vnc-secret.js";
 import { pickEncoding, isCompressibleExt, compressStream } from "./compress.js";
 import { attachPtyWebSocket } from "./pty-ws.js";
 import { ensureFilesDir, cleanupOldUploads } from "./files.js";
@@ -758,6 +760,8 @@ export async function startGateway(
   // separate from the global broadcast `wss` so its connections aren't added to
   // the broadcast client set.
   const ptyWss = new WebSocketServer({ noServer: true });
+  // Dedicated WS server for noVNC takeover tunnels (/api/assist/:reqId/vnc).
+  const vncWss = new WebSocketServer({ noServer: true });
 
   wss.on("connection", (ws) => {
     wsClients.add(ws);
@@ -788,6 +792,45 @@ export async function startGateway(
       const sessionId = decodeURIComponent(ptyMatch[1]);
       ptyWss.handleUpgrade(req, socket, head, (ws) => {
         attachPtyWebSocket(ws, sessionId, interactiveClaudeEngine);
+      });
+      return;
+    }
+    // noVNC takeover tunnel — only openable while an assist for this session is PENDING.
+    const vncMatch = reqUrl.split("?")[0].match(/^\/api\/assist\/([^/]+)\/vnc$/);
+    if (vncMatch) {
+      const reqId = decodeURIComponent(vncMatch[1]);
+      const rec = assist.get(reqId);
+      // Gate: the reqId is the token AND the assist must still be pending.
+      if (!rec || rec.status !== "pending") {
+        socket.destroy();
+        return;
+      }
+      const password = loadVncPassword();
+      if (!password) {
+        logger.warn("VNC takeover requested but no VNC password configured (secrets.vncPassword)");
+        socket.destroy();
+        return;
+      }
+      vncWss.handleUpgrade(req, socket, head, (ws) => {
+        const dup = createWebSocketStream(ws);
+        // Auto-close the tunnel when THIS assist resolves; remove the hook on ws
+        // close so resolveHooks never accumulates (FIX 3).
+        const off = assist.onResolve((r) => {
+          if (r.id === reqId) {
+            try { ws.close(); } catch { /* ignore */ }
+          }
+        });
+        ws.on("close", off);
+        runRfbBridge({
+          clientReadable: dup,
+          clientWritable: dup,
+          vncHost: "127.0.0.1",
+          vncPort: 5900,
+          password,
+        }).catch((err) => {
+          logger.warn(`VNC bridge failed: ${err instanceof Error ? err.message : err}`);
+          try { ws.close(); } catch { /* ignore */ }
+        });
       });
       return;
     }
