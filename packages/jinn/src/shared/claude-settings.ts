@@ -55,20 +55,45 @@ export function cleanupSessionSettings(dir: string, sessionId: string): void {
   try { fs.unlinkSync(sessionSettingsPath(dir, sessionId)); } catch { /* best effort */ }
 }
 
-/** Idempotently mark a project directory trusted in the real ~/.claude.json. */
+/**
+ * Idempotently mark a project directory trusted AND complete the global first-run
+ * onboarding in the real ~/.claude.json, so the interactive (PTY) `claude` never
+ * blocks on a one-time consent dialog.
+ *
+ * Recent Claude Code versions gate the interactive TUI behind blocking first-run
+ * prompts: the "Bypass Permissions mode" consent (triggered by
+ * --dangerously-skip-permissions) and the "Claude in Chrome (beta)" intro
+ * (triggered by --chrome). The InteractiveClaudeEngine launches `claude`
+ * interactively with both flags and never sends a keystroke to dismiss the
+ * dialogs, so on any install where onboarding is not already complete (fresh,
+ * headless/CI, or after a Claude Code upgrade resets onboarding for a new
+ * version) every work turn hangs forever before reaching the API. Pre-seeding
+ * these flags at gateway boot answers the dialogs up front. See hristo2612/jinn#66.
+ */
 export function seedTrust(claudeJsonPath: string, projectDir: string): void {
   const realDir = fs.realpathSync(projectDir);
   let data: any = {};
   try { data = JSON.parse(fs.readFileSync(claudeJsonPath, "utf-8")); } catch { /* new file */ }
   data.projects ??= {};
   const proj = (data.projects[realDir] ??= {});
-  if (proj.hasTrustDialogAccepted === true && proj.hasCompletedProjectOnboarding === true) return;
+  const alreadySeeded =
+    data.hasCompletedOnboarding === true &&
+    data.hasCompletedClaudeInChromeOnboarding === true &&
+    proj.hasTrustDialogAccepted === true &&
+    proj.hasCompletedProjectOnboarding === true;
+  if (alreadySeeded) return;
   // About to modify the user's real ~/.claude.json — keep a one-time backup of the
   // pre-Jinn original (no timestamped proliferation; first write wins).
   const backupPath = `${claudeJsonPath}.jinn-backup`;
   if (fs.existsSync(claudeJsonPath) && !fs.existsSync(backupPath)) {
     try { fs.copyFileSync(claudeJsonPath, backupPath, fs.constants.COPYFILE_EXCL); } catch { /* best effort */ }
   }
+  // Global onboarding: dismisses the Bypass Permissions consent
+  // (hasCompletedOnboarding) and the Claude in Chrome (beta) intro
+  // (hasCompletedClaudeInChromeOnboarding) that otherwise block the interactive PTY.
+  data.hasCompletedOnboarding = true;
+  data.hasCompletedClaudeInChromeOnboarding = true;
+  // Per-project trust: dismisses the folder-trust dialog.
   proj.hasTrustDialogAccepted = true;
   proj.hasCompletedProjectOnboarding = true;
   proj.allowedTools ??= [];

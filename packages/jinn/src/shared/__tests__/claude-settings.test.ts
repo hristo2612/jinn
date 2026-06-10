@@ -32,6 +32,8 @@ describe("claude-settings", () => {
     const d = JSON.parse(fs.readFileSync(claudeJson, "utf-8"));
     expect(d.projects[projectDir].hasTrustDialogAccepted).toBe(true);
     expect(d.projects[projectDir].hasCompletedProjectOnboarding).toBe(true);
+    expect(d.hasCompletedOnboarding).toBe(true);
+    expect(d.hasCompletedClaudeInChromeOnboarding).toBe(true);
   });
 
   it("seedTrust writes a one-time backup of a pre-existing ~/.claude.json before first modification", () => {
