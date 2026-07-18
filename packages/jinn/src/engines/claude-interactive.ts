@@ -423,6 +423,19 @@ const BACKGROUND_CLEAR_QUIET_MS = 10_000;
 
 const NATIVE_COMMAND_QUIET_MS = 1800;
 const NATIVE_COMMAND_MIN_MS = 3000;
+
+/** A warm-PTY prompt injection (bracketed-paste + delayed \r, see pasteAndSubmit)
+ *  can silently fail to submit — most reliably reproduced with multi-line prompts
+ *  (any prompt carrying attachments, since the "Attached files:\n- <path>" suffix
+ *  always embeds a newline). The Claude Code TUI renders an image-path paste as an
+ *  attachment chip, and the composed input is left sitting unsubmitted with no Stop
+ *  hook ever firing and no transcript activity — the turn hangs forever with no
+ *  error surfaced. If a warm-injected turn produces zero hook/SSE activity within
+ *  this window, treat it as an unsubmitted paste: kill the stuck PTY and cold-resume
+ *  once (spawn() passes the prompt via argv instead of interactive paste, which does
+ *  not hit this failure mode). */
+const STUCK_PASTE_TIMEOUT_MS = 20_000;
+const STUCK_PASTE_SENTINEL = "Interrupted: unsubmitted paste (no CLI activity within timeout)";
 const NATIVE_COMMAND_MAX_MS = 90_000;
 const LOST_STOP_RECOVERY_QUIET_MS = 60_000;
 const LOST_STOP_RECOVERY_MIN_MS = 5 * 60_000;
@@ -473,7 +486,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
    *  released by a kill->respawn race can't poison the freshly-started turn.
    *  `onStream` is the current turn's delta callback; the per-PTY SSE proxy routes
    *  parsed events here (a PTY outlives its turn, so the proxy looks this up live). */
-  private active = new Map<string, { resolver: TurnResolver; onStream?: (d: StreamDelta) => void; boundProc?: pty.IPty }>();
+  private active = new Map<string, { resolver: TurnResolver; onStream?: (d: StreamDelta) => void; boundProc?: pty.IPty; sawActivity?: boolean }>();
   /** Sessions with an in-flight async idle-spawn (proxy.start awaited) — prevents
    *  a second ensureIdleSpawn from racing in a duplicate PTY during that gap. */
   private idleSpawning = new Set<string>();
@@ -502,6 +515,9 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
   private backgroundActivityCb?: (jinnSessionId: string, info: UpstreamActivityInfo | null) => void;
   /** Test override for the post-settle clear quiet window (default 10s). */
   backgroundClearQuietMs = BACKGROUND_CLEAR_QUIET_MS;
+  /** Sessions currently retrying after a stuck-unsubmitted-paste kill — caps the
+   *  auto cold-resume to one attempt per originating turn (see STUCK_PASTE_SENTINEL). */
+  private stuckPasteRetried = new Set<string>();
 
   constructor(
     private lifecycle: PtyLifecycleManager,
@@ -663,21 +679,24 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
       native: nativeCommand,
       shouldDeferStopFailure: () => this.hasActiveUpstream(jinnSessionId),
     });
-    const entry: { resolver: TurnResolver; onStream?: (d: StreamDelta) => void; boundProc?: pty.IPty; activeTools: number } = {
+    const entry: { resolver: TurnResolver; onStream?: (d: StreamDelta) => void; boundProc?: pty.IPty; activeTools: number; sawActivity: boolean } = {
       resolver,
       onStream: opts.onStream,
       activeTools: 0,
+      sawActivity: false,
     };
     let turnMarkedStarted = false;
     let watchdog: NodeJS.Timeout | undefined;
     let nativeCommandTimer: NodeJS.Timeout | undefined;
     let lostStopRecoveryTimer: NodeJS.Timeout | undefined;
+    let stuckPasteTimer: NodeJS.Timeout | undefined;
 
     let result!: EngineResult;
     this.active.set(jinnSessionId, entry);
     try {
       // Register BEFORE spawning so a fast SessionStart is buffered+drained, not lost.
       this.hookRegistry.register(jinnSessionId, (h) => {
+        entry.sawActivity = true;
         resolver.onHook(h);
         // tool_use markers + intermediate text stream from the per-PTY SSE proxy
         // in true order. The hook only supplies tool_result; SSE has no local tool
@@ -699,6 +718,25 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
         turnMarkedStarted = true;
         this.injectPrompt(warm, opts);
         entry.boundProc = (warm as any)._proc as pty.IPty | undefined;
+        // See STUCK_PASTE_SENTINEL: a warm-PTY paste can land in the TUI's input
+        // box but never actually submit (multi-line/attachment prompts trigger this
+        // most reliably). Zero hook/SSE activity by the deadline means the CLI never
+        // saw a submitted turn at all — kill the stuck PTY and let the post-settle
+        // retry below cold-resume it exactly once.
+        stuckPasteTimer = setTimeout(() => {
+          if (resolver.isSettled || entry.sawActivity) return;
+          logger.warn(`InteractiveClaudeEngine: no activity ${STUCK_PASTE_TIMEOUT_MS}ms after warm-PTY inject for ${jinnSessionId} — treating as unsubmitted paste, killing PTY for cold-resume retry`);
+          resolver.interrupt(STUCK_PASTE_SENTINEL);
+          try { entry.boundProc?.kill(); } catch { /* already dead */ }
+          // Release synchronously — proc.onExit()'s identity-gated release fires
+          // asynchronously and won't have run yet by the time the retry below
+          // recurses into run(). Without this, getWarm() still returns this dead
+          // handle, so the retry takes the warm-inject path again (into a corpse)
+          // instead of cold-spawning with --resume. releaseSession is idempotent,
+          // so the later onExit's identity-gated release becomes a no-op.
+          this.lifecycle.releaseSession(jinnSessionId);
+        }, STUCK_PASTE_TIMEOUT_MS);
+        stuckPasteTimer.unref?.();
       } else {
         const handle = await this.spawn(jinnSessionId, opts, settingsPath);
         this.lifecycle.adopt(jinnSessionId, handle, { turnRunning: true });
@@ -773,6 +811,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
       if (watchdog) clearInterval(watchdog);
       if (nativeCommandTimer) clearInterval(nativeCommandTimer);
       if (lostStopRecoveryTimer) clearInterval(lostStopRecoveryTimer);
+      if (stuckPasteTimer) clearTimeout(stuckPasteTimer);
       this.hookRegistry.unregister(jinnSessionId);
       this.active.delete(jinnSessionId);
       if (turnMarkedStarted) this.lifecycle.turnEnded(jinnSessionId); // manager decides kill vs keep-warm
@@ -818,6 +857,19 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
     if (result.error && resolver.stopFailure) {
       this.armLateRecovery(jinnSessionId, opts);
     }
+    // The warm-PTY paste never actually submitted (see STUCK_PASTE_SENTINEL) — the
+    // PTY was already killed, which released the warm slot, so retrying run() with
+    // the same prompt will cold-spawn via --resume instead of hitting the same
+    // paste path. Capped to one retry per originating turn so a resume that also
+    // gets stuck can't loop forever.
+    if (result.error === STUCK_PASTE_SENTINEL && !this.stuckPasteRetried.has(jinnSessionId)) {
+      this.stuckPasteRetried.add(jinnSessionId);
+      try {
+        return await this.run({ ...opts, resumeSessionId: result.sessionId || opts.resumeSessionId });
+      } finally {
+        this.stuckPasteRetried.delete(jinnSessionId);
+      }
+    }
     return result;
   }
 
@@ -855,6 +907,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
   private handleSseEvent(jinnSessionId: string, e: SseDataEvent): void {
     const entry = this.active.get(jinnSessionId);
     if (!entry) return; // idle PTY / no turn in flight — nothing to stream
+    entry.sawActivity = true;
     entry.resolver.noteActivity();
     if (!entry.onStream) return;
     // Only the main agent's events reach here (the proxy suppresses sub-agent and
