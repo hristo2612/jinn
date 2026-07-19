@@ -1054,15 +1054,25 @@ export function useLiveSession(
         // The server now persists mid-turn partial blocks, so the backend snapshot
         // already carries in-progress output — no localStorage replay needed. This is
         // what makes a mid-turn refresh restore the streamed blocks on any device.
-        intermediateStartRef.current = firstPartialIndex >= 0 ? firstPartialIndex : backendMessages.length
+        // The turn-start marker must be an index into the array actually rendered,
+        // not the (possibly ≤150-row) server snapshot — anchor it by message id and
+        // remap it inside the updater against whichever array we return. Otherwise a
+        // snapshot-space index truncates already-rendered history at turn completion.
+        const turnStartAnchorId = firstPartialIndex >= 0 ? backendMessages[firstPartialIndex].id : null
         setMessages((current) => {
           // If the tail snapshot is stale and misses newer live rows, keep current.
           // Older already-loaded rows are still preserved by mergePagedSnapshot.
           if (backendMessages.length < current.length && hasUnmergedLocalTail(current, backendMessages)) {
+            const anchorIdx = turnStartAnchorId ? current.findIndex((m) => m.id === turnStartAnchorId) : -1
+            if (anchorIdx >= 0) intermediateStartRef.current = anchorIdx
+            else if (intermediateStartRef.current < 0) intermediateStartRef.current = current.length
             return current
           }
           const next = backendMessages.length > 0 ? backendMessages : current
-          return mergePagedSnapshot(current, next, isPagedHistory)
+          const merged = mergePagedSnapshot(current, next, isPagedHistory)
+          const anchorIdx = turnStartAnchorId ? merged.findIndex((m) => m.id === turnStartAnchorId) : -1
+          intermediateStartRef.current = anchorIdx >= 0 ? anchorIdx : merged.length
+          return merged
         })
         // Loading state is owned by handleSend (sets true) + WS session:completed/stopped (sets false).
         // loadSession must NEVER set loading=true — a stale GET arriving after completion would
