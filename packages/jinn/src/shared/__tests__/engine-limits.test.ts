@@ -68,6 +68,9 @@ beforeAll(async () => {
   fs.mkdirSync(CLAUDE_DIR, { recursive: true });
   process.env.JINN_HOME = JINN_HOME_TMP; // frozen into paths.ts at first import below
   process.env.CODEX_HOME = CODEX_HOME_TMP; // read per-call by the collector
+  // Keep the collector off the live OAuth usage API (keychain + network) so
+  // these tests stay deterministic and exercise the statusline-snapshot path.
+  process.env.JINN_CLAUDE_USAGE_API = "off";
   ({ collectEngineLimits } = await import("../engine-limits.js"));
   ({ invalidateModelRegistry } = await import("../models.js"));
 });
@@ -75,6 +78,7 @@ beforeAll(async () => {
 afterAll(() => {
   delete process.env.JINN_HOME;
   delete process.env.CODEX_HOME;
+  delete process.env.JINN_CLAUDE_USAGE_API;
 });
 
 beforeEach(() => {
@@ -177,5 +181,79 @@ describe("collectEngineLimits — recovery + unsupported", () => {
     invalidateModelRegistry(); // each config change rebuilds the registry (as a fresh process would)
     const claude = await collectEngineLimits(cfg({ claude: { bin: MISSING_BIN } }), { engine: "claude" });
     expect(claude.engines.claude.status).toBe("unavailable");
+  });
+});
+
+describe("windowsFromClaudeUsage — OAuth usage-API bucket mapping", () => {
+  let windowsFromClaudeUsage: (usage: Record<string, unknown>) => Array<{
+    name: string; usedPercent?: number; windowDurationMins?: number; resetsAt?: number; resetsAtIso?: string;
+  }>;
+  beforeAll(async () => {
+    ({ windowsFromClaudeUsage } = await import("../engine-limits.js"));
+  });
+
+  it("maps every limits[] entry generically, including per-model scoped buckets (Fable)", () => {
+    const windows = windowsFromClaudeUsage({
+      five_hour: { utilization: 9, resets_at: "2026-07-19T05:00:00Z" },
+      seven_day: { utilization: 25, resets_at: "2026-07-25T08:00:00Z" },
+      limits: [
+        { kind: "session", group: "session", percent: 9, resets_at: "2026-07-19T05:00:00Z", scope: null },
+        { kind: "weekly_all", group: "weekly", percent: 25, resets_at: "2026-07-25T08:00:00Z", scope: null },
+        {
+          kind: "weekly_scoped",
+          group: "weekly",
+          percent: 50,
+          resets_at: "2026-07-25T08:00:00Z",
+          scope: { model: { id: null, display_name: "Fable" }, surface: null },
+          is_active: true,
+        },
+      ],
+    });
+    expect(windows.map((w) => w.name)).toEqual(["5h", "7d", "7d Fable"]);
+    expect(windows[0]).toMatchObject({ usedPercent: 9, windowDurationMins: 300 });
+    expect(windows[1]).toMatchObject({ usedPercent: 25, windowDurationMins: 10_080 });
+    // Scoped bucket: no duration (the UI must label it by name, not "7d") and
+    // a real epoch-seconds reset time derived from the ISO string.
+    expect(windows[2].windowDurationMins).toBeUndefined();
+    expect(windows[2].usedPercent).toBe(50);
+    expect(windows[2].resetsAt).toBe(Math.floor(Date.parse("2026-07-25T08:00:00Z") / 1000));
+  });
+
+  it("keeps unknown future bucket kinds instead of dropping them", () => {
+    const windows = windowsFromClaudeUsage({
+      limits: [
+        { kind: "session", percent: 1, resets_at: "2026-07-19T05:00:00Z" },
+        { kind: "monthly_mystery", percent: 42, resets_at: "2026-08-01T00:00:00Z" },
+      ],
+    });
+    expect(windows.map((w) => w.name)).toEqual(["5h", "monthly_mystery"]);
+    expect(windows[1].usedPercent).toBe(42);
+  });
+
+  it("falls back to top-level named buckets when limits[] is absent", () => {
+    const windows = windowsFromClaudeUsage({
+      five_hour: { utilization: 12.4, resets_at: "2026-07-19T05:00:00Z" },
+      seven_day: { utilization: 80, resets_at: "2026-07-25T08:00:00Z" },
+      seven_day_opus: { utilization: 5, resets_at: "2026-07-25T08:00:00Z" },
+      seven_day_sonnet: null,
+      extra_usage: { is_enabled: false, utilization: null },
+    });
+    expect(windows.map((w) => w.name)).toEqual(["5h", "7d", "7d opus"]);
+    expect(windows[0].usedPercent).toBe(12); // rounded
+  });
+
+  it("tolerates malformed entries and bad reset timestamps", () => {
+    const windows = windowsFromClaudeUsage({
+      limits: [
+        null,
+        "junk",
+        { kind: "session" }, // no percent → dropped
+        { kind: "weekly_all", percent: 30, resets_at: "not-a-date" },
+      ],
+    });
+    expect(windows).toHaveLength(1);
+    expect(windows[0]).toMatchObject({ name: "7d", usedPercent: 30 });
+    expect(windows[0].resetsAt).toBeUndefined();
+    expect(windows[0].resetsAtIso).toBeUndefined();
   });
 });

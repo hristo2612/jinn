@@ -20,7 +20,7 @@ export interface CollectEngineLimitsOptions {
   engine?: string;
 }
 
-const LIVE_LIMIT_ENGINES = new Set(["codex"]);
+const LIVE_LIMIT_ENGINES = new Set(["codex", "claude"]);
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -94,6 +94,133 @@ function claudeSnapshotFile(dir: string): string | null {
   }
 }
 
+/**
+ * The Claude statusline payload only ever carries the `five_hour` and
+ * `seven_day` buckets — the CLI filters everything else out before invoking
+ * the statusline command. Per-model buckets (e.g. the Fable weekly bucket) are
+ * only available from the OAuth usage API that powers the CLI's `/usage`
+ * screen. This block reads the CLI's own OAuth token locally (macOS Keychain,
+ * falling back to ~/.claude/.credentials.json) and queries that API. The token
+ * is never logged or included in any response.
+ */
+const CLAUDE_OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
+const CLAUDE_OAUTH_TIMEOUT_MS = 3500;
+
+function accessTokenFromCredentialsJson(raw: string): string | undefined {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!isRecord(parsed)) return undefined;
+    const oauth = isRecord(parsed.claudeAiOauth) ? parsed.claudeAiOauth : undefined;
+    return oauth ? str(oauth.accessToken) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function readClaudeOAuthToken(): Promise<string | undefined> {
+  // macOS: Claude Code stores credentials in the login Keychain.
+  if (process.platform === "darwin") {
+    const fromKeychain = await new Promise<string | undefined>((resolve) => {
+      execFile(
+        "security",
+        ["find-generic-password", "-s", "Claude Code-credentials", "-w"],
+        { timeout: 3000 },
+        (err, stdout) => resolve(err ? undefined : accessTokenFromCredentialsJson(stdout.trim())),
+      );
+    });
+    if (fromKeychain) return fromKeychain;
+  }
+  // Linux / fallback: plaintext credentials file.
+  try {
+    const file = path.join(os.homedir(), ".claude", ".credentials.json");
+    return accessTokenFromCredentialsJson(fs.readFileSync(file, "utf-8"));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Map an OAuth usage-API response to display windows, generically: every entry
+ * of the `limits` array with a numeric `percent` becomes a window, so buckets
+ * added server-side in the future (new models, new scopes) appear without a
+ * code change. Falls back to the top-level named buckets (`five_hour`,
+ * `seven_day`, `seven_day_opus`, ...) when `limits` is absent.
+ */
+export function windowsFromClaudeUsage(usage: JsonRecord): EngineLimitWindow[] {
+  const windows: EngineLimitWindow[] = [];
+  const seen = new Set<string>();
+  const push = (name: string, percent: number, resetsAtIso: string | undefined, durationMins?: number) => {
+    if (seen.has(name)) return;
+    seen.add(name);
+    const parsed = resetsAtIso ? Date.parse(resetsAtIso) : NaN;
+    const resetsAt = Number.isFinite(parsed) ? Math.floor(parsed / 1000) : undefined;
+    windows.push({
+      name,
+      usedPercent: Math.round(percent),
+      windowDurationMins: durationMins,
+      resetsAt,
+      resetsAtIso: resetsAt !== undefined ? resetsAtIso : undefined,
+    });
+  };
+
+  const limits = Array.isArray(usage.limits) ? usage.limits : [];
+  for (const item of limits) {
+    if (!isRecord(item)) continue;
+    const percent = num(item.percent);
+    if (percent === undefined) continue;
+    const kind = str(item.kind) ?? "limit";
+    const resetsAtIso = str(item.resets_at);
+    const scope = isRecord(item.scope) ? item.scope : undefined;
+    const model = scope && isRecord(scope.model) ? scope.model : undefined;
+    const modelName = model ? str(model.display_name) : undefined;
+    if (kind === "session") push("5h", percent, resetsAtIso, 300);
+    else if (kind === "weekly_all") push("7d", percent, resetsAtIso, 10_080);
+    // Scoped buckets keep the scope in the name (no duration, so the label
+    // renders the name verbatim instead of collapsing to a bare "7d").
+    else if (kind === "weekly_scoped") push(modelName ? `7d ${modelName}` : "7d (scoped)", percent, resetsAtIso);
+    else push(modelName ? `${kind} ${modelName}` : kind, percent, resetsAtIso);
+  }
+  if (windows.length > 0) return windows;
+
+  // Fallback: older response shape without a `limits` array — render every
+  // named bucket object that carries a numeric utilization.
+  for (const [key, value] of Object.entries(usage)) {
+    if (!isRecord(value)) continue;
+    const utilization = num(value.utilization);
+    if (utilization === undefined) continue;
+    const resetsAtIso = str(value.resets_at);
+    if (key === "five_hour") push("5h", utilization, resetsAtIso, 300);
+    else if (key === "seven_day") push("7d", utilization, resetsAtIso, 10_080);
+    else push(key.replace(/^seven_day_/, "7d "), utilization, resetsAtIso);
+  }
+  return windows;
+}
+
+async function fetchClaudeOAuthUsage(): Promise<JsonRecord | undefined> {
+  if (process.env.JINN_CLAUDE_USAGE_API === "off") return undefined;
+  const token = await readClaudeOAuthToken();
+  if (!token) return undefined;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CLAUDE_OAUTH_TIMEOUT_MS);
+  try {
+    const res = await fetch(CLAUDE_OAUTH_USAGE_URL, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "anthropic-beta": "oauth-2025-04-20",
+        "Content-Type": "application/json",
+      },
+      signal: controller.signal,
+    });
+    if (!res.ok) return undefined;
+    const body = (await res.json()) as unknown;
+    return isRecord(body) ? body : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function claudeAuthPlan(config: JinnConfig): Promise<string | undefined> {
   const bin = resolveBin("claude", config.engines.claude?.bin);
   return new Promise((resolve) => {
@@ -116,7 +243,48 @@ async function collectClaudeLimits(config: JinnConfig): Promise<EngineLimitEngin
   }
 
   const latest = claudeSnapshotFile(CLAUDE_LIMITS_DIR);
-  const accountPlan = await claudeAuthPlan(config);
+  const [accountPlan, oauthUsage] = await Promise.all([
+    claudeAuthPlan(config),
+    fetchClaudeOAuthUsage(),
+  ]);
+  const liveWindows = oauthUsage ? windowsFromClaudeUsage(oauthUsage) : [];
+
+  // Live path: the OAuth usage API carries every bucket (including per-model
+  // ones like the Fable weekly bucket) that the statusline payload never sees.
+  if (liveWindows.length > 0) {
+    let context: EngineLimitEngineSnapshot["context"];
+    let costUsd: number | undefined;
+    if (latest) {
+      // Context/cost still come from the statusline snapshot (best effort).
+      try {
+        const parsed = JSON.parse(fs.readFileSync(latest, "utf-8")) as unknown;
+        if (isRecord(parsed)) {
+          const ctx = isRecord(parsed.context_window) ? parsed.context_window : undefined;
+          if (ctx) {
+            context = {
+              usedPercent: num(ctx.used_percentage),
+              remainingPercent: num(ctx.remaining_percentage),
+              contextWindowSize: num(ctx.context_window_size),
+              totalInputTokens: num(ctx.total_input_tokens),
+              totalOutputTokens: num(ctx.total_output_tokens),
+            };
+          }
+          costUsd = isRecord(parsed.cost) ? num(parsed.cost.total_cost_usd) : undefined;
+        }
+      } catch { /* snapshot unreadable — live windows still stand on their own */ }
+    }
+    return {
+      ...snap,
+      status: "live",
+      source: "claude oauth usage api",
+      refreshedAt: nowIso(),
+      accountPlan,
+      windows: liveWindows,
+      context,
+      costUsd,
+    };
+  }
+
   if (!latest) {
     return {
       ...snap,
