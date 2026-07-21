@@ -15,9 +15,11 @@
   "files": [
     "dist/",
     "template/",
-    "assets/"
+    "assets/",
+    "scripts/fix-node-pty-permissions.mjs"
   ],
   "scripts": {
+    "postinstall": "node scripts/fix-node-pty-permissions.mjs",
     "build": "rm -rf dist/bin dist/src && tsc -p tsconfig.build.json && mkdir -p dist/src/talk && (cp src/talk/*.md src/talk/*.py dist/src/talk/ 2>/dev/null || true)",
     "dev": "tsc && (tsc --watch &) && node --watch-path=dist dist/bin/jinn.js start",
     "typecheck": "tsc --noEmit",
