@@ -40,6 +40,7 @@ import { logger } from "../shared/logger.js";
 import { resolveEffort } from "../shared/effort.js";
 import { effortLevelsForModel, engineAvailable, isKnownEngine, engineUnavailableMessage, contextWindowForModel } from "../shared/models.js";
 import { assessContextCeiling, reportContextCeiling } from "../shared/context-ceiling.js";
+import { assessContextPressure, pendingNudgeText, markNudgeDelivered, queueNudge, deliveredLevel, HANDOFF_META_KEYS } from "../shared/context-pressure.js";
 import { detectRateLimit, isDeadSessionError, rateLimitEngineLabel } from "../shared/rateLimit.js";
 import { getClaudeExpectedResetAt, isLikelyNearClaudeUsageLimit } from "../shared/usageAwareness.js";
 import { loadJobs } from "../cron/jobs.js";
@@ -136,6 +137,9 @@ export function mergeTransportMeta(
     "transcriptSyncedThrough",
     "delegationCompletionTracked",
     "delegationCompletionContract",
+    // Owned by the context-handoff feature. Derived from the module so the two
+    // can never drift: a lost level turns "nudge once" into "nudge every turn".
+    ...HANDOFF_META_KEYS,
   ]) {
     if (baseExisting[key] !== undefined) merged[key] = baseExisting[key];
   }
@@ -477,6 +481,11 @@ export class SessionManager {
         Number.isFinite(switchSyncSinceMs);
       const syncSinceIso = typeof syncMeta.claudeSyncSince === "string" ? syncMeta.claudeSyncSince : null;
       let promptToRun = msg.text;
+      // A handoff nudge owed from a previous turn rides this real turn's prompt
+      // rather than forcing a turn of its own: no extra cost, and it is simply
+      // dropped if the session never runs again.
+      const pendingHandoff = pendingNudgeText(syncMeta as Record<string, unknown>);
+      if (pendingHandoff) promptToRun = `${pendingHandoff}\n\n---\n\n${promptToRun}`;
       const syncSinceMs = typeof syncSinceIso === "string" ? new Date(syncSinceIso).getTime() : NaN;
       const claudeSyncRequested = engineAtTurnStart === "claude" && typeof syncSinceIso === "string" && Number.isFinite(syncSinceMs);
       const syncRequested = engineSyncRequested || claudeSyncRequested;
@@ -950,6 +959,32 @@ export class SessionManager {
             delete merged["engineSyncTarget"];
             delete merged["engineSyncSince"];
           }
+          // A nudge carried into this turn has now been delivered — clear it so
+          // it is not prepended again, and remember the level so the next
+          // assessment only escalates rather than repeating.
+          if (pendingHandoff && !wasInterrupted) {
+            markNudgeDelivered(merged, (syncMeta as Record<string, unknown>).contextHandoffPendingLevel);
+          }
+          // Long worker sessions re-send their whole context every turn. When one
+          // approaches its window, fire the org's existing handoff contract early
+          // (state to the work item, then DONE/BLOCKED) rather than letting it ride
+          // to an uncontrolled compaction. Operator chat is excluded — it has no
+          // one to hand off to. Never throws; diagnostics must not break a turn.
+          try {
+            const pressure = assessContextPressure({
+              contextTokens: result.contextTokens,
+              contextWindow: contextWindowForModel(this.config, engineAtTurnStart, modelForTurn, { exact: true }),
+              employee: session.employee,
+              alreadyNudged: deliveredLevel(merged),
+            });
+            if (pressure) {
+              queueNudge(merged, pressure);
+              logger.info(
+                `Session ${session.id} (${session.employee}) at ${Math.round(pressure.ratio * 100)}% of context ` +
+                  `(${pressure.contextTokens.toLocaleString()}/${pressure.contextWindow.toLocaleString()}) — queued ${pressure.level} handoff nudge`,
+              );
+            }
+          } catch { /* never break a turn on a diagnostic */ }
           return merged as any;
         })(),
         lastActivity: completedAt,
