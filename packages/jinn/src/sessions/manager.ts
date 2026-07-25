@@ -38,7 +38,8 @@ import { SessionQueue } from "./queue.js";
 import { JINN_HOME } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
 import { resolveEffort } from "../shared/effort.js";
-import { effortLevelsForModel, engineAvailable, isKnownEngine, engineUnavailableMessage } from "../shared/models.js";
+import { effortLevelsForModel, engineAvailable, isKnownEngine, engineUnavailableMessage, contextWindowForModel } from "../shared/models.js";
+import { assessContextCeiling, reportContextCeiling } from "../shared/context-ceiling.js";
 import { detectRateLimit, isDeadSessionError, rateLimitEngineLabel } from "../shared/rateLimit.js";
 import { getClaudeExpectedResetAt, isLikelyNearClaudeUsageLimit } from "../shared/usageAwareness.js";
 import { loadJobs } from "../cron/jobs.js";
@@ -917,6 +918,25 @@ export class SessionManager {
           platformContextFingerprint,
         });
       }
+      // The highest context a model ever reaches is the ceiling it is actually
+      // being allowed. If it never approaches the window the roster declares,
+      // the model id we passed is not getting the window we think it is (e.g.
+      // Claude's bare `opus` alias caps at 200K where `opus[1m]` gives 1M) and
+      // sessions will compaction-thrash. Warns once per model; never throws.
+      reportContextCeiling(
+        engineAtTurnStart,
+        modelForTurn,
+        assessContextCeiling({
+          engine: engineAtTurnStart,
+          model: modelForTurn,
+          // `exact`: a model missing from the roster would otherwise report the
+          // engine default's window, and comparing one model's context against
+          // another's declared window is worse than not checking at all.
+          declaredWindow: contextWindowForModel(this.config, engineAtTurnStart, modelForTurn, { exact: true }),
+          currentTokens: result.contextTokens,
+          userPrompt: msg.text,
+        }),
+      );
       const updatedSession = completeSessionAttempt(session.id, attemptToken, {
         ...(typeof result.contextTokens === "number" ? { lastContextTokens: result.contextTokens } : {}),
         status: wasInterrupted ? "interrupted" : (result.error ? "error" : "idle"),
