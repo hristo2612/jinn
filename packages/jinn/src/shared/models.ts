@@ -306,11 +306,24 @@ export function effortLevelsForModel(config: JinnConfig, engine: string, modelId
 }
 
 /** Context window (tokens) for a session's engine+model, or undefined if unknown. */
-export function contextWindowForModel(config: JinnConfig, engine: string, modelId?: string): number | undefined {
+/** Declared context window for a model.
+ *
+ *  By default an unlisted model falls back to the engine's default model, which
+ *  is right for display but wrong for comparisons: it would report model Y's
+ *  window for model X. Pass `exact` when the answer is only meaningful if this
+ *  specific model is actually in the roster. */
+export function contextWindowForModel(
+  config: JinnConfig,
+  engine: string,
+  modelId?: string,
+  opts?: { exact?: boolean },
+): number | undefined {
   const entry = getModelRegistry(config)[engine];
   if (!entry) return undefined;
+  const exactMatch = modelId ? entry.models.find((m) => m.id === modelId) : undefined;
+  if (opts?.exact) return exactMatch?.contextWindow;
   const model =
-    (modelId ? entry.models.find((m) => m.id === modelId) : undefined) ??
+    exactMatch ??
     entry.models.find((m) => m.id === entry.defaultModel) ??
     entry.models[0];
   return model?.contextWindow;
