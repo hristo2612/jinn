@@ -5,7 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import yaml from "js-yaml";
 import type { ChatBlock, ChatBlockEnvelope, CronJob, DelegatedActivity, Employee, Engine, IncomingMessage, JinnConfig, JsonObject, Session, StreamDelta, Target } from "../shared/types.js";
-import { isInterruptibleEngine, STRUCTURED_MESSAGE_BODY_MAX_CHARS } from "../shared/types.js";
+import { isInterruptibleEngine, reportsTurnProgress, STRUCTURED_MESSAGE_BODY_MAX_CHARS } from "../shared/types.js";
 import { compactEmployeeRole } from "../shared/employee-role.js";
 export { compactEmployeeRole } from "../shared/employee-role.js";
 import {
@@ -1982,6 +1982,26 @@ export function buildSessionDelegatedActivityIndex(
   return buildDelegatedActivityIndex(sessions, activeSessionIds);
 }
 
+/** How long an in-flight turn may produce nothing before the UI says so. Well below
+ *  the reconciler's kill threshold on purpose: the operator should see a session go
+ *  amber — and get the chance to interrupt or resend it themselves — long before
+ *  anything is reclaimed automatically. */
+const TURN_STALL_VISIBLE_MS = 90_000;
+
+/** Derived stall state for the UI. Null unless a turn is in flight AND it has gone
+ *  quiet with no tools or upstream work to explain the silence. */
+function computeTurnStall(session: Session, context: ApiContext): Session["turnStall"] {
+  if (session.status !== "running") return null;
+  const engine = context.sessionManager.getEngine(session.engine);
+  if (!engine || !reportsTurnProgress(engine)) return null;
+  const progress = engine.turnProgress(session.id);
+  if (!progress) return null;
+  if (progress.activeTools > 0 || progress.activeUpstream) return null;
+  const stalledForMs = Date.now() - progress.lastProgressAt;
+  if (stalledForMs < TURN_STALL_VISIBLE_MS) return null;
+  return { stalledForMs, awaitingSubmit: progress.awaitingSubmit };
+}
+
 export function serializeSession(
   session: Session,
   context: ApiContext,
@@ -1997,6 +2017,7 @@ export function serializeSession(
     ...session,
     queueDepth,
     transportState,
+    turnStall: computeTurnStall(session, context),
     backgroundActivity: bg && !bgIsStale
       ? { activeStreams: bg.activeStreams, lastActivityAt: new Date(bg.lastActivityAt).toISOString() }
       : null,

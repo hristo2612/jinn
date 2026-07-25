@@ -59,6 +59,9 @@ interface Session {
   backgroundActivity?: BackgroundActivity | null
   /** Active descendant employee sessions; derived by the gateway. */
   delegatedActivity?: DelegatedActivity | null
+  /** The in-flight turn has produced nothing for a while; derived by the gateway.
+   *  A running session and a wedged one are otherwise indistinguishable. */
+  turnStall?: { stalledForMs: number; awaitingSubmit: boolean } | null
   [key: string]: unknown
 }
 
@@ -396,16 +399,51 @@ export function isRecentError(
   return nowMs - ts < RECENT_ERROR_WINDOW_MS
 }
 
+/** Read the gateway-derived stall state off a session, tolerating older payloads
+ *  (a gateway that predates the field simply never reports a stall). */
+export function getTurnStall(session: Session): { stalledForMs: number; awaitingSubmit: boolean } | null {
+  const stall = session.turnStall
+  if (!stall || typeof stall.stalledForMs !== "number" || !Number.isFinite(stall.stalledForMs)) return null
+  if (stall.stalledForMs <= 0) return null
+  return { stalledForMs: stall.stalledForMs, awaitingSubmit: !!stall.awaitingSubmit }
+}
+
+/** Coarse elapsed label — "2m", "51m", "1h 4m". Deliberately low-precision: the
+ *  operator needs to know it has been too long, not the exact second. */
+export function formatStallAge(ms: number): string {
+  const totalMinutes = Math.floor(ms / 60_000)
+  if (totalMinutes < 1) return "under a minute"
+  if (totalMinutes < 60) return `${totalMinutes}m`
+  const hours = Math.floor(totalMinutes / 60)
+  const minutes = totalMinutes % 60
+  return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`
+}
+
 // Resolve the attention-state dot for a session. Returns null for the resting
 // "read" state so no dot is painted (quiet at rest). Optionally treat the row
 // as unread even when this session is read (e.g. a grouped employee row whose
 // other chats are unread).
-function getStatusDot(
+export function getStatusDot(
   session: Session,
   readSet: Set<string>,
   forceUnread = false,
 ): StatusDotState | null {
-  if (session.status === "running") return { color: "var(--system-blue)", label: "running", pulse: true }
+  if (session.status === "running") {
+    // A stalled turn must not look like a working one. Same blue-dot spinner for
+    // both is exactly why a 51-minute hang can sit unnoticed: amber + an elapsed
+    // count is the difference between "thinking" and "go look at this".
+    const stall = getTurnStall(session)
+    if (stall) {
+      return {
+        color: "var(--system-orange)",
+        label: stall.awaitingSubmit
+          ? `prompt not accepted by the engine (stuck ${formatStallAge(stall.stalledForMs)})`
+          : `no output for ${formatStallAge(stall.stalledForMs)}`,
+        pulse: false, // a still dot reads as stuck; pulsing reads as working
+      }
+    }
+    return { color: "var(--system-blue)", label: "running", pulse: true }
+  }
   if (isRecentError(session.status, getSessionActivity(session), Date.now())) {
     return { color: "var(--system-red)", label: "error", pulse: false }
   }
@@ -414,6 +452,42 @@ function getStatusDot(
   // which would read like an error. Calm grey stays visible without alarming.
   if (forceUnread || !readSet.has(session.id)) return { color: "var(--text-secondary)", label: "unread", pulse: false }
   return null
+}
+
+/** Row-level "this needs a look" chips.
+ *
+ *  Both facts here were previously unobservable: a wedged session rendered exactly
+ *  like a working one indefinitely, and the queue piling up behind it was not shown
+ *  at all — so the only way to find a stuck employee was to go looking for one. */
+function SessionAttentionChips({ session }: { session: Session }) {
+  const stall = session.status === "running" ? getTurnStall(session) : null
+  const queued = typeof session.queueDepth === "number" ? session.queueDepth : 0
+  if (!stall && queued <= 0) return null
+  return (
+    <span className="flex shrink-0 items-center gap-1.5">
+      {stall ? (
+        <span
+          title={
+            stall.awaitingSubmit
+              ? "The engine never accepted this prompt. Open the CLI view to resend it, or interrupt the session."
+              : `The turn is still in flight but has produced no output for ${formatStallAge(stall.stalledForMs)}.`
+          }
+          style={{ background: "color-mix(in srgb, var(--system-orange) 14%, transparent)" }}
+          className="shrink-0 rounded-sm px-1 text-[10px] font-medium tabular-nums text-[var(--system-orange)]"
+        >
+          {stall.awaitingSubmit ? "not accepted" : `stalled ${formatStallAge(stall.stalledForMs)}`}
+        </span>
+      ) : null}
+      {queued > 0 ? (
+        <span
+          title={`${queued} queued message${queued === 1 ? "" : "s"} waiting on this session`}
+          className="shrink-0 rounded-sm bg-[var(--fill-secondary)] px-1 text-[10px] font-medium tabular-nums text-[var(--text-secondary)]"
+        >
+          {queued} queued
+        </span>
+      ) : null}
+    </span>
+  )
 }
 
 function StatusDot({
@@ -785,7 +859,10 @@ const FlatSessionRow = React.memo(function FlatSessionRow({
                   }}
                 />
               ) : (
-                <div className="truncate text-[11px] text-[var(--text-tertiary)]">{displayTitle}</div>
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <span className="min-w-0 truncate text-[11px] text-[var(--text-tertiary)]">{displayTitle}</span>
+                  <SessionAttentionChips session={session} />
+                </div>
               )}
             </div>
           </button>

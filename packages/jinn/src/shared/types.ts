@@ -158,6 +158,30 @@ export function isInterruptibleEngine(engine: Engine): engine is InterruptibleEn
   return "kill" in engine && "isAlive" in engine && "killAll" in engine;
 }
 
+/** Observable progress of an in-flight engine turn. Reported by engines that can
+ *  distinguish "a turn exists" from "a turn is getting somewhere" — the gateway's
+ *  turn heartbeat cannot, because it ticks for exactly as long as run() is pending
+ *  and so reads healthy for a permanently wedged turn. */
+export interface TurnProgress {
+  turnStartedAt: number;
+  /** Newest of: turn start, last hook, last engine output. */
+  lastProgressAt: number;
+  /** The prompt was handed to the engine but never acknowledged as started. */
+  awaitingSubmit: boolean;
+  /** Local tool calls in flight. A long tool is real work, not a stall. */
+  activeTools: number;
+  /** Upstream API requests in flight (background subagents/tasks). */
+  activeUpstream: boolean;
+}
+
+export interface TurnProgressEngine extends Engine {
+  turnProgress(sessionId: string): TurnProgress | undefined;
+}
+
+export function reportsTurnProgress(engine: Engine): engine is TurnProgressEngine {
+  return typeof (engine as Partial<TurnProgressEngine>).turnProgress === "function";
+}
+
 export interface EngineRunOpts {
   prompt: string;
   resumeSessionId?: string;
@@ -392,6 +416,11 @@ export interface Session {
    *  work — the CLI still has upstream API requests in flight (background
    *  subagents/tasks) after the turn settled. Null when none. */
   backgroundActivity?: { activeStreams: number; lastActivityAt: string } | null;
+  /** Serialize-time only (derived, never persisted): the in-flight turn has made no
+   *  observable progress for a while. Null when the turn is healthy or none runs.
+   *  Lets the UI distinguish a wedged session from a hard-thinking one — they are
+   *  otherwise identical, indefinitely. */
+  turnStall?: { stalledForMs: number; awaitingSubmit: boolean } | null;
   /** Serialize-time only (derived, never persisted): active employee sessions
    *  anywhere below this session in the parent/child tree. */
   delegatedActivity?: DelegatedActivity | null;

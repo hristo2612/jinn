@@ -3,7 +3,7 @@ import { createElement } from 'react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { isFocusedSession } from '../chat-route-helpers'
-import { hasBackgroundActivity, isArchivedSession, isDirectSession, isRecentError, isVisibleSource, pickDeleteFallbackId, pickNeighborSessionId, resolveRowIdentity, shouldFloatPinned, WorkflowSessionChip } from '../chat-sidebar'
+import { formatStallAge, getStatusDot, getTurnStall, hasBackgroundActivity, isArchivedSession, isDirectSession, isRecentError, isVisibleSource, pickDeleteFallbackId, pickNeighborSessionId, resolveRowIdentity, shouldFloatPinned, WorkflowSessionChip } from '../chat-sidebar'
 
 afterEach(() => {
   vi.useRealTimers()
@@ -280,5 +280,75 @@ describe('pickDeleteFallbackId (the ONE post-delete fallback decision)', () => {
     expect(pickDeleteFallbackId(['only'], ['only'], 'only')).toBeNull()
     expect(pickDeleteFallbackId([], [], 'gone')).toBeNull()
     expect(pickDeleteFallbackId([], ['gone'], 'gone')).toBeNull()
+  })
+})
+
+describe('formatStallAge', () => {
+  it('reads coarsely — the operator needs "too long", not a stopwatch', () => {
+    expect(formatStallAge(30_000)).toBe('under a minute')
+    expect(formatStallAge(60_000)).toBe('1m')
+    expect(formatStallAge(51 * 60_000)).toBe('51m')
+    expect(formatStallAge(60 * 60_000)).toBe('1h')
+    expect(formatStallAge(64 * 60_000)).toBe('1h 4m')
+  })
+})
+
+describe('getTurnStall', () => {
+  it('reads the gateway-derived stall state', () => {
+    expect(getTurnStall({ id: 's', turnStall: { stalledForMs: 90_000, awaitingSubmit: false } })).toEqual({
+      stalledForMs: 90_000,
+      awaitingSubmit: false,
+    })
+    expect(getTurnStall({ id: 's', turnStall: { stalledForMs: 5_000, awaitingSubmit: true } })).toEqual({
+      stalledForMs: 5_000,
+      awaitingSubmit: true,
+    })
+  })
+
+  it('tolerates gateways that predate the field, and rejects junk', () => {
+    expect(getTurnStall({ id: 's' })).toBeNull()
+    expect(getTurnStall({ id: 's', turnStall: null })).toBeNull()
+    expect(getTurnStall({ id: 's', turnStall: { stalledForMs: 0, awaitingSubmit: false } })).toBeNull()
+    expect(getTurnStall({ id: 's', turnStall: { stalledForMs: -1, awaitingSubmit: false } })).toBeNull()
+    expect(getTurnStall({ id: 's', turnStall: { stalledForMs: NaN, awaitingSubmit: false } })).toBeNull()
+    expect(getTurnStall({ id: 's', turnStall: { awaitingSubmit: true } as never })).toBeNull()
+  })
+})
+
+describe('getStatusDot: a stalled turn must not look like a working one', () => {
+  const read = new Set(['s1'])
+
+  it('paints a working turn blue and pulsing', () => {
+    expect(getStatusDot({ id: 's1', status: 'running' }, read)).toEqual({
+      color: 'var(--system-blue)',
+      label: 'running',
+      pulse: true,
+    })
+  })
+
+  it('paints a stalled turn amber and STILL, with the elapsed time in the label', () => {
+    const dot = getStatusDot(
+      { id: 's1', status: 'running', turnStall: { stalledForMs: 51 * 60_000, awaitingSubmit: false } },
+      read,
+    )
+    expect(dot).toEqual({ color: 'var(--system-orange)', label: 'no output for 51m', pulse: false })
+  })
+
+  it('names the unaccepted-prompt case specifically — it has a different fix', () => {
+    const dot = getStatusDot(
+      { id: 's1', status: 'running', turnStall: { stalledForMs: 120_000, awaitingSubmit: true } },
+      read,
+    )
+    expect(dot?.color).toBe('var(--system-orange)')
+    expect(dot?.label).toMatch(/prompt not accepted by the engine/)
+    expect(dot?.pulse).toBe(false)
+  })
+
+  it('ignores stall state on a session that is not running', () => {
+    const dot = getStatusDot(
+      { id: 's1', status: 'idle', turnStall: { stalledForMs: 999_000, awaitingSubmit: true } },
+      read,
+    )
+    expect(dot).toBeNull()
   })
 })

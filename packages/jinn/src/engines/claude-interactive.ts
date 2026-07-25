@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import * as pty from "node-pty";
-import type { InterruptibleEngine, EngineRunOpts, EngineResult, EngineRateLimitInfo, StreamDelta } from "../shared/types.js";
+import type { InterruptibleEngine, EngineRunOpts, EngineResult, EngineRateLimitInfo, StreamDelta, TurnProgress } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
 import { JINN_HOME, CLAUDE_SETTINGS_DIR, HOOK_RELAY_SCRIPT, CLAUDE_LIMITS_DIR } from "../shared/paths.js";
 import { cleanupSessionSettings, writeSessionSettings } from "../shared/claude-settings.js";
@@ -545,6 +545,18 @@ export function shouldSettleStalledTurn(elapsedMs: number, quietMs: number): boo
   return elapsedMs >= TURN_STALL_TIMEOUT_MS && quietMs >= TURN_STALL_QUIET_MS;
 }
 
+/** Warm-PTY submit confirmation. The CR that submits a bracketed paste is not
+ *  guaranteed to land — a 30-line paste into a TUI that is mid-redraw (or near
+ *  auto-compact) can swallow it, stranding the text in the composer while the
+ *  gateway waits forever on a turn that never started. UserPromptSubmit is the
+ *  CLI's acknowledgement; until it arrives, re-send the CR. Every window here is
+ *  bounded so an unsubmittable prompt fails loudly instead of hanging. */
+const SUBMIT_CONFIRM_INTERVAL_MS = 1500;
+const SUBMIT_CONFIRM_ATTEMPTS = 3;
+/** Hooks that prove the pasted prompt is running. SessionStart is excluded on
+ *  purpose: the idle spawn that warmed this PTY fires it before the paste. */
+const SUBMIT_ACK_HOOKS = new Set(["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "StopFailure"]);
+
 /** Claude Code built-in slash commands that run locally and never produce a new
  *  assistant API turn. Two behaviours, both handled by the native-command path:
  *   - Context mutators (/compact, /clear, /model) end without firing a Stop hook;
@@ -569,13 +581,57 @@ export function isNativeClaudeCommand(prompt: string): boolean {
   return first !== undefined && NATIVE_CLAUDE_COMMANDS.has(first);
 }
 
+/** Per-session bookkeeping for the turn currently in flight. Everything here is
+ *  in-memory and lives exactly as long as run() is pending, which is also exactly
+ *  the window in which the gateway's 5s heartbeat is asserting status:"running".
+ *  turnProgress() reads it so that assertion can be checked instead of trusted. */
+interface ActiveTurn {
+  resolver: TurnResolver;
+  onStream?: (d: StreamDelta) => void;
+  boundProc?: pty.IPty;
+  /** Suppresses auto-compaction summaries from leaking into the chat stream. */
+  gate?: CompactionStreamGate;
+  /** Local tool calls in flight (PreToolUse seen, PostToolUse not yet). A long
+   *  tool is real work, so a quiet PTY with tools running is NOT a stall. */
+  activeTools: number;
+  startedAt: number;
+  /** Last hook of any kind — proof of life independent of PTY redraw noise. */
+  lastHookAt: number;
+  /** Set once the CLI acknowledges the prompt. False forever = swallowed submit. */
+  promptSubmitted: boolean;
+  /** Stops the submit-confirmation retry loop; called when the turn settles. */
+  cancelSubmitConfirm?: () => void;
+}
+
+/** Optional submit acknowledgement probe for pasteAndSubmit. Supplied by the
+ *  gateway-driven warm-PTY path, where an unsubmitted prompt is an invisible hang;
+ *  omitted for raw WS input, where a human is at the keyboard and can press Enter. */
+export interface SubmitConfirmation {
+  /** True once the CLI acknowledged the prompt (UserPromptSubmit or any in-turn hook). */
+  submitted: () => boolean;
+  /** Called before each re-sent CR. */
+  onRetry?: (attempt: number) => void;
+  /** Called when the retries are exhausted and the prompt is still unacknowledged. */
+  onUnconfirmed?: (attempts: number) => void;
+  /** Test overrides. */
+  intervalMs?: number;
+  attempts?: number;
+}
+
 /** Bracketed-paste `text` into a PTY then submit with CR after a 150ms beat.
  *  Phase 0 finding: bracketed-paste does NOT neutralize a leading /, @, or ! —
  *  they still trigger the slash-command / mention / bash-mode handlers and the
  *  turn is never submitted. neutralizeForPaste() prepends a space for mentions,
  *  bash-mode, and jinn-skill slash commands, while letting engine-native commands
  *  (/compact, /clear, /model, …) pass through raw so the TUI actually runs them.
- *  Shared by injectPrompt() (warm-PTY first turn) and writeStdin() (raw WS input). */
+ *  Shared by injectPrompt() (warm-PTY first turn) and writeStdin() (raw WS input).
+ *
+ *  Pass `confirm` to make the submit verified rather than assumed: the CR is
+ *  re-sent until the CLI acknowledges the prompt, and `onUnconfirmed` fires if it
+ *  never does. Backticking attachment paths (below) removes the known trigger for
+ *  a swallowed CR; this covers the ones we have not characterised — a large paste
+ *  into a TUI mid-redraw, or one near auto-compact. Returns a cancel function —
+ *  the caller MUST call it when the turn settles (see the cancellation note). */
 /**
  * Compose the "Attached files:" suffix, with every path wrapped in backticks.
  *
@@ -602,10 +658,46 @@ export function buildAttachmentSuffix(attachments: readonly string[]): string {
   return "\n\nAttached files:\n" + attachments.map((a) => `- \`${a}\``).join("\n");
 }
 
-export function pasteAndSubmit(proc: Pick<pty.IPty, "write">, text: string): void {
+export function pasteAndSubmit(
+  proc: Pick<pty.IPty, "write">,
+  text: string,
+  confirm?: SubmitConfirmation,
+): () => void {
   const payload = neutralizeForPaste(text);
   proc.write(`\x1b[200~${payload}\x1b[201~`);
-  setTimeout(() => proc.write("\r"), 150);
+  let retryTimer: NodeJS.Timeout | undefined;
+  const submitTimer = setTimeout(() => {
+    proc.write("\r");
+    if (!confirm) return;
+    const maxAttempts = confirm.attempts ?? SUBMIT_CONFIRM_ATTEMPTS;
+    let attempt = 0;
+    retryTimer = setInterval(() => {
+      if (confirm.submitted()) {
+        if (retryTimer) clearInterval(retryTimer);
+        retryTimer = undefined;
+        return;
+      }
+      if (attempt >= maxAttempts) {
+        if (retryTimer) clearInterval(retryTimer);
+        retryTimer = undefined;
+        confirm.onUnconfirmed?.(attempt);
+        return;
+      }
+      attempt += 1;
+      confirm.onRetry?.(attempt);
+      proc.write("\r");
+    }, confirm.intervalMs ?? SUBMIT_CONFIRM_INTERVAL_MS);
+    retryTimer.unref?.();
+  }, 150);
+  // Cancellation is not optional: a turn that settles for any other reason (user
+  // interrupt, PTY death, engine switch) must stop this loop, or it would keep
+  // writing CRs into a PTY that now belongs to a DIFFERENT turn — submitting
+  // whatever that turn's composer happens to hold.
+  return () => {
+    clearTimeout(submitTimer);
+    if (retryTimer) clearInterval(retryTimer);
+    retryTimer = undefined;
+  };
 }
 
 export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngine {
@@ -616,7 +708,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
    *  released by a kill->respawn race can't poison the freshly-started turn.
    *  `onStream` is the current turn's delta callback; the per-PTY SSE proxy routes
    *  parsed events here (a PTY outlives its turn, so the proxy looks this up live). */
-  private active = new Map<string, { resolver: TurnResolver; onStream?: (d: StreamDelta) => void; boundProc?: pty.IPty; gate?: CompactionStreamGate }>();
+  private active = new Map<string, ActiveTurn>();
   /** Sessions with an in-flight async idle-spawn (proxy.start awaited) — prevents
    *  a second ensureIdleSpawn from racing in a duplicate PTY during that gap. */
   private idleSpawning = new Set<string>();
@@ -811,10 +903,17 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
       native: nativeCommand,
       shouldDeferStopFailure: () => this.hasActiveUpstream(jinnSessionId),
     });
-    const entry: { resolver: TurnResolver; onStream?: (d: StreamDelta) => void; boundProc?: pty.IPty; activeTools: number } = {
+    const entry: ActiveTurn = {
       resolver,
       onStream: opts.onStream,
       activeTools: 0,
+      startedAt: turnStartedAt,
+      lastHookAt: turnStartedAt,
+      // Only the warm-PTY paste has to earn this flag. The cold-spawn path carries
+      // the prompt in argv, so it is submitted by construction; native commands are
+      // exempt because no acknowledgement is expected for them (see injectPrompt
+      // below) and awaitingSubmit must not mean "waiting for a signal we never want".
+      promptSubmitted: !warm || nativeCommand,
     };
     let turnMarkedStarted = false;
     let watchdog: NodeJS.Timeout | undefined;
@@ -827,6 +926,14 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
       // Register BEFORE spawning so a fast SessionStart is buffered+drained, not lost.
       this.hookRegistry.register(jinnSessionId, (h) => {
         resolver.onHook(h);
+        entry.lastHookAt = Date.now();
+        // Submit acknowledgement. UserPromptSubmit is the direct signal; the in-turn
+        // hooks are accepted too because none of them can fire before a prompt is
+        // running. SessionStart is deliberately NOT accepted — it can arrive from the
+        // idle spawn that preceded this turn and would falsely confirm the submit.
+        if (SUBMIT_ACK_HOOKS.has(h.hook_event_name)) {
+          entry.promptSubmitted = true;
+        }
         // tool_use markers + intermediate text stream from the per-PTY SSE proxy
         // in true order. The hook only supplies tool_result; SSE has no local tool
         // completion event because tools execute between assistant messages.
@@ -845,7 +952,30 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
         // between getWarm() above and the proc.write() inside injectPrompt.
         this.lifecycle.turnStarted(jinnSessionId);
         turnMarkedStarted = true;
-        this.injectPrompt(warm, opts);
+        // Native commands (/compact, /clear, /model) run locally and settle via
+        // nativeCommandTimer; they need not emit UserPromptSubmit at all, so
+        // confirming them would re-send CRs at a prompt that already did its work.
+        // Same exclusion the lost-Stop recovery makes below, for the same reason.
+        entry.cancelSubmitConfirm = this.injectPrompt(warm, opts, nativeCommand ? undefined : {
+          // A settled turn is no longer ours to submit — stop either way. Without
+          // this the loop would outlive an early interrupt until run()'s finally.
+          submitted: () => entry.promptSubmitted || resolver.isSettled,
+          onRetry: (attempt) => logger.warn(
+            `InteractiveClaudeEngine: prompt submit unacknowledged for ${jinnSessionId} — re-sending CR (attempt ${attempt})`,
+          ),
+          // Every retry failed: the CLI is not going to take this prompt. Settle the
+          // turn instead of leaving run() pending forever — the heartbeat would keep
+          // asserting status:"running" and no other watchdog covers a live PTY that
+          // simply never started a turn. The pasted text is still in the composer, so
+          // the operator (or a resume) loses nothing.
+          onUnconfirmed: (attempts) => {
+            logger.warn(
+              `InteractiveClaudeEngine: prompt never submitted for ${jinnSessionId} after ${attempts} retries ` +
+              `— settling turn as interrupted (text remains in the CLI composer)`,
+            );
+            resolver.interrupt("Interrupted: the engine never acknowledged the prompt (submit not confirmed)");
+          },
+        });
         entry.boundProc = (warm as any)._proc as pty.IPty | undefined;
       } else {
         const handle = await this.spawn(jinnSessionId, opts, settingsPath);
@@ -937,6 +1067,8 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
       if (watchdog) clearInterval(watchdog);
       if (nativeCommandTimer) clearInterval(nativeCommandTimer);
       if (lostStopRecoveryTimer) clearInterval(lostStopRecoveryTimer);
+      // MUST run before the PTY can be handed to another turn — see pasteAndSubmit.
+      entry.cancelSubmitConfirm?.();
       this.hookRegistry.unregister(jinnSessionId);
       this.active.delete(jinnSessionId);
       if (turnMarkedStarted) this.lifecycle.turnEnded(jinnSessionId); // manager decides kill vs keep-warm
@@ -1216,14 +1348,14 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
   }
 
   /** Inject a follow-up prompt into a warm PTY via bracketed-paste + CR. */
-  private injectPrompt(handle: PtyHandle, opts: EngineRunOpts): void {
+  private injectPrompt(handle: PtyHandle, opts: EngineRunOpts, confirm?: SubmitConfirmation): (() => void) | undefined {
     const proc = (handle as any)._proc as pty.IPty | undefined;
-    if (!proc) return;
+    if (!proc) return undefined;
     let text = buildPromptWithPlatformContext(opts);
     if (opts.attachments?.length) {
       text += buildAttachmentSuffix(opts.attachments);
     }
-    pasteAndSubmit(proc, text);
+    return pasteAndSubmit(proc, text, confirm);
   }
 
   subscribeWithSnapshot(
@@ -1288,6 +1420,30 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
   /** True only while a turn is in flight (distinct from "PTY is warm"). */
   isTurnRunning(sessionId: string): boolean {
     return this.active.has(sessionId);
+  }
+
+  /** Observable progress for the in-flight turn, or undefined if none is running.
+   *
+   *  isTurnRunning() answers "does the gateway think a turn exists" — it is a
+   *  bookkeeping lookup, so it stays true for a wedged turn forever. This answers
+   *  the question that actually matters: is that turn *getting anywhere*. The
+   *  reconciler uses it to catch hangs the heartbeat cannot (the heartbeat runs for
+   *  as long as run() is pending, so a fresh heartbeat proves only that the gateway
+   *  is still waiting), and serializeSession uses it to show stall in the UI.
+   *
+   *  PTY output alone is a weak signal — the TUI redraws its footer while idle at
+   *  the prompt — so hooks and tool state are reported alongside it and callers
+   *  weigh them together. */
+  turnProgress(sessionId: string): TurnProgress | undefined {
+    const entry = this.active.get(sessionId);
+    if (!entry) return undefined;
+    return {
+      turnStartedAt: entry.startedAt,
+      lastProgressAt: Math.max(entry.startedAt, entry.lastHookAt, this.lastOutputAt.get(sessionId) ?? 0),
+      awaitingSubmit: !entry.promptSubmitted,
+      activeTools: entry.activeTools,
+      activeUpstream: this.hasActiveUpstream(sessionId),
+    };
   }
 
   /** True iff a warm PTY exists for this session (in the lifecycle manager). */

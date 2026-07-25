@@ -350,4 +350,104 @@ describe("shouldSettleStalledTurn", () => {
     expect(shouldSettleStalledTurn(5 * MIN, 60_000)).toBe(false);
     expect(shouldSettleStalledTurn(15 * MIN, 5 * MIN)).toBe(true);
   });
+
+  it("stops after one CR when no confirmation is requested", () => {
+    vi.useFakeTimers();
+    const writes: string[] = [];
+    pasteAndSubmit({ write: (d: string) => writes.push(d) } as any, "hello");
+    vi.advanceTimersByTime(60_000);
+    expect(writes.filter((w) => w === "\r")).toHaveLength(1);
+  });
+
+  it("re-sends CR until the engine acknowledges the prompt", () => {
+    vi.useFakeTimers();
+    const writes: string[] = [];
+    const retries: number[] = [];
+    let submitted = false;
+    pasteAndSubmit({ write: (d: string) => writes.push(d) } as any, "queued work", {
+      submitted: () => submitted,
+      onRetry: (n) => retries.push(n),
+      onUnconfirmed: () => { throw new Error("must not give up — the prompt was acknowledged"); },
+      intervalMs: 1000,
+      attempts: 3,
+    });
+    vi.advanceTimersByTime(150);
+    expect(writes.filter((w) => w === "\r")).toHaveLength(1); // the optimistic CR
+
+    // The swallowed-CR case: nothing acknowledges, so the loop retries.
+    vi.advanceTimersByTime(1000);
+    expect(retries).toEqual([1]);
+    expect(writes.filter((w) => w === "\r")).toHaveLength(2);
+
+    // The CLI finally takes it — retries must stop immediately, and no further CR
+    // may be written (an extra CR would submit an empty prompt on the next turn).
+    submitted = true;
+    vi.advanceTimersByTime(10_000);
+    expect(retries).toEqual([1]);
+    expect(writes.filter((w) => w === "\r")).toHaveLength(2);
+  });
+
+  it("gives up after the retry budget so the turn can be failed instead of hanging", () => {
+    vi.useFakeTimers();
+    const writes: string[] = [];
+    const gaveUp: number[] = [];
+    pasteAndSubmit({ write: (d: string) => writes.push(d) } as any, "queued work", {
+      submitted: () => false,
+      onUnconfirmed: (n) => gaveUp.push(n),
+      intervalMs: 1000,
+      attempts: 3,
+    });
+    vi.advanceTimersByTime(150 + 3 * 1000);
+    expect(writes.filter((w) => w === "\r")).toHaveLength(4); // initial + 3 retries
+    expect(gaveUp).toEqual([]);
+    vi.advanceTimersByTime(1000); // the sweep after the budget is spent
+    expect(gaveUp).toEqual([3]);
+    // And it must stop writing — not spin CRs into the PTY forever.
+    vi.advanceTimersByTime(60_000);
+    expect(writes.filter((w) => w === "\r")).toHaveLength(4);
+  });
+
+  it("cancel() stops the retry loop, so a settled turn cannot type into the next one", () => {
+    vi.useFakeTimers();
+    const writes: string[] = [];
+    const cancel = pasteAndSubmit({ write: (d: string) => writes.push(d) } as any, "queued work", {
+      submitted: () => false,
+      onUnconfirmed: () => { throw new Error("cancelled loops must not report"); },
+      intervalMs: 1000,
+      attempts: 5,
+    });
+    vi.advanceTimersByTime(150);
+    cancel();
+    vi.advanceTimersByTime(60_000);
+    expect(writes.filter((w) => w === "\r")).toHaveLength(1);
+  });
+
+  it("treats a settled turn as no longer needing submission", () => {
+    // run() wires `submitted` to include resolver.isSettled, so an early interrupt
+    // stops the retry loop immediately rather than typing into a dead turn.
+    vi.useFakeTimers();
+    const writes: string[] = [];
+    let settled = false;
+    pasteAndSubmit({ write: (d: string) => writes.push(d) } as any, "queued work", {
+      submitted: () => settled, // stands in for `promptSubmitted || resolver.isSettled`
+      onUnconfirmed: () => { throw new Error("a settled turn must not be reported unconfirmed"); },
+      intervalMs: 1000,
+      attempts: 3,
+    });
+    vi.advanceTimersByTime(150);
+    settled = true;
+    vi.advanceTimersByTime(60_000);
+    expect(writes.filter((w) => w === "\r")).toHaveLength(1);
+  });
+
+  it("cancel() before the initial CR suppresses the submit entirely", () => {
+    vi.useFakeTimers();
+    const writes: string[] = [];
+    const cancel = pasteAndSubmit({ write: (d: string) => writes.push(d) } as any, "queued work", {
+      submitted: () => false,
+    });
+    cancel(); // turn died inside the 150ms paste-settle beat
+    vi.advanceTimersByTime(60_000);
+    expect(writes.filter((w) => w === "\r")).toHaveLength(0);
+  });
 });

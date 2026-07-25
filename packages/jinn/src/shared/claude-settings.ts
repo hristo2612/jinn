@@ -14,8 +14,14 @@ interface HookMatcher { hooks: HookCommand[]; }
 // StopFailure fires INSTEAD of Stop when an API error ends the turn (rate_limit,
 // billing_error, server_error, …) — confirmed by the Phase 0 spike. It is the
 // structured rate-limit signal, so it must be registered alongside Stop.
+// UserPromptSubmit is the CLI's authoritative "this prompt is now running"
+// acknowledgement. The warm-PTY path submits by writing a CR after a bracketed
+// paste, and that CR can be swallowed (large paste mid-redraw, TUI busy) — leaving
+// the text sitting in the composer while the gateway waits on a turn that never
+// started. Registering this hook turns "did the submit land?" from a guess into a
+// fact; claude-interactive.ts retries the CR until it arrives.
 export interface ClaudeSettings {
-  hooks: Record<"SessionStart" | "Stop" | "StopFailure" | "PreToolUse" | "PostToolUse", HookMatcher[]>;
+  hooks: Record<"SessionStart" | "UserPromptSubmit" | "Stop" | "StopFailure" | "PreToolUse" | "PostToolUse", HookMatcher[]>;
   statusLine?: HookCommand;
   appendSystemPrompt?: string;
 }
@@ -55,6 +61,7 @@ export function buildSessionSettings(opts: SessionSettingsOpts): ClaudeSettings 
   return {
     hooks: {
       SessionStart: [cmd()],
+      UserPromptSubmit: [cmd()],
       Stop: [cmd()],
       StopFailure: [cmd()],
       PreToolUse: [cmd()],
