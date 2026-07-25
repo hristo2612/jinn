@@ -85,14 +85,14 @@ describe("note tool contracts", () => {
       "create_note",
       "update_note",
     ]);
-    expect(names).toHaveLength(62);
+    expect(names).toHaveLength(63);
   });
 
   it("omits Notes verbs from the full belt when the feature is disabled", () => {
     const names = buildTools({ notesEnabled: false }).map((candidate) => candidate.name);
 
     expect(names.filter((name) => name.endsWith("_note") || name.endsWith("_notes"))).toEqual([]);
-    expect(names).toHaveLength(58);
+    expect(names).toHaveLength(59);
   });
 
   it("teaches read-before-update in the list result hint", async () => {

@@ -7,13 +7,21 @@ import { projectPiToolManifest } from "../../engines/pi-mcp.js";
 // list_work_item_attachments, list_departments) with the same ~zero headroom
 // discipline as before: new tool prose must stay concise rather than growing
 // into this ceiling.
-const MAX_MANIFEST_TOKENS = 4911;
+//
+// 4911 → 5125 (review_verdict). The review-verdict surface is the only route
+// that reaches `bounce`, and therefore the only route that makes a review
+// rejection a COUNTED round. Without it `/status` sets `manual`, a manual move
+// into `executing` is legal only from backlog/assigned, so the bounce edge —
+// and with it the whole `effectiveMaxRounds` budget — is unreachable and review
+// loops never terminate. Cost after trimming its prose: 181 tokens for the
+// tool, 214 for the manifest delta. Ceiling is the new pi projection + 2.
+const MAX_MANIFEST_TOKENS = 5125;
 // Exact gate: js-tiktoken 1.0.21 with its local o200k_base ranks. The provider
 // projection is the OpenAI Responses API function-tool request shape pinned on 2026-07-12.
 const ATTESTED = {
-  rpc: { tokens: 4482, sha256: "e8c6fb5862a71902b66641a0e3e515d1199602c07bf22bb1ad0d85370571e449" },
-  pi: { tokens: 4909, sha256: "da38177f89d2ddc01c7b3454bd659b5da157d3326bf324e86ad5c7ab58f2371b" },
-  openai: { tokens: 4654, sha256: "c9d8605abc1e8567e4742138a1988f770c80110f33a8e96ca0e05d329d6de135" },
+  rpc: { tokens: 4689, sha256: "724546fc5b59276aab0f2d37ac4450c828e8fe5352692b8aa339d47866b0f437" },
+  pi: { tokens: 5123, sha256: "4a57c8528d2028d43dd3080f4fd0612f5936f6ba51ee155c013b4eef347ce6f3" },
+  openai: { tokens: 4864, sha256: "688995cc898f98ed4678daa770ff51d6c1025ca47aaa9863eeb4b13523811af5" },
 } as const;
 
 type TokenizerLoader = () => Promise<[{ Tiktoken: typeof import("js-tiktoken/lite").Tiktoken }, { default: typeof import("js-tiktoken/ranks/o200k_base").default }]>;
@@ -81,6 +89,7 @@ const EXPECTED_TOOL_NAMES = [
   "read_session",
   "request_work_item_approval",
   "retire_workflow",
+  "review_verdict",
   "rerun_workflow_run",
   "retry_workflow_node",
   "search_knowledge",
@@ -146,6 +155,7 @@ const EXPECTED_REQUIRED = {
   read_session: ["sessionId"],
   request_work_item_approval: ["id", "request"],
   retire_workflow: ["workflowId", "expectedRevision"],
+  review_verdict: ["id", "verdict"],
   rerun_workflow_run: ["workflowId", "runId", "definition", "idempotencyKey"],
   retry_workflow_node: ["workflowId", "runId", "nodeId", "idempotencyKey"],
   search_knowledge: ["query"],
@@ -183,6 +193,7 @@ const EXPECTED_ENUMS = {
     ["properties.source", ["human", "delegation", "cron", "workflow", "session", "connector", "goal"]],
   ],
   unlink_work_items: [["properties.kind", ["blocks", "relates", "duplicates"]]],
+  review_verdict: [["properties.verdict", ["pass", "fail", "blocked"]]],
   update_work_item: [["properties.status", ["executing", "in_review", "blocked", "escalated", "done"]]],
 } as const;
 
@@ -233,7 +244,7 @@ describe("tool manifest budget", () => {
   it("keeps tool names, required arrays, and enum arrays stable", () => {
     const tools = buildTools();
     expect(tools.map((t) => t.name).sort()).toEqual([...EXPECTED_TOOL_NAMES].sort());
-    expect(tools).toHaveLength(62);
+    expect(tools).toHaveLength(63);
 
     const required = Object.fromEntries(tools.map((t) => [t.name, t.inputSchema.required ?? []]));
     expect(required).toEqual(EXPECTED_REQUIRED);

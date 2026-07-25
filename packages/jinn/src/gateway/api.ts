@@ -167,6 +167,7 @@ import {
 import {
   appendWorkItemEvent,
   createWorkItem,
+  effectiveMaxRounds,
   getWorkItem,
   getWorkItemBySourceRef,
   getWorkItemSpend,
@@ -1002,6 +1003,11 @@ function cronJobSummary(job: Record<string, unknown>, lastRun: unknown): Record<
 const WORK_ITEM_STATUSES: readonly WorkItemStatus[] = ['backlog', 'assigned', 'executing', 'in_review', 'done', 'blocked', 'escalated', 'cancelled'];
 const WORK_ITEM_SOURCES: readonly WorkItemSource[] = ['human', 'delegation', 'cron', 'workflow', 'session', 'connector', 'goal'];
 const AGENT_WORK_ITEM_TARGETS: readonly WorkItemStatus[] = ['executing', 'in_review', 'blocked', 'escalated', 'done'];
+
+/** The three outcomes of a review pass. `fail` is the counted round; it is the
+ *  verdict the /status route structurally could not express. */
+const REVIEW_VERDICTS = ['pass', 'fail', 'blocked'] as const;
+type ReviewVerdict = (typeof REVIEW_VERDICTS)[number];
 const VERIFY_MODES = ['trust', 'verify', 'thorough'] as const;
 const VERIFY_POLICY_KEYS = new Set(['mode', 'verifier', 'maxRounds']);
 
@@ -1907,16 +1913,48 @@ function resolveTodoEditAuthority(caller: WorkItemCaller, item: WorkItem): TodoE
   };
 }
 
-function canReviewWorkItemDone(session: Session, item: WorkItem, linked: Session[]): { ok: true } | { ok: false; error: string } {
-  if (item.status !== 'in_review') {
-    return { ok: false, error: `marking a Todo done through MCP requires an authorized reviewer and an item already in_review; use the human review surface for ${item.status} → done` };
-  }
-  if (linked.some((s) => s.id === session.id)) {
-    return { ok: false, error: `session ${session.id} executed work item ${item.id} and cannot mark it done — a reviewer does (self-review ban); use the human review surface / a reviewer session to mark done` };
-  }
+type ReviewerIneligibility = 'not-in-review' | 'self-review' | 'not-reviewer';
+
+/**
+ * The reviewer predicate shared by `done` closure and review verdicts: the item
+ * is in review, the caller did NOT execute it (self-review ban), and the caller
+ * is its parent/delegator/creator. Both callers map the same reasons to their
+ * own wording — one predicate so closure and verdict authority cannot diverge.
+ */
+function reviewerEligibility(
+  session: Session,
+  item: WorkItem,
+  linked: Session[],
+): { ok: true } | { ok: false; reason: ReviewerIneligibility } {
+  if (item.status !== 'in_review') return { ok: false, reason: 'not-in-review' };
+  if (linked.some((s) => s.id === session.id)) return { ok: false, reason: 'self-review' };
   if (linked.some((s) => s.parentSessionId === session.id)) return { ok: true };
   if (item.sourceRef?.startsWith(`delegate:${session.id}:`)) return { ok: true };
   if (item.source === 'session' && item.sourceRef?.startsWith(`session:${session.id}:`)) return { ok: true };
+  return { ok: false, reason: 'not-reviewer' };
+}
+
+function canReviewWorkItemDone(session: Session, item: WorkItem, linked: Session[]): { ok: true } | { ok: false; error: string } {
+  const eligible = reviewerEligibility(session, item, linked);
+  if (eligible.ok) return { ok: true };
+  if (eligible.reason === 'not-in-review') {
+    return { ok: false, error: `marking a Todo done through MCP requires an authorized reviewer and an item already in_review; use the human review surface for ${item.status} → done` };
+  }
+  if (eligible.reason === 'self-review') {
+    return { ok: false, error: `session ${session.id} executed work item ${item.id} and cannot mark it done — a reviewer does (self-review ban); use the human review surface / a reviewer session to mark done` };
+  }
+  return { ok: false, error: `session ${session.id} is not an authorized reviewer for Todo ${item.id}; use the human review surface or the parent reviewer session` };
+}
+
+function canRenderReviewVerdict(session: Session, item: WorkItem, linked: Session[]): { ok: true } | { ok: false; error: string } {
+  const eligible = reviewerEligibility(session, item, linked);
+  if (eligible.ok) return { ok: true };
+  if (eligible.reason === 'not-in-review') {
+    return { ok: false, error: `a review verdict applies to a Todo already in_review; ${item.id} is ${item.status}` };
+  }
+  if (eligible.reason === 'self-review') {
+    return { ok: false, error: `session ${session.id} executed work item ${item.id} and cannot render a verdict on its own work (self-review ban) — its reviewer does` };
+  }
   return { ok: false, error: `session ${session.id} is not an authorized reviewer for Todo ${item.id}; use the human review surface or the parent reviewer session` };
 }
 
@@ -3607,6 +3645,18 @@ export async function handleApiRequest(
       }
       const item = getWorkItem(params.id);
       if (!item) return notFound(res);
+      // A rejection FROM review is a review verdict, not a status write. Routed
+      // here it would skip the round counter entirely (`bounce` is only reachable
+      // through /review, because this route sets `manual` and a manual move into
+      // `executing` is legal only from backlog/assigned), so the loop that
+      // `effectiveMaxRounds` exists to bound becomes unbounded and never
+      // escalates. Producers hitting a genuine external wall still block from
+      // `executing` exactly as before.
+      if (target === "blocked" && item.status === "in_review" && caller.kind !== "operator") {
+        return json(res, {
+          error: `Todo ${item.id} is in_review — a reviewer rejection is a verdict, not a status write. Use review_verdict with verdict "fail" (returns it to the producer as a counted round) or "blocked" (an external need with an exact unblock condition).`,
+        }, 403);
+      }
       const authorized = authorizeAgentWorkItemStatus(caller, item, target as WorkItemStatus);
       if (!authorized.ok) return json(res, { error: authorized.error }, authorized.status);
       // The banner's asked-for-after reason (design-doc §5): a same-status
@@ -3639,7 +3689,12 @@ export async function handleApiRequest(
               manual: true,
               human: isOperatorPut || undefined,
               callerSessionId: caller.kind === "session" ? caller.callerId : undefined,
-              detail: note ? { note } : undefined,
+              // A block written by a caller (not derived by the reconciler) is a
+              // governance declaration: it must survive session-transport churn
+              // until someone resolves it. `declared` is what reconcile.ts reads.
+              detail: target === "blocked"
+                ? { ...(note ? { note } : {}), declared: true }
+                : (note ? { note } : undefined),
             });
         const activityReceiptId = persistTodoMutationActivity(
           req,
@@ -3657,6 +3712,91 @@ export async function handleApiRequest(
             : `${err.message} — use the human surface for this transition if it is intentional`;
           const statusCode = err.code === "illegal-edge" ? 400 : 403;
           return json(res, { error: human }, statusCode);
+        }
+        throw err;
+      }
+    }
+
+    // POST /api/work-items/:id/review — the review VERDICT surface.
+    //
+    // A verdict is a governance act with a consequence, not a status write, and
+    // this is the only route that reaches the consequences:
+    //   pass    → done                     (closure IS the verdict; no separate step)
+    //   fail    → executing {bounce}       (rounds++, auto-escalates at maxRounds)
+    //   blocked → blocked {declared}       (survives reconciler derivation)
+    // The /status route cannot express `fail`: it sets `manual`, and a manual
+    // move into `executing` is legal only from backlog/assigned, so the bounce
+    // edge — and with it the entire round budget — was unreachable there.
+    params = matchRoute("/api/work-items/:id/review", pathname);
+    if (method === "POST" && params) {
+      const caller = resolveWorkItemCaller(req, res, context);
+      if (!caller) return;
+      if (!requireTodoRouteId(res, params.id)) return;
+      const parsed = await readJsonBody(req, res);
+      if (!parsed.ok) return;
+      if (!parsed.body || typeof parsed.body !== "object" || Array.isArray(parsed.body)) {
+        return badRequest(res, "request body must be a JSON object");
+      }
+      const body = parsed.body as Record<string, unknown>;
+      const approvalKeys = findApprovalKeysDeep(body);
+      if (approvalKeys.length > 0) {
+        return badRequest(res, `approval fields (${approvalKeys.join(", ")}) cannot be attached through a review verdict — approvals are requested/decided through the approval authority surface`);
+      }
+      const verdict = typeof body.verdict === "string" ? body.verdict.trim() : "";
+      if (!(REVIEW_VERDICTS as readonly string[]).includes(verdict)) {
+        return badRequest(res, `verdict must be one of ${REVIEW_VERDICTS.join(", ")}`);
+      }
+      const note = typeof body.note === "string" ? body.note.trim() : "";
+      // Findings are batched by construction: a FAIL carries the COMPLETE list
+      // from one exhaustive pass. Returning the first defect found turns one
+      // round into N, and each round is a fresh session paying full context cost.
+      const findings = Array.isArray(body.findings)
+        ? body.findings.filter((f): f is string => typeof f === "string" && f.trim().length > 0).map((f) => f.trim())
+        : [];
+      if (verdict === "fail" && findings.length === 0) {
+        return badRequest(res, "a fail verdict requires findings: the complete ranked list of defects from this pass, not the first one found");
+      }
+      const unblockCondition = typeof body.unblockCondition === "string" ? body.unblockCondition.trim() : "";
+      if (verdict === "blocked" && !unblockCondition) {
+        return badRequest(res, "a blocked verdict requires unblockCondition: the exact external need, stated so someone can satisfy it without asking you");
+      }
+      const item = getWorkItem(params.id);
+      if (!item) return notFound(res);
+      if (caller.kind !== "operator") {
+        const eligible = canRenderReviewVerdict(caller.session, item, listSessionsByWorkItem(item.id));
+        if (!eligible.ok) return json(res, { error: eligible.error }, 403);
+      }
+      const target: WorkItemStatus = verdict === "pass" ? "done" : verdict === "fail" ? "executing" : "blocked";
+      try {
+        const result = transition(params.id, target, workItemActor(caller), {
+          callerSessionId: caller.kind === "session" ? caller.callerId : undefined,
+          bounce: verdict === "fail",
+          detail: {
+            verdict,
+            ...(note ? { note } : {}),
+            ...(findings.length > 0 ? { findings } : {}),
+            ...(verdict === "blocked" ? { declared: true, unblockCondition } : {}),
+          },
+        });
+        const activityReceiptId = persistTodoMutationActivity(
+          req,
+          context,
+          result.item,
+          "status-transitioned",
+          result.item.version !== item.version,
+        );
+        return json(res, withActivityReceipt({
+          workItem: result.item,
+          escalated: result.escalated,
+          verdict,
+          rounds: result.item.rounds,
+          maxRounds: effectiveMaxRounds(result.item),
+        }, activityReceiptId));
+      } catch (err) {
+        if (err instanceof TransitionError) {
+          if (err.code === "not-found") return notFound(res);
+          const statusCode = err.code === "illegal-edge" ? 400 : 403;
+          return json(res, { error: err.message }, statusCode);
         }
         throw err;
       }

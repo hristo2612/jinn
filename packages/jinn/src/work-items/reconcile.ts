@@ -1,7 +1,9 @@
 import {
   effectiveVerifyMode,
   getWorkItem,
+  isBlockDeclared,
   listWorkItems,
+  RECONCILER_ACTOR,
   STICKY_STATUSES,
   type WorkItem,
   type WorkItemSource,
@@ -49,6 +51,17 @@ export interface WorkItemAttemptEvidence {
 /** A session is "in flight" (work is actively happening) in these states. */
 const IN_FLIGHT: ReadonlySet<SessionStatus> = new Set<SessionStatus>(['running', 'waiting']);
 
+/** Extra derivation context that cannot be read from session receipts alone. */
+export interface DeriveWorkItemOptions {
+  /**
+   * True when the item's current `blocked` was DECLARED by a caller (an agent or
+   * the operator saying "this needs a decision") rather than DERIVED from a
+   * failed/interrupted receipt. Computed by `reconcileWorkItem` from the latest
+   * block event so this function stays pure.
+   */
+  blockDeclared?: boolean;
+}
+
 /**
  * Pure derivation: given an item's current status, its provenance, and the
  * terminal receipts of its linked sessions **ordered newest-first** (as
@@ -60,6 +73,7 @@ export function deriveWorkItemStatus(
   current: WorkItemStatus,
   attempts: readonly WorkItemAttemptEvidence[],
   source?: WorkItemSource,
+  opts?: DeriveWorkItemOptions,
 ): WorkItemStatus {
   if (STICKY_STATUSES.has(current)) return current;
   if (attempts.length === 0) return current;
@@ -67,6 +81,14 @@ export function deriveWorkItemStatus(
   // Parent callbacks and review conversations may run on linked sessions after
   // submission; only an explicit review bounce may reopen execution.
   if (current === 'in_review') return current;
+  // A DECLARED block is governance too — the same argument as `in_review`. An
+  // agent saying "I need an operator decision" must not be erased because some
+  // linked session is still live: a follow-up investigation, a watchdog, or the
+  // manager's own probe all count as in-flight and would silently derive the
+  // item back to `executing`, dropping the blocker off the operator's queue
+  // before it was ever seen. A block DERIVED from a failed receipt stays
+  // transport state and keeps re-deriving as before.
+  if (current === 'blocked' && opts?.blockDeclared) return current;
   if (attempts.some((attempt) => IN_FLIGHT.has(attempt.status))) return 'executing';
   // Nothing in flight — the most recent attempt (index 0, newest-first) is the
   // authority (an old clean settle must not mask a newer failure, and a newer
@@ -100,14 +122,17 @@ export function reconcileWorkItem(id: string): ReconcileResult | undefined {
     status: s.status as SessionStatus,
     outcome: s.attemptOutcome ?? null,
   }));
-  const derived = deriveWorkItemStatus(item.status, attempts, item.source);
+  // Only pay for the block-provenance lookup when the item is actually blocked.
+  const derived = deriveWorkItemStatus(item.status, attempts, item.source, {
+    blockDeclared: item.status === 'blocked' ? isBlockDeclared(id) : false,
+  });
 
   let current = item;
   let changed = false;
   if (derived !== item.status) {
     // transitionDerived returns undefined on a sticky/concurrent race — report
     // the fresh truth as unchanged rather than clobbering a deliberate decision.
-    const updated = transitionDerived(id, derived, 'reconciler');
+    const updated = transitionDerived(id, derived, RECONCILER_ACTOR, { declared: false });
     if (updated) {
       current = updated;
       changed = true;

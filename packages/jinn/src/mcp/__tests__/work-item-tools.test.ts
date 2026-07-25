@@ -65,6 +65,7 @@ describe("work-item tools — registry + schemas", () => {
       "create_work_item",
       "update_work_item",
       "edit_work_item",
+      "review_verdict",
       "assign_work_item",
       "archive_work_item",
       "comment_work_item",
@@ -87,7 +88,7 @@ describe("work-item tools — registry + schemas", () => {
     expect(names).toContain("fire_workflow_event");
     expect(names).toContain("cancel_workflow_run");
     expect(names.some((n) => /cancel/i.test(n) && /work_item/.test(n))).toBe(false);
-    expect(names).toHaveLength(62);
+    expect(names).toHaveLength(63);
   });
 
   it("positions list as recent/filter summaries and search as text/filter hits", () => {
@@ -1148,5 +1149,156 @@ describe("work-item attachment + department tools (Todos v2 slice 5)", () => {
     const platform = departments.departments.find((d) => d.slug === "platform");
     expect(platform).toBeDefined();
     expect(platform!.todoCount).toBeGreaterThanOrEqual(1);
+  });
+});
+
+/**
+ * review_verdict — the surface that makes a rejection a COUNTED round.
+ *
+ * Before this tool the only agent route was POST /work-items/:id/status, which
+ * sets `manual`; a manual move into `executing` is legal only from
+ * backlog/assigned, so `in_review → executing` (the bounce edge) was
+ * unreachable and reviewers wrote `in_review → blocked` instead. That edge does
+ * not touch `rounds`, so the round budget never applied and review loops never
+ * terminated.
+ */
+describe("review_verdict — counted rejections and closure-on-PASS", () => {
+  /** A reviewer session, an executor child linked to the item, and the item in review. */
+  function reviewScenario(tag: string, verifyPolicy?: { mode: "trust" | "verify" | "thorough"; maxRounds?: number }) {
+    const reviewer = registry.createSession({ engine: "codex", source: "web", sourceRef: `rv-reviewer-${tag}`, title: `reviewer ${tag}` });
+    const executor = registry.createSession({
+      engine: "codex",
+      source: "web",
+      sourceRef: `rv-executor-${tag}`,
+      title: `executor ${tag}`,
+      parentSessionId: reviewer.id,
+    });
+    const item = store.createWorkItem({
+      title: `review verdict ${tag}`,
+      status: "in_review",
+      source: "delegation",
+      sourceRef: `delegate:${reviewer.id}:${tag}`,
+      ...(verifyPolicy ? { verifyPolicy } : {}),
+    });
+    store.linkSession(item.id, executor.id);
+    return { reviewer, executor, item };
+  }
+
+  it("refuses a fail with no findings — one exhaustive pass, not the first defect", async () => {
+    const { reviewer, item } = reviewScenario("nofindings");
+    await expect(tool("review_verdict").handler({ id: item.id, verdict: "fail" }, ctxFor(reviewer.id)))
+      .rejects.toThrow(/requires findings/i);
+    expect(store.getWorkItem(item.id)?.status).toBe("in_review");
+    expect(store.getWorkItem(item.id)?.rounds).toBe(0);
+  });
+
+  it("refuses a blocked with no unblockCondition", async () => {
+    const { reviewer, item } = reviewScenario("nocondition");
+    await expect(tool("review_verdict").handler({ id: item.id, verdict: "blocked" }, ctxFor(reviewer.id)))
+      .rejects.toThrow(/requires unblockCondition/i);
+    expect(store.getWorkItem(item.id)?.status).toBe("in_review");
+  });
+
+  it("refuses an unknown verdict", async () => {
+    const { reviewer, item } = reviewScenario("badverdict");
+    await expect(tool("review_verdict").handler({ id: item.id, verdict: "maybe" }, ctxFor(reviewer.id)))
+      .rejects.toThrow(/verdict must be one of/i);
+  });
+
+  it("refuses a verdict from the session that executed the work (self-review ban)", async () => {
+    const { executor, item } = reviewScenario("selfreview");
+    await expect(tool("review_verdict").handler(
+      { id: item.id, verdict: "pass" },
+      ctxFor(executor.id),
+    )).rejects.toThrow(/self-review ban/i);
+    expect(store.getWorkItem(item.id)?.status).toBe("in_review");
+  });
+
+  it("fail returns the item to its producer and CONSUMES a round", async () => {
+    const { reviewer, item } = reviewScenario("counted", { mode: "thorough", maxRounds: 4 });
+    const res = (await tool("review_verdict").handler(
+      { id: item.id, verdict: "fail", findings: ["lazy cache validation", "smoke does not bind hashes"] },
+      ctxFor(reviewer.id),
+    )) as { workItem: { status: string; rounds: number }; rounds: number; maxRounds: number };
+
+    expect(res.workItem.status).toBe("executing");
+    expect(res.workItem.rounds).toBe(1);
+    expect(res.maxRounds).toBe(4);
+    const events = store.listWorkItemEvents(item.id);
+    expect(events.at(-1)?.detail).toMatchObject({ bounce: true, verdict: "fail" });
+  });
+
+  it("escalates to the operator when the round budget is exhausted, instead of looping", async () => {
+    const maxRounds = 2;
+    const { reviewer, item } = reviewScenario("exhaust", { mode: "thorough", maxRounds });
+
+    const first = (await tool("review_verdict").handler(
+      { id: item.id, verdict: "fail", findings: ["defect one"] },
+      ctxFor(reviewer.id),
+    )) as { workItem: { status: string } };
+    expect(first.workItem.status).toBe("executing");
+
+    // Producer resubmits, reviewer rejects again — this exhausts the budget.
+    const { transition } = await import("../../work-items/transitions.js");
+    transition(item.id, "in_review", "producer", {});
+
+    const second = (await tool("review_verdict").handler(
+      { id: item.id, verdict: "fail", findings: ["defect two"] },
+      ctxFor(reviewer.id),
+    )) as { workItem: { status: string }; escalated: boolean };
+
+    expect(second.escalated).toBe(true);
+    expect(second.workItem.status).toBe("escalated");
+    expect(store.getWorkItem(item.id)?.status).toBe("escalated");
+  });
+
+  it("pass CLOSES the item — the verdict is the close, not a note for later", async () => {
+    const { reviewer, item } = reviewScenario("passcloses");
+    const res = (await tool("review_verdict").handler(
+      { id: item.id, verdict: "pass", note: "independent PASS" },
+      ctxFor(reviewer.id),
+    )) as { workItem: { status: string; closedAt: string | null } };
+
+    expect(res.workItem.status).toBe("done");
+    expect(res.workItem.closedAt).toBeTruthy();
+  });
+
+  it("blocked records a DECLARED block carrying its exact unblock condition", async () => {
+    const { reviewer, item } = reviewScenario("declared");
+    const res = (await tool("review_verdict").handler(
+      { id: item.id, verdict: "blocked", unblockCondition: "operator must authorize one Vercel production mutation" },
+      ctxFor(reviewer.id),
+    )) as { workItem: { status: string } };
+
+    expect(res.workItem.status).toBe("blocked");
+    expect(store.listWorkItemEvents(item.id).at(-1)?.detail).toMatchObject({
+      declared: true,
+      unblockCondition: "operator must authorize one Vercel production mutation",
+    });
+  });
+
+  it("closes the bypass: update_work_item cannot write `blocked` from in_review", async () => {
+    const { reviewer, item } = reviewScenario("bypass");
+    await expect(tool("update_work_item").handler(
+      { id: item.id, status: "blocked", note: "reviewer rejection smuggled as a status write" },
+      ctxFor(reviewer.id),
+    )).rejects.toThrow(/review_verdict/);
+    expect(store.getWorkItem(item.id)?.status).toBe("in_review");
+    expect(store.getWorkItem(item.id)?.rounds).toBe(0);
+  });
+
+  it("still lets a PRODUCER block from executing — the legitimate external wall", async () => {
+    const owner = registry.createSession({ engine: "codex", source: "web", sourceRef: "rv-wall-owner", title: "wall owner", employee: "platform-dev" });
+    const item = store.createWorkItem({ title: "producer hits a wall", status: "executing", source: "delegation", assignee: "platform-dev" });
+    store.linkSession(item.id, owner.id);
+
+    const res = (await tool("update_work_item").handler(
+      { id: item.id, status: "blocked", note: "source videos absent on the authoritative volume" },
+      ctxFor(owner.id),
+    )) as { workItem: { status: string } };
+
+    expect(res.workItem.status).toBe("blocked");
+    // Producer blocks are declared too — they must survive reconciler derivation.
+    expect(store.listWorkItemEvents(item.id).at(-1)?.detail).toMatchObject({ declared: true });
   });
 });

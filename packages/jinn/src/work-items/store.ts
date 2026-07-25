@@ -51,6 +51,10 @@ const CLOSED_STATUSES: ReadonlySet<WorkItemStatus> = new Set<WorkItemStatus>(['d
  *  to the operator that session churn must not silently undo. */
 export const STICKY_STATUSES: ReadonlySet<WorkItemStatus> = new Set<WorkItemStatus>(['done', 'cancelled', 'escalated']);
 
+/** Actor recorded on the reconciler's own derived writes. Blocks bearing it are
+ *  transport-derived; anything else was declared by a caller. */
+export const RECONCILER_ACTOR = 'reconciler';
+
 export interface VerifyPolicy {
   mode: VerifyMode;
   verifier?: { employee?: string; engine?: string; model?: string };
@@ -376,6 +380,43 @@ export function appendWorkItemEvent(input: AppendWorkItemEventInput): WorkItemEv
 }
 
 /** List an item's audit trail, oldest-first (the story reads top-down). */
+/**
+ * Was this item's current `blocked` DECLARED by a caller, or DERIVED by the
+ * reconciler from a failed/interrupted receipt?
+ *
+ * A declared block is a governance statement ("this needs a decision") and must
+ * survive session-transport churn; a derived one is transport state and keeps
+ * re-deriving. Reads only the newest block event via `idx_wi_events_item`, so
+ * the reconcile sweep stays one bounded row per candidate rather than loading
+ * and JSON-parsing an item's whole event history.
+ *
+ * Blocks written before `declared` existed have no marker; those fall back to
+ * actor provenance — anything the reconciler did not write was written by a
+ * caller. That keeps historical ledgers behaving exactly as they did.
+ */
+export function isBlockDeclared(workItemId: string): boolean {
+  const db = initDb();
+  const id = parseTodoId(workItemId);
+  const row = db
+    .prepare(
+      `SELECT actor, detail FROM work_item_events
+       WHERE work_item_id = ? AND to_status = 'blocked'
+       ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+    )
+    .get(id) as { actor: string | null; detail: string | null } | undefined;
+  if (!row) return false;
+  if (typeof row.detail === 'string' && row.detail) {
+    try {
+      const parsed = JSON.parse(row.detail) as Record<string, unknown>;
+      if (parsed.declared === true) return true;
+      if (parsed.declared === false) return false;
+    } catch {
+      // Unparseable payload falls through to actor provenance.
+    }
+  }
+  return row.actor !== null && row.actor !== RECONCILER_ACTOR;
+}
+
 export function listWorkItemEvents(workItemId: string): WorkItemEvent[] {
   const db = initDb();
   const id = parseTodoId(workItemId);

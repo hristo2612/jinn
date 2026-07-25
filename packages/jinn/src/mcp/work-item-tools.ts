@@ -12,6 +12,9 @@ const WORK_ITEM_NOTE_CHAR_CAP = 8_000;
 const STATUSES = ["backlog", "assigned", "executing", "in_review", "done", "blocked", "escalated", "cancelled"] as const;
 const SOURCES = ["human", "delegation", "cron", "workflow", "session", "connector", "goal"] as const;
 const AGENT_UPDATE_STATUSES = ["executing", "in_review", "blocked", "escalated", "done"] as const;
+/** Review outcomes. Mirrors REVIEW_VERDICTS in gateway/api.ts — the gateway is
+ *  the authority; this copy is the tool-schema enum. */
+const REVIEW_VERDICTS = ["pass", "fail", "blocked"] as const;
 const VERIFY_MODES = ["trust", "verify", "thorough"] as const;
 const ACTIVITY_RECEIPT_HINT = "Preview or Open the persisted activity receipt in this chat.";
 const TODO_ID_SCHEMA = { type: "string", pattern: "^[A-Z]{3}-[1-9][0-9]*$" } as const;
@@ -79,6 +82,22 @@ function optionalString(args: Record<string, unknown>, name: string, max = FILTE
   const s = v.trim();
   assertLength(name, s, max);
   return s;
+}
+
+function optionalStringArray(args: Record<string, unknown>, name: string, max = FILTER_CHAR_CAP): string[] | undefined {
+  const v = args[name];
+  if (v === undefined || v === null) return undefined;
+  if (!Array.isArray(v)) throw new JinnMcpToolError(`${name} must be an array of strings when provided`);
+  const out: string[] = [];
+  for (const entry of v) {
+    if (typeof entry !== "string" || !entry.trim()) {
+      throw new JinnMcpToolError(`${name} entries must be non-empty strings`);
+    }
+    const s = entry.trim();
+    assertLength(`${name} entry`, s, max);
+    out.push(s);
+  }
+  return out;
 }
 
 function optionalEnum<T extends readonly string[]>(args: Record<string, unknown>, name: string, values: T): T[number] | undefined {
@@ -361,7 +380,7 @@ export function buildWorkItemTools(): JinnMcpTool[] {
 
   const update: JinnMcpTool = {
     name: "update_work_item",
-    description: "Update Todo status.",
+    description: "Update status on your OWN Todo. Judging someone else's work is review_verdict; a rejection written here is uncounted and never terminates.",
     inputSchema: {
       type: "object",
       properties: {
@@ -474,6 +493,62 @@ export function buildWorkItemTools(): JinnMcpTool[] {
         return mutationResult(body, "Todo metadata edited.");
       }
       throw conflict!;
+    },
+  };
+
+  const reviewVerdict: JinnMcpTool = {
+    name: "review_verdict",
+    description:
+      "Verdict on a Todo you reviewed but did not execute. pass closes it. fail returns it to the producer as a counted round, escalating to the operator at the round cap. blocked is an external need.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: TODO_ID_SCHEMA,
+        verdict: { type: "string", enum: [...REVIEW_VERDICTS] },
+        note: { type: "string" },
+        findings: {
+          type: "array",
+          items: { type: "string" },
+          description: "Required for fail: every defect from this pass, worst first. All of them costs one round; the first one costs N.",
+        },
+        unblockCondition: { type: "string", description: "Required for blocked: the exact external need." },
+      },
+      required: ["id", "verdict"],
+    },
+    handler: async (args, ctx) => {
+      assertIdentity(ctx);
+      rejectApprovalFields(args, "review_verdict");
+      const id = requireTodoId(args);
+      const verdict = requireString(args, "verdict");
+      if (!(REVIEW_VERDICTS as readonly string[]).includes(verdict)) {
+        throw new JinnMcpToolError(`verdict must be one of ${REVIEW_VERDICTS.join(", ")}`);
+      }
+      const payload: Record<string, unknown> = { verdict };
+      const note = optionalString(args, "note", 4000);
+      if (note !== undefined) payload.note = note;
+      const findings = optionalStringArray(args, "findings", 4000);
+      if (findings !== undefined) payload.findings = findings;
+      if (verdict === "fail" && (findings === undefined || findings.length === 0)) {
+        throw new JinnMcpToolError(
+          "a fail verdict requires findings: the complete ranked list of defects from this pass. One exhaustive pass returning everything costs one round; returning the first defect found costs N rounds and N fresh sessions.",
+        );
+      }
+      const unblockCondition = optionalString(args, "unblockCondition", 4000);
+      if (unblockCondition !== undefined) payload.unblockCondition = unblockCondition;
+      if (verdict === "blocked" && unblockCondition === undefined) {
+        throw new JinnMcpToolError("a blocked verdict requires unblockCondition: the exact external need.");
+      }
+      const { status, body } = await gatewayRequest(ctx, "POST", `/api/work-items/${encodeURIComponent(id)}/review`, payload);
+      if (status >= 400) throw gatewayFailure(`recording review verdict on "${id}"`, status, body);
+      const rec = (body ?? {}) as { escalated?: boolean; rounds?: number; maxRounds?: number };
+      const hint = verdict === "pass"
+        ? "Todo closed on your PASS."
+        : rec.escalated === true
+          ? "Round budget exhausted — Todo escalated to the operator instead of looping."
+          : verdict === "fail"
+            ? `Returned to the producer. Round ${rec.rounds ?? "?"} of ${rec.maxRounds ?? "?"}; at the cap it escalates to the operator.`
+            : "Todo blocked on an external need; it stays blocked until the condition is satisfied.";
+      return mutationResult(body, hint);
     },
   };
 
@@ -751,5 +826,5 @@ export function buildWorkItemTools(): JinnMcpTool[] {
     },
   };
 
-  return [list, get, tree, search, create, update, edit, assign, archive, comment, listComments, attach, listAttachments, link, unlink, label, labelsList, departments];
+  return [list, get, tree, search, create, update, edit, reviewVerdict, assign, archive, comment, listComments, attach, listAttachments, link, unlink, label, labelsList, departments];
 }

@@ -95,13 +95,13 @@ describe("search tools — registry + schemas", () => {
     }
   });
 
-  it("the belt registers the search group — 52 tools total", () => {
+  it("the belt registers the search group — 53 tools total", () => {
     const names = buildTools().map((t) => t.name);
     expect(names).toContain("search_messages");
     expect(names).toContain("search_sessions");
     expect(names).toContain("get_message_context");
     expect(names).toContain("cancel_workflow_run");
-    expect(names).toHaveLength(62);
+    expect(names).toHaveLength(63);
   });
 
   it("domain teaching lives on search_messages; the others stay short", () => {

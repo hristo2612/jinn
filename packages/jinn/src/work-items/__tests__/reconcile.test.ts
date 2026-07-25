@@ -33,10 +33,17 @@ function linkedSession(id: string, workItemId: string, status: SessionStatus, at
   ).run(id, `cron:${id}`, status, outcome, workItemId, at, at);
 }
 
+let transitionsModule: typeof import("../transitions.js");
+/** The guarded transition module, loaded after JINN_HOME is redirected. */
+function transitionsFor(): typeof import("../transitions.js") {
+  return transitionsModule;
+}
+
 beforeAll(async () => {
   store = await import("../store.js");
   reconcile = await import("../reconcile.js");
   reg = await import("../../sessions/registry.js");
+  transitionsModule = await import("../transitions.js");
   db = reg.initDb();
 });
 
@@ -357,5 +364,84 @@ describe("ICI-570 — live todo events from the reconciler", () => {
     } finally {
       live.setTodoLiveEmitter(null);
     }
+  });
+});
+
+describe("declared blocks survive derivation", () => {
+  it("pure: a DECLARED block stays blocked even with an in-flight session", () => {
+    expect(
+      reconcile.deriveWorkItemStatus("blocked", [evidence("running")], undefined, { blockDeclared: true }),
+    ).toBe("blocked");
+  });
+
+  it("pure: a DERIVED block still re-derives to executing (unchanged behaviour)", () => {
+    expect(
+      reconcile.deriveWorkItemStatus("blocked", [evidence("running")], undefined, { blockDeclared: false }),
+    ).toBe("executing");
+    // Absent options behaves exactly as before this change.
+    expect(reconcile.deriveWorkItemStatus("blocked", [evidence("running")])).toBe("executing");
+  });
+
+  it("pure: a declared block does not block the STICKY terminals or review", () => {
+    expect(reconcile.deriveWorkItemStatus("done", [evidence("running")], undefined, { blockDeclared: true })).toBe("done");
+    expect(reconcile.deriveWorkItemStatus("in_review", [evidence("running")], undefined, { blockDeclared: true })).toBe("in_review");
+  });
+
+  it("integration: an agent-declared block survives a sweep and writes NO event", () => {
+    const wi = store.createWorkItem({ title: "declared block holds", status: "executing", source: "delegation" });
+    linkedSession("s-declared-hold", wi.id, "running", "2026-07-02T00:00:00.000Z");
+    transitionsFor().transition(wi.id, "blocked", "engineering-verifier", {
+      detail: { declared: true, unblockCondition: "operator must authorize the production env write" },
+    });
+    const before = store.listWorkItemEvents(wi.id);
+
+    expect(reconcile.reconcileWorkItem(wi.id)).toMatchObject({ changed: false, item: { status: "blocked" } });
+    expect(store.getWorkItem(wi.id)?.status).toBe("blocked");
+    expect(store.listWorkItemEvents(wi.id)).toEqual(before);
+  });
+
+  it("integration: a reconciler-DERIVED block still clears when work resumes", () => {
+    const wi = store.createWorkItem({ title: "derived block clears", status: "executing", source: "delegation" });
+    linkedSession("s-derived-fail", wi.id, "interrupted", "2026-07-02T01:00:00.000Z");
+
+    // Transport failure derives the block...
+    expect(reconcile.reconcileWorkItem(wi.id)).toMatchObject({ changed: true, item: { status: "blocked" } });
+    expect(store.listWorkItemEvents(wi.id).at(-1)?.actor).toBe("reconciler");
+
+    // ...and a fresh in-flight attempt clears it, exactly as before.
+    linkedSession("s-derived-retry", wi.id, "running", "2026-07-02T02:00:00.000Z");
+    expect(reconcile.reconcileWorkItem(wi.id)).toMatchObject({ changed: true, item: { status: "executing" } });
+  });
+
+  it("integration: a pre-`declared` historical block falls back to actor provenance", () => {
+    const wi = store.createWorkItem({ title: "legacy block provenance", status: "executing", source: "delegation" });
+    linkedSession("s-legacy-block", wi.id, "running", "2026-07-02T03:00:00.000Z");
+    // A caller-written block with NO `declared` marker — the shape of every one
+    // of the 46 blocks already in the live ledger.
+    transitionsFor().transition(wi.id, "blocked", "session:abc123", { detail: { note: "external need" } });
+
+    expect(store.isBlockDeclared(wi.id)).toBe(true);
+    expect(reconcile.reconcileWorkItem(wi.id)).toMatchObject({ changed: false, item: { status: "blocked" } });
+  });
+
+  it("regression: repeated declare→sweep yields ONE block, not a flap per sweep", async () => {
+    const wi = store.createWorkItem({ title: "declared block under an active sweep", status: "executing", source: "delegation" });
+    linkedSession("s-jin44", wi.id, "running", "2026-07-02T04:00:00.000Z");
+
+    transitionsFor().transition(wi.id, "blocked", "session:abc123", {
+      detail: { declared: true, unblockCondition: "fresh production env authority" },
+    });
+
+    // Before this change the sweep flipped a declared block straight back,
+    // so the block never survived long enough to be seen.
+    const stop = reconcile.startWorkItemReconciler(10);
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    stop();
+
+    const blockEvents = store.listWorkItemEvents(wi.id).filter((e) => e.toStatus === "blocked");
+    const reconcilerWrites = store.listWorkItemEvents(wi.id).filter((e) => e.actor === "reconciler");
+    expect(blockEvents).toHaveLength(1);
+    expect(reconcilerWrites).toHaveLength(0);
+    expect(store.getWorkItem(wi.id)?.status).toBe("blocked");
   });
 });
