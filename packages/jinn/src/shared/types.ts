@@ -420,7 +420,14 @@ export interface Session {
    *  observable progress for a while. Null when the turn is healthy or none runs.
    *  Lets the UI distinguish a wedged session from a hard-thinking one — they are
    *  otherwise identical, indefinitely. */
-  turnStall?: { stalledForMs: number; awaitingSubmit: boolean } | null;
+  turnStall?: {
+    /** Epoch ms of the last observable progress — an INSTANT, not a duration.
+     *  A duration computed server-side freezes at whatever the last serialize
+     *  returned, so the label would stop ticking between refetches; the client
+     *  derives the age from this instead. */
+    lastProgressAt: number;
+    awaitingSubmit: boolean;
+  } | null;
   /** Serialize-time only (derived, never persisted): active employee sessions
    *  anywhere below this session in the parent/child tree. */
   delegatedActivity?: DelegatedActivity | null;

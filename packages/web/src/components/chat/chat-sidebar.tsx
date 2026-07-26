@@ -61,7 +61,7 @@ interface Session {
   delegatedActivity?: DelegatedActivity | null
   /** The in-flight turn has produced nothing for a while; derived by the gateway.
    *  A running session and a wedged one are otherwise indistinguishable. */
-  turnStall?: { stalledForMs: number; awaitingSubmit: boolean } | null
+  turnStall?: { lastProgressAt: number; awaitingSubmit: boolean } | null
   [key: string]: unknown
 }
 
@@ -400,12 +400,21 @@ export function isRecentError(
 }
 
 /** Read the gateway-derived stall state off a session, tolerating older payloads
- *  (a gateway that predates the field simply never reports a stall). */
-export function getTurnStall(session: Session): { stalledForMs: number; awaitingSubmit: boolean } | null {
+ *  (a gateway that predates the field simply never reports a stall).
+ *
+ *  The server sends `lastProgressAt` — an instant — and the age is derived here
+ *  at render time. A server-computed duration would freeze at the last refetch,
+ *  so the label would sit at "no output for 2m" while an hour passed. */
+export function getTurnStall(
+  session: Session,
+  now: number = Date.now(),
+): { stalledForMs: number; awaitingSubmit: boolean } | null {
   const stall = session.turnStall
-  if (!stall || typeof stall.stalledForMs !== "number" || !Number.isFinite(stall.stalledForMs)) return null
-  if (stall.stalledForMs <= 0) return null
-  return { stalledForMs: stall.stalledForMs, awaitingSubmit: !!stall.awaitingSubmit }
+  const at = stall?.lastProgressAt
+  if (!stall || typeof at !== "number" || !Number.isFinite(at) || at <= 0) return null
+  const stalledForMs = now - at
+  if (stalledForMs <= 0) return null
+  return { stalledForMs, awaitingSubmit: !!stall.awaitingSubmit }
 }
 
 /** Coarse elapsed label — "2m", "51m", "1h 4m". Deliberately low-precision: the

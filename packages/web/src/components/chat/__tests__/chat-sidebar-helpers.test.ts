@@ -294,24 +294,37 @@ describe('formatStallAge', () => {
 })
 
 describe('getTurnStall', () => {
-  it('reads the gateway-derived stall state', () => {
-    expect(getTurnStall({ id: 's', turnStall: { stalledForMs: 90_000, awaitingSubmit: false } })).toEqual({
+  const NOW = 1_000_000_000
+
+  it('derives the age from the reported instant', () => {
+    expect(getTurnStall({ id: 's', turnStall: { lastProgressAt: NOW - 90_000, awaitingSubmit: false } }, NOW)).toEqual({
       stalledForMs: 90_000,
       awaitingSubmit: false,
     })
-    expect(getTurnStall({ id: 's', turnStall: { stalledForMs: 5_000, awaitingSubmit: true } })).toEqual({
+    expect(getTurnStall({ id: 's', turnStall: { lastProgressAt: NOW - 5_000, awaitingSubmit: true } }, NOW)).toEqual({
       stalledForMs: 5_000,
       awaitingSubmit: true,
     })
   })
 
+  it('keeps advancing as time passes without a refetch', () => {
+    // The whole reason the server sends an instant rather than a duration: a
+    // server-computed elapsed time freezes at the last serialize, so the label
+    // would read "2m" forever while an hour went by.
+    const session = { id: 's', turnStall: { lastProgressAt: NOW, awaitingSubmit: false } }
+    expect(getTurnStall(session, NOW + 2 * 60_000)?.stalledForMs).toBe(2 * 60_000)
+    expect(getTurnStall(session, NOW + 60 * 60_000)?.stalledForMs).toBe(60 * 60_000)
+  })
+
   it('tolerates gateways that predate the field, and rejects junk', () => {
-    expect(getTurnStall({ id: 's' })).toBeNull()
-    expect(getTurnStall({ id: 's', turnStall: null })).toBeNull()
-    expect(getTurnStall({ id: 's', turnStall: { stalledForMs: 0, awaitingSubmit: false } })).toBeNull()
-    expect(getTurnStall({ id: 's', turnStall: { stalledForMs: -1, awaitingSubmit: false } })).toBeNull()
-    expect(getTurnStall({ id: 's', turnStall: { stalledForMs: NaN, awaitingSubmit: false } })).toBeNull()
-    expect(getTurnStall({ id: 's', turnStall: { awaitingSubmit: true } as never })).toBeNull()
+    expect(getTurnStall({ id: 's' }, NOW)).toBeNull()
+    expect(getTurnStall({ id: 's', turnStall: null }, NOW)).toBeNull()
+    // Nothing elapsed yet, or a clock skewed into the future.
+    expect(getTurnStall({ id: 's', turnStall: { lastProgressAt: NOW, awaitingSubmit: false } }, NOW)).toBeNull()
+    expect(getTurnStall({ id: 's', turnStall: { lastProgressAt: NOW + 5_000, awaitingSubmit: false } }, NOW)).toBeNull()
+    expect(getTurnStall({ id: 's', turnStall: { lastProgressAt: 0, awaitingSubmit: false } }, NOW)).toBeNull()
+    expect(getTurnStall({ id: 's', turnStall: { lastProgressAt: NaN, awaitingSubmit: false } }, NOW)).toBeNull()
+    expect(getTurnStall({ id: 's', turnStall: { awaitingSubmit: true } as never }, NOW)).toBeNull()
   })
 })
 
@@ -328,7 +341,7 @@ describe('getStatusDot: a stalled turn must not look like a working one', () => 
 
   it('paints a stalled turn amber and STILL, with the elapsed time in the label', () => {
     const dot = getStatusDot(
-      { id: 's1', status: 'running', turnStall: { stalledForMs: 51 * 60_000, awaitingSubmit: false } },
+      { id: 's1', status: 'running', turnStall: { lastProgressAt: Date.now() - 51 * 60_000, awaitingSubmit: false } },
       read,
     )
     expect(dot).toEqual({ color: 'var(--system-orange)', label: 'no output for 51m', pulse: false })
@@ -336,7 +349,7 @@ describe('getStatusDot: a stalled turn must not look like a working one', () => 
 
   it('names the unaccepted-prompt case specifically — it has a different fix', () => {
     const dot = getStatusDot(
-      { id: 's1', status: 'running', turnStall: { stalledForMs: 120_000, awaitingSubmit: true } },
+      { id: 's1', status: 'running', turnStall: { lastProgressAt: Date.now() - 120_000, awaitingSubmit: true } },
       read,
     )
     expect(dot?.color).toBe('var(--system-orange)')
@@ -346,7 +359,7 @@ describe('getStatusDot: a stalled turn must not look like a working one', () => 
 
   it('ignores stall state on a session that is not running', () => {
     const dot = getStatusDot(
-      { id: 's1', status: 'idle', turnStall: { stalledForMs: 999_000, awaitingSubmit: true } },
+      { id: 's1', status: 'idle', turnStall: { lastProgressAt: Date.now() - 999_000, awaitingSubmit: true } },
       read,
     )
     expect(dot).toBeNull()

@@ -1997,9 +1997,10 @@ function computeTurnStall(session: Session, context: ApiContext): Session["turnS
   const progress = engine.turnProgress(session.id);
   if (!progress) return null;
   if (progress.activeTools > 0 || progress.activeUpstream) return null;
-  const stalledForMs = Date.now() - progress.lastProgressAt;
-  if (stalledForMs < TURN_STALL_VISIBLE_MS) return null;
-  return { stalledForMs, awaitingSubmit: progress.awaitingSubmit };
+  if (Date.now() - progress.lastProgressAt < TURN_STALL_VISIBLE_MS) return null;
+  // Ship the instant, not the elapsed time: a duration frozen at serialize time
+  // would stop advancing between refetches.
+  return { lastProgressAt: progress.lastProgressAt, awaitingSubmit: progress.awaitingSubmit };
 }
 
 export function serializeSession(

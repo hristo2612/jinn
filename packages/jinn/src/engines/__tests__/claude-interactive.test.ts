@@ -351,6 +351,7 @@ describe("shouldSettleStalledTurn", () => {
     expect(shouldSettleStalledTurn(15 * MIN, 5 * MIN)).toBe(true);
   });
 
+
   it("stops after one CR when no confirmation is requested", () => {
     vi.useFakeTimers();
     const writes: string[] = [];
@@ -438,6 +439,60 @@ describe("shouldSettleStalledTurn", () => {
     settled = true;
     vi.advanceTimersByTime(60_000);
     expect(writes.filter((w) => w === "\r")).toHaveLength(1);
+  });
+
+  it("does not retry or report while the CLI is busy", () => {
+    // Claude Code queues a pasted prompt behind a turn already running and fires
+    // no UserPromptSubmit until it dequeues, so a queued prompt looks exactly
+    // like a swallowed CR. Spraying CRs at a busy TUI, then declaring a live
+    // turn lost, is the failure mode this gate exists to prevent.
+    vi.useFakeTimers();
+    const writes: string[] = [];
+    const retries: number[] = [];
+    let busy = true;
+    pasteAndSubmit({ write: (d: string) => writes.push(d) } as any, "queued work", {
+      submitted: () => false,
+      busy: () => busy,
+      onRetry: (n) => retries.push(n),
+      onUnconfirmed: () => { throw new Error("must not report while the CLI is busy"); },
+      intervalMs: 1000,
+      attempts: 2,
+    });
+    vi.advanceTimersByTime(150);
+    expect(writes.filter((w) => w === "\r")).toHaveLength(1); // the optimistic CR
+
+    // Long enough to burn the whole budget if the gate were not honoured.
+    vi.advanceTimersByTime(60_000);
+    expect(retries).toEqual([]);
+    expect(writes.filter((w) => w === "\r")).toHaveLength(1);
+
+    // Work finishes without an acknowledgement: now retrying is correct.
+    busy = false;
+    vi.advanceTimersByTime(1000);
+    expect(retries).toEqual([1]);
+    expect(writes.filter((w) => w === "\r")).toHaveLength(2);
+  });
+
+  it("reports rather than settling, leaving the verdict to the stall backstop", () => {
+    // pasteAndSubmit must never decide a turn is dead: it has only the absence of
+    // a signal to go on, and that signal is legitimately absent for live work.
+    vi.useFakeTimers();
+    const writes: string[] = [];
+    const reported: number[] = [];
+    const cancel = pasteAndSubmit({ write: (d: string) => writes.push(d) } as any, "queued work", {
+      submitted: () => false,
+      onUnconfirmed: (n) => reported.push(n),
+      intervalMs: 1000,
+      attempts: 2,
+    });
+    vi.advanceTimersByTime(150 + 3 * 1000);
+    expect(reported).toEqual([2]);
+    // Reporting is terminal for the loop — no further CRs, and no side effect
+    // beyond the callback.
+    vi.advanceTimersByTime(60_000);
+    expect(writes.filter((w) => w === "\r")).toHaveLength(3); // initial + 2 retries
+    expect(reported).toEqual([2]);
+    cancel();
   });
 
   it("cancel() before the initial CR suppresses the submit entirely", () => {

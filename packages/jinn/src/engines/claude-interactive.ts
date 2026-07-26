@@ -546,13 +546,18 @@ export function shouldSettleStalledTurn(elapsedMs: number, quietMs: number): boo
 }
 
 /** Warm-PTY submit confirmation. The CR that submits a bracketed paste is not
- *  guaranteed to land — a 30-line paste into a TUI that is mid-redraw (or near
- *  auto-compact) can swallow it, stranding the text in the composer while the
- *  gateway waits forever on a turn that never started. UserPromptSubmit is the
- *  CLI's acknowledgement; until it arrives, re-send the CR. Every window here is
- *  bounded so an unsubmittable prompt fails loudly instead of hanging. */
+ *  guaranteed to land — the TUI discards keypresses while it is busy, and
+ *  backticking attachment paths only removes the one trigger we characterised
+ *  (image auto-attach). When the CR is lost the text strands in the composer and
+ *  the turn never starts. UserPromptSubmit is the CLI's acknowledgement; until it
+ *  arrives, re-send the CR.
+ *
+ *  Retrying is the whole value here: a CR re-sent a second or two later succeeds
+ *  where the fixed 150ms one failed. Deciding the prompt is dead is NOT part of
+ *  the job — shouldSettleStalledTurn owns that, and a premature verdict would
+ *  kill live work. So the window is generous and the outcome is a log line. */
 const SUBMIT_CONFIRM_INTERVAL_MS = 1500;
-const SUBMIT_CONFIRM_ATTEMPTS = 3;
+const SUBMIT_CONFIRM_ATTEMPTS = 12;
 /** Hooks that prove the pasted prompt is running. SessionStart is excluded on
  *  purpose: the idle spawn that warmed this PTY fires it before the paste. */
 const SUBMIT_ACK_HOOKS = new Set(["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "StopFailure"]);
@@ -609,9 +614,19 @@ interface ActiveTurn {
 export interface SubmitConfirmation {
   /** True once the CLI acknowledged the prompt (UserPromptSubmit or any in-turn hook). */
   submitted: () => boolean;
+  /** True while the CLI is demonstrably doing real work — an upstream request in
+   *  flight or a local tool running.
+   *
+   *  Both the retry and the give-up must pause on this. Claude Code QUEUES a
+   *  pasted prompt behind a turn already running (a human typing in the CLI/xterm
+   *  view, say) and fires no UserPromptSubmit until it dequeues. Without this
+   *  gate, a queued-but-perfectly-alive prompt looks identical to a swallowed CR:
+   *  we would spray CRs at a busy TUI and then report a healthy turn as lost. */
+  busy?: () => boolean;
   /** Called before each re-sent CR. */
   onRetry?: (attempt: number) => void;
-  /** Called when the retries are exhausted and the prompt is still unacknowledged. */
+  /** Called when the retries are exhausted and the prompt is still unacknowledged.
+   *  Reporting only — settling the turn is shouldSettleStalledTurn's job. */
   onUnconfirmed?: (attempts: number) => void;
   /** Test overrides. */
   intervalMs?: number;
@@ -677,6 +692,10 @@ export function pasteAndSubmit(
         retryTimer = undefined;
         return;
       }
+      // Real work in flight: the prompt is queued, not lost. Hold the loop open
+      // without spending an attempt — neither retrying nor reporting is correct
+      // while the CLI is demonstrably busy.
+      if (confirm.busy?.()) return;
       if (attempt >= maxAttempts) {
         if (retryTimer) clearInterval(retryTimer);
         retryTimer = undefined;
@@ -960,21 +979,24 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
           // A settled turn is no longer ours to submit — stop either way. Without
           // this the loop would outlive an early interrupt until run()'s finally.
           submitted: () => entry.promptSubmitted || resolver.isSettled,
+          // Claude Code queues a pasted prompt behind a turn already running and
+          // fires no UserPromptSubmit until it dequeues, so a queued prompt is
+          // indistinguishable from a swallowed CR by acknowledgement alone. Pause
+          // on any evidence of real work rather than acting on that ambiguity.
+          busy: () => this.hasActiveUpstream(jinnSessionId) || entry.activeTools > 0,
           onRetry: (attempt) => logger.warn(
             `InteractiveClaudeEngine: prompt submit unacknowledged for ${jinnSessionId} — re-sending CR (attempt ${attempt})`,
           ),
-          // Every retry failed: the CLI is not going to take this prompt. Settle the
-          // turn instead of leaving run() pending forever — the heartbeat would keep
-          // asserting status:"running" and no other watchdog covers a live PTY that
-          // simply never started a turn. The pasted text is still in the composer, so
-          // the operator (or a resume) loses nothing.
-          onUnconfirmed: (attempts) => {
-            logger.warn(
-              `InteractiveClaudeEngine: prompt never submitted for ${jinnSessionId} after ${attempts} retries ` +
-              `— settling turn as interrupted (text remains in the CLI composer)`,
-            );
-            resolver.interrupt("Interrupted: the engine never acknowledged the prompt (submit not confirmed)");
-          },
+          // Report only. Settling here would mean ruling a turn dead from the
+          // absence of a signal, and the signal is genuinely absent in cases where
+          // the turn is alive; shouldSettleStalledTurn already owns that verdict
+          // with far more evidence. Losing the CR costs the backstop's window
+          // rather than seconds, but the retries above are what usually recover it
+          // — a CR re-sent a second later lands where the 150ms one did not.
+          onUnconfirmed: (attempts) => logger.warn(
+            `InteractiveClaudeEngine: prompt still unacknowledged for ${jinnSessionId} after ${attempts} re-sent CRs; `
+            + `text may be stranded in the CLI composer. Leaving the turn to the stall backstop.`,
+          ),
         });
         entry.boundProc = (warm as any)._proc as pty.IPty | undefined;
       } else {
