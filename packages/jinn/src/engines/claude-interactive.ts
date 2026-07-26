@@ -560,7 +560,7 @@ const SUBMIT_CONFIRM_INTERVAL_MS = 1500;
 const SUBMIT_CONFIRM_ATTEMPTS = 12;
 /** Hooks that prove the pasted prompt is running. SessionStart is excluded on
  *  purpose: the idle spawn that warmed this PTY fires it before the paste. */
-const SUBMIT_ACK_HOOKS = new Set(["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "StopFailure"]);
+export const SUBMIT_ACK_HOOKS = new Set(["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "StopFailure"]);
 
 /** Claude Code built-in slash commands that run locally and never produce a new
  *  assistant API turn. Two behaviours, both handled by the native-command path:

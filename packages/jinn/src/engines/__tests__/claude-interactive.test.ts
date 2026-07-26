@@ -7,7 +7,7 @@ import { afterEach, describe, it, expect, vi } from "vitest";
 // focused and CI-portable.
 vi.mock("node-pty", () => ({ spawn: vi.fn() }));
 
-import { TurnResolver, buildAttachmentSuffix, buildInteractiveArgs, claudeHookToDeltas, pasteAndSubmit, shouldSettleStalledTurn, sumTranscriptUsage } from "../claude-interactive.js";
+import { SUBMIT_ACK_HOOKS, TurnResolver, buildAttachmentSuffix, buildInteractiveArgs, claudeHookToDeltas, pasteAndSubmit, shouldSettleStalledTurn, sumTranscriptUsage } from "../claude-interactive.js";
 import { MAIN_AGENT_SENTINEL } from "../sse-pty-proxy.js";
 import { buildPromptWithPlatformContext } from "../platform-context.js";
 
@@ -204,153 +204,6 @@ describe("pasteAndSubmit", () => {
     vi.advanceTimersByTime(1);
     expect(writes).toEqual([`\x1b[200~${text}\x1b[201~`, "\r"]);
   });
-});
-
-/**
- * Regression guard for the silently-unsubmitted warm-PTY paste.
- *
- * Claude Code's TUI auto-attaches any bracketed-pasted token that resolves to a
- * real image file, entering an async encode during which keypresses — including
- * pasteAndSubmit's submit CR, fired on a fixed 150ms timer — are DISCARDED. Any
- * real screenshot takes longer than 150ms to encode, so the turn hung forever
- * with no error. Verified live: a 5.8MB PNG hangs at 150ms, submits at 400ms,
- * and submits at 150ms once backticked.
- *
- * This asserts on the composed bytes so it needs no live PTY. Newlines are NOT
- * the trigger (a zero-newline prompt with a real image path hangs too), so do
- * not "simplify" this into a newline check.
- */
-describe("buildAttachmentSuffix", () => {
-  // A bare absolute image path is what the TUI auto-attaches on.
-  const BARE_IMAGE_PATH = /(^|[\s(\[])(\/[^\s`'"]+\.(png|jpe?g|gif|webp|bmp|svg))(?=$|[\s)\]])/i;
-
-  it("never hands the TUI a bare image path", () => {
-    const suffix = buildAttachmentSuffix(["/Users/x/.jinn/uploads/2026-07-25/s/shot.png"]);
-    expect(BARE_IMAGE_PATH.test(suffix)).toBe(false);
-    expect(suffix).toBe("\n\nAttached files:\n- `/Users/x/.jinn/uploads/2026-07-25/s/shot.png`");
-  });
-
-  it("backticks every path when several are attached", () => {
-    const suffix = buildAttachmentSuffix(["/tmp/a.png", "/tmp/b.jpeg", "/tmp/notes.txt"]);
-    expect(BARE_IMAGE_PATH.test(suffix)).toBe(false);
-    expect(suffix).toBe("\n\nAttached files:\n- `/tmp/a.png`\n- `/tmp/b.jpeg`\n- `/tmp/notes.txt`");
-  });
-
-  it("keeps the composed warm-PTY payload free of bare image paths end to end", () => {
-    const payload = `Describe this${buildAttachmentSuffix(["/tmp/screenshot.png"])}`;
-    expect(BARE_IMAGE_PATH.test(payload)).toBe(false);
-    // Sanity-check the guard itself: the same payload unbackticked MUST match,
-    // otherwise this test would pass vacuously and lock in nothing.
-    expect(BARE_IMAGE_PATH.test("Describe this\n\nAttached files:\n- /tmp/screenshot.png")).toBe(true);
-  });
-});
-
-/**
- * Regression guard for the web-session accounting bug (#89) and, more
- * importantly, for the trap that fixing it exposes.
- *
- * A Claude transcript is CUMULATIVE — it holds every turn of the session. The
- * cost is added to a running total by accumulateSessionCost, so summing the
- * whole file on every turn counts an N-turn session quadratically. Codex
- * already reports a per-run delta; scoping by the turn's start timestamp is
- * what makes the two engines agree.
- */
-describe("sumTranscriptUsage — per-turn scoping", () => {
-  const line = (id: string, ts: string, input: number, output: number) =>
-    JSON.stringify({
-      type: "assistant",
-      timestamp: ts,
-      message: { id, usage: { input_tokens: input, output_tokens: output } },
-    });
-
-  // A two-turn session: turn 1 at 10:00, turn 2 at 10:05.
-  const TRANSCRIPT = [
-    line("m1", "2026-07-25T10:00:00.000Z", 1000, 100),
-    line("m2", "2026-07-25T10:05:00.000Z", 3000, 300),
-  ].join("\n");
-
-  const TURN_2_START = Date.parse("2026-07-25T10:04:00.000Z");
-
-  it("sums the whole session when unscoped", () => {
-    const u = sumTranscriptUsage(TRANSCRIPT);
-    expect(u.assistantTurns).toBe(2);
-    expect(u.inputTokens).toBe(4000);
-    expect(u.outputTokens).toBe(400);
-  });
-
-  it("counts only the current turn when scoped to its start", () => {
-    const u = sumTranscriptUsage(TRANSCRIPT, TURN_2_START);
-    // Turn 1's 1000/100 must NOT be re-counted into turn 2.
-    expect(u.assistantTurns).toBe(1);
-    expect(u.inputTokens).toBe(3000);
-    expect(u.outputTokens).toBe(300);
-  });
-
-  it("does not attribute an untimestamped line to the current turn", () => {
-    const withUndated = `${TRANSCRIPT}\n${JSON.stringify({
-      type: "assistant",
-      message: { id: "m3", usage: { input_tokens: 9999, output_tokens: 9999 } },
-    })}`;
-    const u = sumTranscriptUsage(withUndated, TURN_2_START);
-    expect(u.inputTokens).toBe(3000);
-    expect(u.assistantTurns).toBe(1);
-  });
-
-  it("still dedupes the double assistant line that --effort high emits", () => {
-    // Same message.id twice (thinking + text) with identical usage.
-    const dup = [
-      line("m9", "2026-07-25T10:05:00.000Z", 500, 50),
-      line("m9", "2026-07-25T10:05:01.000Z", 500, 50),
-    ].join("\n");
-    const u = sumTranscriptUsage(dup, TURN_2_START);
-    expect(u.assistantTurns).toBe(1);
-    expect(u.inputTokens).toBe(500);
-  });
-});
-
-/**
- * Regression guard for the session stuck at "thinking" forever.
- *
- * Observed 2026-07-25 on session 7e93171a: the turn spawned fresh
- * ("resume: none"), its SessionStart hook never landed, and its Stop hook was
- * lost. Missing-Stop recovery needs a Claude session id to locate the
- * transcript (`resolver.sessionId ?? opts.resumeSessionId`) — on a fresh spawn
- * BOTH are undefined, so the 2s recovery interval could only ever return early.
- * Nothing else settled the turn, so the session stayed "running" for 25+ minutes
- * and the messages queued behind it never dispatched.
- *
- * A sibling session with an engineSessionId recovered normally 17 minutes in,
- * which is exactly why this only bites id-less turns.
- */
-describe("shouldSettleStalledTurn", () => {
-  const MIN = 60_000;
-
-  it("settles the real stuck turn (25m elapsed, 24m quiet)", () => {
-    expect(shouldSettleStalledTurn(25 * MIN, 24 * MIN)).toBe(true);
-  });
-
-  it("leaves a long turn alone while it is still streaming", () => {
-    // 40m elapsed but output 10s ago — healthy, just slow.
-    expect(shouldSettleStalledTurn(40 * MIN, 10_000)).toBe(false);
-  });
-
-  it("leaves an early quiet gap alone", () => {
-    // Quiet for 6m but only 8m into the turn — recovery has not had its shot.
-    expect(shouldSettleStalledTurn(8 * MIN, 6 * MIN)).toBe(false);
-  });
-
-  it("requires BOTH bounds, not either", () => {
-    expect(shouldSettleStalledTurn(20 * MIN, 1 * MIN)).toBe(false);
-    expect(shouldSettleStalledTurn(1 * MIN, 20 * MIN)).toBe(false);
-  });
-
-  it("fires only after transcript recovery has had its window", () => {
-    // Recovery starts at 5m elapsed / 60s quiet; the backstop must sit well
-    // above it so a recoverable turn is never killed in favour of an error.
-    expect(shouldSettleStalledTurn(5 * MIN, 60_000)).toBe(false);
-    expect(shouldSettleStalledTurn(15 * MIN, 5 * MIN)).toBe(true);
-  });
-
 
   it("stops after one CR when no confirmation is requested", () => {
     vi.useFakeTimers();
@@ -505,4 +358,164 @@ describe("shouldSettleStalledTurn", () => {
     vi.advanceTimersByTime(60_000);
     expect(writes.filter((w) => w === "\r")).toHaveLength(0);
   });
+
+  it("accepts only hooks that prove THIS prompt is running", () => {
+    // What run() feeds the confirmation: any of these arriving means the pasted
+    // prompt reached the CLI. SessionStart must NOT count — the idle spawn that
+    // warmed this PTY fires it before the paste, so accepting it would confirm a
+    // submit that never happened and strand the text in the composer, which is
+    // the exact failure this whole path exists to catch.
+    for (const hook of ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "StopFailure"]) {
+      expect(SUBMIT_ACK_HOOKS.has(hook)).toBe(true);
+    }
+    expect(SUBMIT_ACK_HOOKS.has("SessionStart")).toBe(false);
+    expect(SUBMIT_ACK_HOOKS.has("Notification")).toBe(false);
+  });
+});
+
+/**
+ * Regression guard for the silently-unsubmitted warm-PTY paste.
+ *
+ * Claude Code's TUI auto-attaches any bracketed-pasted token that resolves to a
+ * real image file, entering an async encode during which keypresses — including
+ * pasteAndSubmit's submit CR, fired on a fixed 150ms timer — are DISCARDED. Any
+ * real screenshot takes longer than 150ms to encode, so the turn hung forever
+ * with no error. Verified live: a 5.8MB PNG hangs at 150ms, submits at 400ms,
+ * and submits at 150ms once backticked.
+ *
+ * This asserts on the composed bytes so it needs no live PTY. Newlines are NOT
+ * the trigger (a zero-newline prompt with a real image path hangs too), so do
+ * not "simplify" this into a newline check.
+ */
+describe("buildAttachmentSuffix", () => {
+  // A bare absolute image path is what the TUI auto-attaches on.
+  const BARE_IMAGE_PATH = /(^|[\s(\[])(\/[^\s`'"]+\.(png|jpe?g|gif|webp|bmp|svg))(?=$|[\s)\]])/i;
+
+  it("never hands the TUI a bare image path", () => {
+    const suffix = buildAttachmentSuffix(["/Users/x/.jinn/uploads/2026-07-25/s/shot.png"]);
+    expect(BARE_IMAGE_PATH.test(suffix)).toBe(false);
+    expect(suffix).toBe("\n\nAttached files:\n- `/Users/x/.jinn/uploads/2026-07-25/s/shot.png`");
+  });
+
+  it("backticks every path when several are attached", () => {
+    const suffix = buildAttachmentSuffix(["/tmp/a.png", "/tmp/b.jpeg", "/tmp/notes.txt"]);
+    expect(BARE_IMAGE_PATH.test(suffix)).toBe(false);
+    expect(suffix).toBe("\n\nAttached files:\n- `/tmp/a.png`\n- `/tmp/b.jpeg`\n- `/tmp/notes.txt`");
+  });
+
+  it("keeps the composed warm-PTY payload free of bare image paths end to end", () => {
+    const payload = `Describe this${buildAttachmentSuffix(["/tmp/screenshot.png"])}`;
+    expect(BARE_IMAGE_PATH.test(payload)).toBe(false);
+    // Sanity-check the guard itself: the same payload unbackticked MUST match,
+    // otherwise this test would pass vacuously and lock in nothing.
+    expect(BARE_IMAGE_PATH.test("Describe this\n\nAttached files:\n- /tmp/screenshot.png")).toBe(true);
+  });
+});
+
+/**
+ * Regression guard for the web-session accounting bug (#89) and, more
+ * importantly, for the trap that fixing it exposes.
+ *
+ * A Claude transcript is CUMULATIVE — it holds every turn of the session. The
+ * cost is added to a running total by accumulateSessionCost, so summing the
+ * whole file on every turn counts an N-turn session quadratically. Codex
+ * already reports a per-run delta; scoping by the turn's start timestamp is
+ * what makes the two engines agree.
+ */
+describe("sumTranscriptUsage — per-turn scoping", () => {
+  const line = (id: string, ts: string, input: number, output: number) =>
+    JSON.stringify({
+      type: "assistant",
+      timestamp: ts,
+      message: { id, usage: { input_tokens: input, output_tokens: output } },
+    });
+
+  // A two-turn session: turn 1 at 10:00, turn 2 at 10:05.
+  const TRANSCRIPT = [
+    line("m1", "2026-07-25T10:00:00.000Z", 1000, 100),
+    line("m2", "2026-07-25T10:05:00.000Z", 3000, 300),
+  ].join("\n");
+
+  const TURN_2_START = Date.parse("2026-07-25T10:04:00.000Z");
+
+  it("sums the whole session when unscoped", () => {
+    const u = sumTranscriptUsage(TRANSCRIPT);
+    expect(u.assistantTurns).toBe(2);
+    expect(u.inputTokens).toBe(4000);
+    expect(u.outputTokens).toBe(400);
+  });
+
+  it("counts only the current turn when scoped to its start", () => {
+    const u = sumTranscriptUsage(TRANSCRIPT, TURN_2_START);
+    // Turn 1's 1000/100 must NOT be re-counted into turn 2.
+    expect(u.assistantTurns).toBe(1);
+    expect(u.inputTokens).toBe(3000);
+    expect(u.outputTokens).toBe(300);
+  });
+
+  it("does not attribute an untimestamped line to the current turn", () => {
+    const withUndated = `${TRANSCRIPT}\n${JSON.stringify({
+      type: "assistant",
+      message: { id: "m3", usage: { input_tokens: 9999, output_tokens: 9999 } },
+    })}`;
+    const u = sumTranscriptUsage(withUndated, TURN_2_START);
+    expect(u.inputTokens).toBe(3000);
+    expect(u.assistantTurns).toBe(1);
+  });
+
+  it("still dedupes the double assistant line that --effort high emits", () => {
+    // Same message.id twice (thinking + text) with identical usage.
+    const dup = [
+      line("m9", "2026-07-25T10:05:00.000Z", 500, 50),
+      line("m9", "2026-07-25T10:05:01.000Z", 500, 50),
+    ].join("\n");
+    const u = sumTranscriptUsage(dup, TURN_2_START);
+    expect(u.assistantTurns).toBe(1);
+    expect(u.inputTokens).toBe(500);
+  });
+});
+
+/**
+ * Regression guard for the session stuck at "thinking" forever.
+ *
+ * Observed 2026-07-25 on session 7e93171a: the turn spawned fresh
+ * ("resume: none"), its SessionStart hook never landed, and its Stop hook was
+ * lost. Missing-Stop recovery needs a Claude session id to locate the
+ * transcript (`resolver.sessionId ?? opts.resumeSessionId`) — on a fresh spawn
+ * BOTH are undefined, so the 2s recovery interval could only ever return early.
+ * Nothing else settled the turn, so the session stayed "running" for 25+ minutes
+ * and the messages queued behind it never dispatched.
+ *
+ * A sibling session with an engineSessionId recovered normally 17 minutes in,
+ * which is exactly why this only bites id-less turns.
+ */
+describe("shouldSettleStalledTurn", () => {
+  const MIN = 60_000;
+
+  it("settles the real stuck turn (25m elapsed, 24m quiet)", () => {
+    expect(shouldSettleStalledTurn(25 * MIN, 24 * MIN)).toBe(true);
+  });
+
+  it("leaves a long turn alone while it is still streaming", () => {
+    // 40m elapsed but output 10s ago — healthy, just slow.
+    expect(shouldSettleStalledTurn(40 * MIN, 10_000)).toBe(false);
+  });
+
+  it("leaves an early quiet gap alone", () => {
+    // Quiet for 6m but only 8m into the turn — recovery has not had its shot.
+    expect(shouldSettleStalledTurn(8 * MIN, 6 * MIN)).toBe(false);
+  });
+
+  it("requires BOTH bounds, not either", () => {
+    expect(shouldSettleStalledTurn(20 * MIN, 1 * MIN)).toBe(false);
+    expect(shouldSettleStalledTurn(1 * MIN, 20 * MIN)).toBe(false);
+  });
+
+  it("fires only after transcript recovery has had its window", () => {
+    // Recovery starts at 5m elapsed / 60s quiet; the backstop must sit well
+    // above it so a recoverable turn is never killed in favour of an error.
+    expect(shouldSettleStalledTurn(5 * MIN, 60_000)).toBe(false);
+    expect(shouldSettleStalledTurn(15 * MIN, 5 * MIN)).toBe(true);
+  });
+
 });
