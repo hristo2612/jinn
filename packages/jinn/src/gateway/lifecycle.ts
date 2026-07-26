@@ -498,15 +498,76 @@ function selectLsofPortOwnerPid(output: string, host: string): number | undefine
   return selectPortOwnerPid([...matchingPids]);
 }
 
+/** Split a `netstat -ano` address column into host and port. Windows renders
+ *  IPv6 as `[::1]:7777` and IPv4 as `127.0.0.1:7777`. */
+export function parseNetstatAddress(address: string): { host: string; port: number } | undefined {
+  const ipv6 = address.match(/^\[([^\]]+)\]:(\d+)$/);
+  if (ipv6) return { host: ipv6[1], port: Number(ipv6[2]) };
+  const separator = address.lastIndexOf(":");
+  if (separator === -1) return undefined;
+  const port = Number(address.slice(separator + 1));
+  return Number.isInteger(port) ? { host: address.slice(0, separator), port } : undefined;
+}
+
+/** Pick the pid listening on `port` at an address that overlaps `host`.
+ *
+ *  The previous Windows lookup took the pid from the first `findstr LISTENING`
+ *  row and ignored the address entirely, so a listener bound to a DIFFERENT
+ *  interface (a proxy on ::1, say) was reported as owning the configured
+ *  loopback address — the same defect that was fixed for lsof but never here.
+ *
+ *  Listening rows are identified by their wildcard foreign address rather than
+ *  the state word, which netstat localises. */
+export function selectNetstatPortOwnerPid(output: string, host: string, port: number): PortOwnerLookup {
+  const matching = new Set<number>();
+  // "Did the parser understand ANY row?" is a different question from "was there
+  // an overlapping listener?", and the two must not collapse. No overlap means
+  // the port is free. Understanding nothing at all means we cannot say — and
+  // answering "free" there would walk a fresh gateway into EADDRINUSE instead of
+  // a clean refusal, on whatever locale or SKU renders a shape this cannot read.
+  let readAnyRow = false;
+  for (const line of output.split("\n")) {
+    const parts = line.trim().split(/\s+/);
+    if (parts.length < 5) continue; // 4-column UDP rows carry no state/pid pair
+    const [, localAddress, foreignAddress, , pidText] = parts;
+    const local = parseNetstatAddress(localAddress);
+    if (!local) continue;
+    readAnyRow = true;
+    if (local.port !== port) continue;
+    const foreign = parseNetstatAddress(foreignAddress);
+    if (!foreign || foreign.port !== 0) continue; // not a listening socket
+    const pid = Number(pidText);
+    if (!Number.isSafeInteger(pid) || pid <= 0) continue;
+    // lsof -n renders a wildcard bind as "*"; netstat spells it 0.0.0.0 or [::].
+    // Normalise so both platforms share listenerOverlapsHost's semantics.
+    const listenerHost = local.host === "0.0.0.0" || local.host === "::" ? "*" : local.host;
+    if (listenerOverlapsHost(listenerHost, host)) matching.add(pid);
+  }
+  const pid = selectPortOwnerPid([...matching]);
+  if (pid !== undefined) return { status: "found", pid };
+  return readAnyRow ? { status: "none" } : { status: "unknown" };
+}
+
 export function lookupPidOnPort(port: number): PortOwnerLookup {
   try {
     if (process.platform === "win32") {
-      const output = execSync(`netstat -ano | findstr :${port} | findstr LISTENING`, { encoding: "utf-8" }).trim();
-      if (!output) return { status: "none" };
-      // netstat output: proto  local_addr  foreign_addr  state  PID
-      const parts = output.split("\n")[0].trim().split(/\s+/);
-      const pid = parseInt(parts[parts.length - 1], 10);
-      return isNaN(pid) ? { status: "unknown" } : { status: "found", pid };
+      // No shell: the port went straight into a `netstat | findstr` command
+      // string, and `findstr LISTENING` also fails on non-English Windows, where
+      // netstat localises the state column. Take the raw table and filter here.
+      //
+      // The old command piped through findstr, so Node buffered a few bytes;
+      // this buffers the entire connection table, which can run to thousands of
+      // rows — well past Node's 1MB default. waitForPortFree polls this every
+      // 200ms for up to 10s, so it also needs a timeout, and windowsHide keeps it
+      // from flashing a console window.
+      const output = execFileSync("netstat", ["-ano"], {
+        encoding: "utf-8",
+        maxBuffer: 16 * 1024 * 1024,
+        timeout: 5_000,
+        windowsHide: true,
+      }).trim();
+      if (!output) return { status: "unknown" }; // netstat always prints a header
+      return selectNetstatPortOwnerPid(output, resolveHost(), port);
     } else {
       const host = resolveHost();
       const output = execFileSync(
