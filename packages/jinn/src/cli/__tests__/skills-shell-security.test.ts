@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 const spawnSync = vi.hoisted(() => vi.fn(() => ({ status: 0 })));
 
@@ -8,19 +8,12 @@ vi.mock("node:child_process", () => ({
 
 import { quoteWindowsArg, runNpxSkills } from "../skills.js";
 
-// The two platforms defend this differently and the difference is the point:
-// POSIX passes argv with no shell at all, while Windows cannot spawn npx.cmd
-// without a shell (EINVAL since Node 18.20.2, the BatBadBut mitigation) and so
-// relies on rejecting metacharacters plus correct quoting. Asserting the POSIX
-// contract on both hid the Windows path from review entirely.
-const onWindows = process.platform === "win32";
-
-beforeEach(() => {
-  spawnSync.mockClear();
-});
-
 describe("skills CLI process spawning", () => {
-  it.skipIf(onWindows)("passes user-controlled skill args as argv with shell disabled", () => {
+  // The POSIX contract. The Windows branch cannot pass argv with the shell
+  // disabled — npx.cmd is unspawnable that way — and lives in
+  // skills-windows-spawn.test.ts, which stubs process.platform so those cases
+  // execute on CI instead of skipping on a non-Windows runner.
+  it.skipIf(process.platform === "win32")("passes user-controlled skill args as argv with shell disabled", () => {
     runNpxSkills(["add", "owner/repo; touch /tmp/pwned", "-g", "-y"], "pipe");
 
     expect(spawnSync).toHaveBeenCalledWith(
@@ -29,43 +22,40 @@ describe("skills CLI process spawning", () => {
       { stdio: "pipe", shell: false },
     );
   });
-
-  it.skipIf(!onWindows)("quotes every argument and never reaches a shell unquoted", () => {
-    const status = runNpxSkills(["add", "owner/repo; touch /tmp/pwned", "-g", "-y"], "pipe");
-
-    expect(status).toEqual({ status: 0 });
-    expect(spawnSync).toHaveBeenCalledWith(
-      "npx",
-      ['"skills"', '"add"', '"owner/repo; touch /tmp/pwned"', '"-g"', '"-y"'],
-      { stdio: "pipe", shell: true },
-    );
-  });
-
-  it.skipIf(!onWindows)("refuses arguments carrying cmd.exe metacharacters instead of quoting them", () => {
-    for (const payload of ['a" & calc & "b', "x | whoami", "x & calc", "x > out", "x ^ y", "%PATH%", "back`tick", "line\nbreak"]) {
-      spawnSync.mockClear();
-      expect(runNpxSkills(["add", payload], "pipe")).toEqual({ status: 1 });
-      expect(spawnSync).not.toHaveBeenCalled();
-    }
-  });
 });
 
+/**
+ * Windows parses a command line with MSVCRT rules: a run of backslashes is
+ * literal except immediately before a quote, where 2n backslashes yield n
+ * literal backslashes and the quote still closes the string.
+ *
+ * Platform-independent, so these run everywhere.
+ */
 describe("quoteWindowsArg", () => {
-  // Windows parses a command line with MSVCRT rules: backslashes before a quote
-  // escape it. Naive `"${arg}"` therefore let a trailing backslash consume the
-  // closing quote and smuggle a literal " into the child's argv — the exact
-  // character the metacharacter filter rejects.
-  it("doubles a trailing backslash run so the closing quote survives", () => {
+  it("doubles an odd trailing backslash run so the closing quote survives", () => {
     expect(quoteWindowsArg("trailing\\")).toBe('"trailing\\\\"');
+    expect(quoteWindowsArg("three\\\\\\")).toBe('"three\\\\\\\\\\\\"');
+  });
+
+  it("doubles an even trailing run too, which would otherwise be silently halved", () => {
     expect(quoteWindowsArg("two\\\\")).toBe('"two\\\\\\\\"');
+    expect(quoteWindowsArg("four\\\\\\\\")).toBe('"four\\\\\\\\\\\\\\\\"');
+  });
+
+  it("handles a directory argument ending in a separator", () => {
+    // The realistic input: `jinn skills add C:\skills\mine\`.
+    expect(quoteWindowsArg("C:\\path\\")).toBe('"C:\\path\\\\"');
+    expect(quoteWindowsArg("C:\\skills\\mine\\")).toBe('"C:\\skills\\mine\\\\"');
   });
 
   it("leaves interior backslashes alone so Windows paths stay intact", () => {
     expect(quoteWindowsArg("C:\\path\\to\\skill")).toBe('"C:\\path\\to\\skill"');
+    expect(quoteWindowsArg("a\\b\\c")).toBe('"a\\b\\c"');
   });
 
   it("quotes ordinary arguments without altering them", () => {
     expect(quoteWindowsArg("owner/repo")).toBe('"owner/repo"');
     expect(quoteWindowsArg("owner/repo; touch /tmp/pwned")).toBe('"owner/repo; touch /tmp/pwned"');
+    expect(quoteWindowsArg("")).toBe('""');
   });
 });

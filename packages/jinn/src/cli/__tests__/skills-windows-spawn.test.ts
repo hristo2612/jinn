@@ -45,4 +45,34 @@ describe("runNpxSkills on Windows", () => {
     expect(spawnSync).not.toHaveBeenCalled();
     err.mockRestore();
   });
+
+  // Windows parses a command line with MSVCRT rules, where backslashes before a
+  // quote escape it. A bare `"${arg}"` therefore let an argument ending in a
+  // backslash consume its own closing quote: `dir\` reached the child as `dir"`,
+  // taking the following argument with it. Directory arguments end in a
+  // backslash routinely, so this is ordinary input, not a crafted one.
+  it("doubles a trailing backslash run so the argument cannot swallow the next", () => {
+    setPlatform("win32");
+
+    const result = runNpxSkills(["add", "C:\\skills\\mine\\", "-g"], "pipe");
+
+    expect(result.status).toBe(0);
+    expect(spawnSync).toHaveBeenCalledWith(
+      "npx",
+      ['"skills"', '"add"', '"C:\\skills\\mine\\\\"', '"-g"'],
+      { stdio: "pipe", shell: true },
+    );
+  });
+
+  it("leaves interior backslashes untouched so ordinary paths are unchanged", () => {
+    setPlatform("win32");
+
+    runNpxSkills(["add", "C:\\path\\to\\skill"], "pipe");
+
+    expect(spawnSync).toHaveBeenCalledWith(
+      "npx",
+      ['"skills"', '"add"', '"C:\\path\\to\\skill"'],
+      { stdio: "pipe", shell: true },
+    );
+  });
 });
