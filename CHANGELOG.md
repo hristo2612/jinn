@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.28.8]
+
+### 🔒 Security
+- **The instance directory is restricted to you, and says so when it is not.** `~/.jinn` holds the gateway token, connector secrets and every session transcript, and was protected with a `0600` file mode. Windows has no such mode — `chmod` there only toggles the read-only flag — so the protection was a no-op and the directory kept whatever access it inherited from the user profile; on one machine that meant every file readable by an unrelated account group. Permissions are now expressed in each platform's own model, identified by security identifier rather than by name so that a non-English Windows is handled correctly, and `jinn setup` restricts the directory once so everything written later inherits it. Local device pairing also worked again on Windows, where it had required a file mode no Windows file can report.
+
+  **Existing macOS and Linux instances are affected.** A directory created before this release is group- and world-readable (`0755`), so the gateway now tightens it to `0700` once, at startup, and logs that it did. Widen it again deliberately and the gateway reports the exposure on each start instead of overriding you. Windows is never repaired automatically: doing so means dropping inherited access an operator may have granted on purpose, such as a sandboxed engine account that needs to read configuration.
+
 ## [0.28.7] - 2026-07-27
 
 ### 🐛 Fixes

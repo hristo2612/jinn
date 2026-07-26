@@ -41,7 +41,11 @@ import { setTodoLiveEmitter } from "../work-items/live-events.js";
 import { setTodoStatusChangeListener } from "../work-items/transitions.js";
 import { seedTrust, cleanupSessionSettings } from "../shared/claude-settings.js";
 import { GATEWAY_INFO_FILE, HOOK_RELAY_SCRIPT, JINN_HOME, CLAUDE_SETTINGS_DIR } from "../shared/paths.js";
-import { pathIsOwnerOnly } from "../shared/owner-only.js";
+import { enforceOwnerOnlyDirectory, pathIsOwnerOnly } from "../shared/owner-only.js";
+
+/** Records that boot already tightened JINN_HOME once, so an operator who
+ *  deliberately re-widens it afterwards is warned rather than silently overridden. */
+const OWNER_ONLY_HEAL_MARKER = path.join(JINN_HOME, ".owner-only-healed");
 import { handleApiRequest, isSameOriginBrowserRequest, resumePendingWebQueueItems, type ApiContext } from "./api.js";
 import { resolveCallerIdentity, sessionCommGuards, LATERAL_MAX_HOPS, type CallerIdentityOptions } from "./session-comm-guards.js";
 import { UNIDENTIFIED_TOOL_CALL_ERROR, verifySessionCapability } from "../mcp/identity.js";
@@ -379,18 +383,37 @@ export async function startGateway(
   // transcript. Report when something else can read it — a broad ACE inherited
   // from the profile on Windows, or group/other bits on POSIX.
   //
-  // Deliberately a warning, not a repair: an operator may have granted that
-  // access on purpose (a sandboxed engine account needing to read config), and
-  // silently rewriting ACLs under a running install could break it. `jinn setup`
-  // restricts the home; boot only tells you when it is no longer restricted.
+  // On POSIX this self-heals ONCE. `jinn setup` now restricts the home, but every
+  // instance created before that ran is 0755 (mkdir under a 022 umask), so without
+  // a heal those operators would get this warning on every boot forever. chmod 700
+  // on a directory we own is cheap, reversible, and exactly what setup does.
+  //
+  // Windows is warn-only, and the asymmetry is deliberate: repairing there means
+  // /inheritance:r, which strips ACEs an operator may have granted on purpose (a
+  // sandboxed engine account that needs to read config), and doing that silently
+  // under a running install could break it.
+  //
+  // Once, not every boot: a marker records the attempt, so an operator who
+  // deliberately re-widens the directory is told rather than overridden.
   if (!pathIsOwnerOnly(JINN_HOME)) {
-    logger.warn(
-      `Instance directory ${JINN_HOME} is readable beyond your account — the gateway token, `
-      + `connector secrets and session history are exposed to those principals. `
-      + `Restrict it with ${process.platform === "win32"
-        ? `icacls "${JINN_HOME}" /inheritance:r /grant:r "%USERNAME%:(OI)(CI)(F)"`
-        : `chmod 700 "${JINN_HOME}"`}`,
-    );
+    const healed = process.platform !== "win32" && !fs.existsSync(OWNER_ONLY_HEAL_MARKER)
+      && enforceOwnerOnlyDirectory(JINN_HOME);
+    if (healed) {
+      try { fs.writeFileSync(OWNER_ONLY_HEAL_MARKER, new Date().toISOString(), { mode: 0o600 }); } catch { /* best effort */ }
+      logger.info(
+        `Restricted ${JINN_HOME} to owner-only (0700). It held the gateway token, connector `
+        + `secrets and session history while group/other-readable. Done once; re-widen it and `
+        + `this becomes a warning rather than a repair.`,
+      );
+    } else {
+      logger.warn(
+        `Instance directory ${JINN_HOME} is readable beyond your account — the gateway token, `
+        + `connector secrets and session history are exposed to those principals. `
+        + `Restrict it with ${process.platform === "win32"
+          ? `icacls "${JINN_HOME}" /inheritance:r /grant:r "%USERNAME%:(OI)(CI)(F)"`
+          : `chmod 700 "${JINN_HOME}"`}`,
+      );
+    }
   }
 
   // Reap any orphaned PTYs from a prior crashed run before writing the fresh gateway.json.
