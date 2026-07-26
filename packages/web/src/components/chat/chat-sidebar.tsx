@@ -1,5 +1,5 @@
 
-import React, { useEffect, useState, useRef, useCallback, useMemo, startTransition } from "react"
+import React, { useEffect, useState, useRef, useCallback, useMemo, useSyncExternalStore, startTransition } from "react"
 import { useVirtualizer } from "@tanstack/react-virtual"
 import { useQueryClient } from "@tanstack/react-query"
 import { Link } from "react-router-dom"
@@ -61,7 +61,7 @@ interface Session {
   delegatedActivity?: DelegatedActivity | null
   /** The in-flight turn has produced nothing for a while; derived by the gateway.
    *  A running session and a wedged one are otherwise indistinguishable. */
-  turnStall?: { lastProgressAt: number; awaitingSubmit: boolean } | null
+  turnProgress?: { lastProgressAt: number; awaitingSubmit: boolean } | null
   [key: string]: unknown
 }
 
@@ -399,22 +399,73 @@ export function isRecentError(
   return nowMs - ts < RECENT_ERROR_WINDOW_MS
 }
 
-/** Read the gateway-derived stall state off a session, tolerating older payloads
- *  (a gateway that predates the field simply never reports a stall).
+/** How long a live turn may produce nothing before the row says so. Well below the
+ *  gateway reconciler's kill threshold on purpose: the operator should see a session
+ *  go amber — and get the chance to interrupt or resend it themselves — long before
+ *  anything is reclaimed automatically. */
+export const TURN_STALL_VISIBLE_MS = 90_000
+
+/** Read stall state off a session, tolerating older payloads (a gateway that
+ *  predates the field simply never reports progress).
  *
- *  The server sends `lastProgressAt` — an instant — and the age is derived here
- *  at render time. A server-computed duration would freeze at the last refetch,
- *  so the label would sit at "no output for 2m" while an hour passed. */
+ *  The staleness verdict lives HERE, not on the server. A stalled session emits no
+ *  events, so nothing invalidates the sessions query — a server-side verdict would
+ *  only arrive if something unrelated triggered a refetch, and the whole point is
+ *  to surface a session that generates no signals. The client receives the progress
+ *  instant at turn start, while the session is still healthy, and `useStallClock`
+ *  re-renders on a timer so this crosses the threshold with no network round-trip. */
 export function getTurnStall(
   session: Session,
   now: number = Date.now(),
 ): { stalledForMs: number; awaitingSubmit: boolean } | null {
-  const stall = session.turnStall
-  const at = stall?.lastProgressAt
-  if (!stall || typeof at !== "number" || !Number.isFinite(at) || at <= 0) return null
+  const progress = session.turnProgress
+  const at = progress?.lastProgressAt
+  if (!progress || typeof at !== "number" || !Number.isFinite(at) || at <= 0) return null
   const stalledForMs = now - at
-  if (stalledForMs <= 0) return null
-  return { stalledForMs, awaitingSubmit: !!stall.awaitingSubmit }
+  if (stalledForMs < TURN_STALL_VISIBLE_MS) return null
+  return { stalledForMs, awaitingSubmit: !!progress.awaitingSubmit }
+}
+
+/** One interval for the whole sidebar, shared via an external store.
+ *
+ *  A per-row timer would mean one interval per session; this keeps a single timer
+ *  that only runs while something is subscribed, and only exists to re-render so
+ *  getTurnStall can re-evaluate its own clock. */
+const stallClock = (() => {
+  const listeners = new Set<() => void>()
+  let now = Date.now()
+  let timer: ReturnType<typeof setInterval> | undefined
+  return {
+    subscribe(listener: () => void) {
+      listeners.add(listener)
+      if (!timer) {
+        // The clock stops with the last listener, so the cached value can be
+        // arbitrarily old by the time the sidebar mounts again. React re-reads the
+        // snapshot right after subscribing, so refreshing here is picked up.
+        now = Date.now()
+        timer = setInterval(() => {
+          now = Date.now()
+          for (const l of listeners) l()
+        }, 15_000)
+      }
+      return () => {
+        listeners.delete(listener)
+        if (listeners.size === 0 && timer) {
+          clearInterval(timer)
+          timer = undefined
+        }
+      }
+    },
+    get: () => now,
+  }
+})()
+
+/** Ticks only for rows that could actually stall. A row with nothing in flight has
+ *  no age to advance, so it stays out of the listener set entirely and the interval
+ *  does not exist at all while the list is quiet. */
+const noStallClock = () => () => {}
+export function useStallClock(active = true): number {
+  return useSyncExternalStore(active ? stallClock.subscribe : noStallClock, stallClock.get, stallClock.get)
 }
 
 /** Coarse elapsed label — "2m", "51m", "1h 4m". Deliberately low-precision: the
@@ -436,12 +487,13 @@ export function getStatusDot(
   session: Session,
   readSet: Set<string>,
   forceUnread = false,
+  now: number = Date.now(),
 ): StatusDotState | null {
   if (session.status === "running") {
     // A stalled turn must not look like a working one. Same blue-dot spinner for
     // both is exactly why a 51-minute hang can sit unnoticed: amber + an elapsed
     // count is the difference between "thinking" and "go look at this".
-    const stall = getTurnStall(session)
+    const stall = getTurnStall(session, now)
     if (stall) {
       return {
         color: "var(--system-orange)",
@@ -588,7 +640,8 @@ const SessionRow = React.memo(function SessionRow({
   updateSessionTitle,
 }: SessionRowProps) {
   const sessionIsActive = session.id === selectedId
-  const sessionDot = getStatusDot(session, readSessions)
+  const stallNow = useStallClock(session.status === "running")
+  const sessionDot = getStatusDot(session, readSessions, false, stallNow)
   const sessionTitle = fixTitle(session.title, session.employee)
   const displayTitle = cleanPreview(sessionTitle) || sessionTitle
   const sessionTime = formatTime(getSessionActivity(session))
@@ -772,7 +825,8 @@ const FlatSessionRow = React.memo(function FlatSessionRow({
   updateSessionTitle,
 }: FlatSessionRowProps) {
   const isActive = session.id === selectedId
-  const dot = getStatusDot(session, readSessions)
+  const stallNow = useStallClock(session.status === "running")
+  const dot = getStatusDot(session, readSessions, false, stallNow)
   const rawTitle = fixTitle(session.title, session.employee)
   const displayTitle = cleanPreview(rawTitle) || "Untitled"
   const time = formatTime(getSessionActivity(session))
@@ -982,7 +1036,8 @@ const EmployeeRow = React.memo(function EmployeeRow({
   )
   // The group dot reflects the latest session's live state, but escalates to an
   // "unread" accent dot when any chat in the group is unread.
-  const empDot = getStatusDot(latestSession, readSessions, hasUnread)
+  const stallNow = useStallClock(latestSession?.status === "running")
+  const empDot = getStatusDot(latestSession, readSessions, hasUnread, stallNow)
 
   const sessionRowProps = {
     selectedId,

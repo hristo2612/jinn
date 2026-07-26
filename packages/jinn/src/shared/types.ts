@@ -416,15 +416,17 @@ export interface Session {
    *  work — the CLI still has upstream API requests in flight (background
    *  subagents/tasks) after the turn settled. Null when none. */
   backgroundActivity?: { activeStreams: number; lastActivityAt: string } | null;
-  /** Serialize-time only (derived, never persisted): the in-flight turn has made no
-   *  observable progress for a while. Null when the turn is healthy or none runs.
-   *  Lets the UI distinguish a wedged session from a hard-thinking one — they are
-   *  otherwise identical, indefinitely. */
-  turnStall?: {
-    /** Epoch ms of the last observable progress — an INSTANT, not a duration.
-     *  A duration computed server-side freezes at whatever the last serialize
-     *  returned, so the label would stop ticking between refetches; the client
-     *  derives the age from this instead. */
+  /** Serialize-time only (derived, never persisted): the in-flight turn's progress,
+   *  for the UI to age itself. Null when no turn runs, or while a tool or upstream
+   *  request explains the quiet.
+   *
+   *  Carries no staleness verdict on purpose. A stalled session emits no events, so
+   *  nothing invalidates the sessions query and a server-side verdict would only
+   *  arrive if something unrelated triggered a refetch — the feature exists to
+   *  surface a silent failure, so it cannot depend on activity to be delivered. The
+   *  client holds this instant from turn start and its own clock decides. */
+  turnProgress?: {
+    /** Epoch ms of the last observable progress — an INSTANT, not a duration. */
     lastProgressAt: number;
     awaitingSubmit: boolean;
   } | null;

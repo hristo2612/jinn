@@ -37,6 +37,7 @@ function makeSession(overrides: Partial<Session> = {}): Session {
 function makeContext(
   backgroundActivity?: ApiContext["backgroundActivity"],
   transportByKey: Record<string, "idle" | "queued" | "running" | "error" | "interrupted"> = {},
+  engine?: unknown,
 ): ApiContext {
   return {
     backgroundActivity,
@@ -45,8 +46,20 @@ function makeContext(
         getPendingCount: () => 0,
         getTransportState: (key: string) => transportByKey[key] ?? "idle",
       }),
+      getEngine: () => engine,
     },
   } as unknown as ApiContext;
+}
+
+/** An engine that reports turn progress, as the interactive Claude engine does. */
+function makeProgressEngine(progress: {
+  turnStartedAt: number;
+  lastProgressAt: number;
+  awaitingSubmit: boolean;
+  activeTools: number;
+  activeUpstream: boolean;
+} | null) {
+  return { turnProgress: () => progress };
 }
 
 describe("serializeSession", () => {
@@ -144,5 +157,63 @@ describe("serializeSession", () => {
 
     expect(index.has("parent")).toBe(false);
     expect(serializeSession(parent, context, index).delegatedActivity).toBeNull();
+  });
+});
+
+describe("serializeSession: turnProgress", () => {
+  const NOW = new Date("2026-06-01T00:00:00.000Z").getTime();
+  const live = {
+    turnStartedAt: NOW - 5_000,
+    lastProgressAt: NOW - 5_000,
+    awaitingSubmit: false,
+    activeTools: 0,
+    activeUpstream: false,
+  };
+
+  it("reports the instant for any live turn, with no staleness verdict of its own", () => {
+    // The client owns the threshold: a stalled session emits nothing, so a verdict
+    // computed here would never be delivered. Five seconds in is still reported.
+    const session = makeSession({ status: "running" });
+    const context = makeContext(undefined, {}, makeProgressEngine(live));
+
+    expect(serializeSession(session, context).turnProgress).toEqual({
+      lastProgressAt: NOW - 5_000,
+      awaitingSubmit: false,
+    });
+  });
+
+  it("passes through awaitingSubmit so the row can say why it is quiet", () => {
+    const session = makeSession({ status: "running" });
+    const context = makeContext(undefined, {}, makeProgressEngine({ ...live, awaitingSubmit: true }));
+
+    expect(serializeSession(session, context).turnProgress?.awaitingSubmit).toBe(true);
+  });
+
+  it.each([
+    { label: "a tool is running", progress: { ...live, activeTools: 1 } },
+    { label: "an upstream request is in flight", progress: { ...live, activeUpstream: true } },
+  ])("stays silent while $label", ({ progress }) => {
+    // State, not time — the server is the right place to judge it, and both edges
+    // emit hooks, so the clearing refetch is guaranteed.
+    const session = makeSession({ status: "running" });
+    const context = makeContext(undefined, {}, makeProgressEngine(progress));
+
+    expect(serializeSession(session, context).turnProgress).toBeNull();
+  });
+
+  it("stays silent when no turn is in flight, or the session is not running", () => {
+    const idle = makeContext(undefined, {}, makeProgressEngine(null));
+    expect(serializeSession(makeSession({ status: "running" }), idle).turnProgress).toBeNull();
+
+    const running = makeContext(undefined, {}, makeProgressEngine(live));
+    expect(serializeSession(makeSession({ status: "idle" }), running).turnProgress).toBeNull();
+    expect(serializeSession(makeSession({ status: "waiting" }), running).turnProgress).toBeNull();
+  });
+
+  it("stays silent for engines that cannot report progress at all", () => {
+    const session = makeSession({ status: "running", engine: "codex" });
+
+    expect(serializeSession(session, makeContext()).turnProgress).toBeNull();
+    expect(serializeSession(session, makeContext(undefined, {}, {})).turnProgress).toBeNull();
   });
 });
