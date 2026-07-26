@@ -121,6 +121,25 @@ export function findExistingSkill(name: string): { name: string; dir: string } |
 /** Characters that could break out of a cmd.exe command line. */
 const WINDOWS_UNSAFE_ARG = /["&|<>^%`\r\n]/;
 
+/**
+ * Quote one argument for a Windows command line.
+ *
+ * Windows programs parse their own command line with MSVCRT rules, where a run
+ * of backslashes immediately before a quote escapes it. Wrapping bare in
+ * `"${arg}"` therefore breaks for any argument ending in a backslash: `trailing\`
+ * became `"trailing\"`, the closing quote was consumed, and the child received
+ * `trailing"` — smuggling in exactly the quote character WINDOWS_UNSAFE_ARG
+ * exists to reject, and letting one argument swallow the next.
+ *
+ * A run of 2n backslashes before the closing quote yields n literal
+ * backslashes and still terminates the string, so double only that final run.
+ * Interior backslashes are literal and must not be touched, or every Windows
+ * path argument would be mangled.
+ */
+export function quoteWindowsArg(arg: string): string {
+  return `"${arg.replace(/(\\+)$/, "$1$1")}"`;
+}
+
 export function runNpxSkills(args: string[], stdio: "inherit" | "pipe" = "inherit"): { status: number | null } {
   if (process.platform === "win32") {
     // Windows ships npx as npx.cmd, which Node refuses to spawn without a shell
@@ -131,7 +150,7 @@ export function runNpxSkills(args: string[], stdio: "inherit" | "pipe" = "inheri
       console.error(`${RED}Refusing to run: argument contains shell metacharacters: ${unsafe}${RESET}`);
       return { status: 1 };
     }
-    return spawnSync("npx", ["skills", ...args].map((a) => `"${a}"`), { stdio, shell: true });
+    return spawnSync("npx", ["skills", ...args].map(quoteWindowsArg), { stdio, shell: true });
   }
   return spawnSync("npx", ["skills", ...args], {
     stdio,
