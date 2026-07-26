@@ -41,6 +41,7 @@ import { setTodoLiveEmitter } from "../work-items/live-events.js";
 import { setTodoStatusChangeListener } from "../work-items/transitions.js";
 import { seedTrust, cleanupSessionSettings } from "../shared/claude-settings.js";
 import { GATEWAY_INFO_FILE, HOOK_RELAY_SCRIPT, JINN_HOME, CLAUDE_SETTINGS_DIR } from "../shared/paths.js";
+import { pathIsOwnerOnly } from "../shared/owner-only.js";
 import { handleApiRequest, isSameOriginBrowserRequest, resumePendingWebQueueItems, type ApiContext } from "./api.js";
 import { resolveCallerIdentity, sessionCommGuards, LATERAL_MAX_HOPS, type CallerIdentityOptions } from "./session-comm-guards.js";
 import { UNIDENTIFIED_TOOL_CALL_ERROR, verifySessionCapability } from "../mcp/identity.js";
@@ -373,6 +374,24 @@ export async function startGateway(
 
   // Normalize claude engine config (idempotent — loadConfig already normalized it)
   const claudeCfg = normalizeClaudeEngineConfig(config.engines.claude);
+
+  // The instance holds the gateway token, connector secrets and every session
+  // transcript. Report when something else can read it — a broad ACE inherited
+  // from the profile on Windows, or group/other bits on POSIX.
+  //
+  // Deliberately a warning, not a repair: an operator may have granted that
+  // access on purpose (a sandboxed engine account needing to read config), and
+  // silently rewriting ACLs under a running install could break it. `jinn setup`
+  // restricts the home; boot only tells you when it is no longer restricted.
+  if (!pathIsOwnerOnly(JINN_HOME)) {
+    logger.warn(
+      `Instance directory ${JINN_HOME} is readable beyond your account — the gateway token, `
+      + `connector secrets and session history are exposed to those principals. `
+      + `Restrict it with ${process.platform === "win32"
+        ? `icacls "${JINN_HOME}" /inheritance:r /grant:r "%USERNAME%:(OI)(CI)(F)"`
+        : `chmod 700 "${JINN_HOME}"`}`,
+    );
+  }
 
   // Reap any orphaned PTYs from a prior crashed run before writing the fresh gateway.json.
   const oldInfo = readGatewayInfo(GATEWAY_INFO_FILE);

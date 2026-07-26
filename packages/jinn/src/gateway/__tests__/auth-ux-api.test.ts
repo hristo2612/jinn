@@ -6,6 +6,7 @@ import { Readable } from "node:stream";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { handleApiRequest, type ApiContext } from "../api.js";
 import { requestPairingCode } from "../../cli/pair.js";
+import { enforceOwnerOnlyDirectory } from "../../shared/owner-only.js";
 import {
   createAuthSession,
   issueLocalBootstrapGrant,
@@ -69,7 +70,16 @@ function makeRes() {
   };
 }
 
-function ctx(jinnHome = fs.mkdtempSync(path.join(os.tmpdir(), "jinn-auth-api-"))): ApiContext {
+/** The loopback pairing proof requires a home only this account can reach.
+ *  mkdtemp gives that on POSIX (0700) but not on Windows, where a temp
+ *  directory inherits whatever %TEMP% grants. Establish it either way. */
+function ownerOnlyTempHome(prefix: string): string {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  enforceOwnerOnlyDirectory(home);
+  return home;
+}
+
+function ctx(jinnHome = ownerOnlyTempHome("jinn-auth-api-")): ApiContext {
   return {
     gatewayAuthToken: "gateway-token",
     jinnHome,

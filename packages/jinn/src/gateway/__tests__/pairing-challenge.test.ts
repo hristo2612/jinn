@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { expectPosixMode } from "../../shared/test-support/posix-mode.js";
+import { enforceOwnerOnlyDirectory } from "../../shared/owner-only.js";
 import {
   consumePairingChallenge,
   issuePairingChallenge,
@@ -10,7 +13,14 @@ import {
 } from "../pairing-challenge.js";
 
 function tempHome(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "jinn-pair-challenge-"));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "jinn-pair-challenge-"));
+  // The proof is only meaningful in a home nobody else can reach, and these
+  // cases assume that premise. mkdtemp gives it for free on POSIX (0700), but
+  // not on Windows, where a temp directory inherits whatever %TEMP% grants —
+  // often several groups with Modify. Establish it explicitly so the fixture
+  // matches the precondition on both platforms.
+  enforceOwnerOnlyDirectory(home);
+  return home;
 }
 
 function issue(home: string, store: PairingChallengeStore, now = 1_000) {
@@ -36,7 +46,7 @@ describe("pairing filesystem challenges", () => {
     fs.chmodSync(challenge.path, 0o600);
 
     expect(fs.statSync(challenge.path).uid).toBe(fs.statSync(home).uid);
-    expect(fs.statSync(challenge.path).mode & 0o777).toBe(0o600);
+    expectPosixMode(fs.statSync(challenge.path), 0o600);
     expect(consumePairingChallenge(home, challenge.challengeId, store, 1_001)).toBe(true);
     expect(fs.existsSync(challenge.path)).toBe(false);
     expect(consumePairingChallenge(home, challenge.challengeId, store, 1_002)).toBe(false);
@@ -70,9 +80,19 @@ describe("pairing filesystem challenges", () => {
     const store: PairingChallengeStore = new Map();
     const broad = issue(home, store);
     fs.writeFileSync(broad.path, broad.nonce, { mode: 0o644 });
-    fs.chmodSync(broad.path, 0o644);
+    if (process.platform === "win32") {
+      // chmod cannot widen anything on Windows. Grant the Everyone SID instead -
+      // by SID, because the name is localized - which is what "readable by more
+      // than the owner" actually means on this platform.
+      execFileSync("icacls", [broad.path, "/grant", "*S-1-1-0:(R)"], { windowsHide: true });
+    } else {
+      fs.chmodSync(broad.path, 0o644);
+    }
     expect(consumePairingChallenge(home, broad.challengeId, store, 1_001)).toBe(false);
 
+    // A forged uid is a POSIX-only notion: the Windows check reads the ACL, and
+    // ownership cannot be reassigned to another account from inside a test.
+    if (process.platform !== "win32") {
     const foreign = issuePairingChallenge(
       home,
       store,
@@ -91,6 +111,7 @@ describe("pairing filesystem challenges", () => {
     }) as typeof fs.lstatSync);
     expect(consumePairingChallenge(home, foreign.challengeId, store, 2_001)).toBe(false);
     vi.restoreAllMocks();
+    }
 
     const symlink = issuePairingChallenge(
       home,

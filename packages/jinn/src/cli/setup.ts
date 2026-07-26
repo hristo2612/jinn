@@ -5,6 +5,7 @@ import readline from "node:readline";
 import { execSync, spawn } from "node:child_process";
 import yaml from "js-yaml";
 import { isInstalled, resolveBin } from "../shared/resolve-bin.js";
+import { enforceOwnerOnlyDirectory } from "../shared/owner-only.js";
 import {
   JINN_HOME,
   CONFIG_PATH,
@@ -495,6 +496,17 @@ export async function runSetup(opts?: { force?: boolean }): Promise<void> {
   const created: string[] = [];
 
   if (ensureDir(JINN_HOME)) created.push(JINN_HOME);
+
+  // Restrict the instance to this user before anything sensitive is written into
+  // it. Done once on the directory, with inheritance, so every file created later
+  // is covered: on Windows there are no mode bits to set per file, and a home
+  // that inherits a broad ACE from the profile would expose the gateway token,
+  // connector secrets and the whole session database to those principals.
+  if (enforceOwnerOnlyDirectory(JINN_HOME)) {
+    ok(`Restricted ${JINN_HOME} to ${process.platform === "win32" ? "your account" : "owner-only (0700)"}`);
+  } else {
+    warn(`Could not restrict permissions on ${JINN_HOME}; check who can read it before adding credentials`);
+  }
 
   // Copy or create config files.
   // DEFAULT_CONFIG (above) is the canonical default. `template/config.yaml` is an
