@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { expectPosixMode } from "../../shared/test-support/posix-mode.js";
 
 const KEY_RELATIVE_PATH = path.join("secrets", "mcp-session-capability.key");
 
@@ -96,7 +97,7 @@ describe("restart-stable MCP session capability authority", () => {
     expect(capability).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(capability).not.toContain(sessionId);
 
-    expect(fs.statSync(keyFile).mode & 0o777).toBe(0o600);
+    expectPosixMode(fs.statSync(keyFile), 0o600);
 
     const otherHome = fs.mkdtempSync(path.join(os.tmpdir(), "jinn-mcp-capability-other-"));
     try {

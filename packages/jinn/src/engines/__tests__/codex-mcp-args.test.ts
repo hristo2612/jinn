@@ -12,6 +12,7 @@ import {
   realCodexHome,
 } from "../codex.js";
 import type { ResolvedMcpConfig, EngineRunOpts } from "../../shared/types.js";
+import { expectPosixMode } from "../../shared/test-support/posix-mode.js";
 
 const CAPABILITY = "cap-SUPER-SECRET-do-not-leak-123";
 
@@ -185,12 +186,11 @@ describe("prepareCodexSessionHome", () => {
     // Deterministic path — same session id → same dir every turn.
     expect(home!.home).toBe(path.join(baseDir, "sess-1"));
 
-    const dirMode = fs.statSync(home!.home).mode & 0o777;
-    expect(dirMode).toBe(0o700);
+    expectPosixMode(home!.home, 0o700);
 
     const cfgPath = path.join(home!.home, "config.toml");
     expect(fs.existsSync(cfgPath)).toBe(true);
-    expect(fs.statSync(cfgPath).mode & 0o777).toBe(0o600);
+    expectPosixMode(fs.statSync(cfgPath), 0o600);
 
     const cfg = fs.readFileSync(cfgPath, "utf8");
     // Operator base settings preserved…

@@ -1,3 +1,4 @@
+import { expectPosixMode } from "../../shared/test-support/posix-mode.js";
 import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -304,8 +305,8 @@ describe('workflow database paths and connection', () => {
     }
     withWorkflowDatabase(target, (db) => expect(db.open).toBe(true));
     if (process.platform !== 'win32') {
-      expect(statSync(ownerParent).mode & 0o777).toBe(0o755);
-      expect(statSync(target).mode & 0o777).toBe(0o640);
+      expectPosixMode(statSync(ownerParent), 0o755);
+      expectPosixMode(statSync(target), 0o640);
     }
   });
 

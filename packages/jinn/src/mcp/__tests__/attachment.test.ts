@@ -293,9 +293,18 @@ describe("readGatewayJsonToken", () => {
     fs.writeFileSync(path.join(instanceHome, "gateway.json"), JSON.stringify({ token: instanceToken }));
     fs.writeFileSync(path.join(wrongHome, "gateway.json"), JSON.stringify({ token: wrongToken }));
 
-    const envBackup = { HOME: process.env.HOME, JINN_HOME: process.env.JINN_HOME, JINN_INSTANCE: process.env.JINN_INSTANCE };
+    const envBackup = {
+      HOME: process.env.HOME,
+      USERPROFILE: process.env.USERPROFILE,
+      JINN_HOME: process.env.JINN_HOME,
+      JINN_INSTANCE: process.env.JINN_INSTANCE,
+    };
     try {
-      process.env.HOME = fakeHomeRoot; // os.homedir() follows $HOME on POSIX
+      // os.homedir() reads $HOME on POSIX and %USERPROFILE% on Windows. Setting
+      // only HOME left the real home in play on Windows, so the probe read the
+      // operator's actual ~/.jinn instead of the fixture. Redirect both.
+      process.env.HOME = fakeHomeRoot;
+      process.env.USERPROFILE = fakeHomeRoot;
       delete process.env.JINN_HOME;
       process.env.JINN_INSTANCE = "qafoo";
       vi.resetModules();

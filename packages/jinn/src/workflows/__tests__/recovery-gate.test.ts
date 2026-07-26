@@ -1,3 +1,4 @@
+import { expectPosixMode } from "../../shared/test-support/posix-mode.js";
 import {
   chmodSync,
   existsSync,
@@ -127,9 +128,9 @@ describe('workflow recovery gate', () => {
       db = migrations.openWorkflowDatabase(paths.WORKFLOWS_DB_PATH);
       for (const file of [paths.WORKFLOWS_DB_PATH, `${paths.WORKFLOWS_DB_PATH}-wal`, `${paths.WORKFLOWS_DB_PATH}-shm`]) {
         expect(existsSync(file)).toBe(true);
-        expect(statSync(file).mode & 0o777).toBe(0o600);
+        expectPosixMode(statSync(file), 0o600);
       }
-      expect(statSync(paths.WORKFLOWS_DIR).mode & 0o777).toBe(0o700);
+      expectPosixMode(statSync(paths.WORKFLOWS_DIR), 0o700);
     } finally {
       db?.close();
       process.umask(previousUmask);
@@ -149,7 +150,7 @@ describe('workflow recovery gate', () => {
 
     expectDefaultOpenToFailClosed();
 
-    expect(statSync(target).mode & 0o777).toBe(0o755);
+    expectPosixMode(statSync(target), 0o755);
     expect(readFileSync(sentinel)).toEqual(before);
   });
 
@@ -165,7 +166,7 @@ describe('workflow recovery gate', () => {
 
     expectDefaultOpenToFailClosed();
 
-    expect(statSync(target).mode & 0o777).toBe(0o644);
+    expectPosixMode(statSync(target), 0o644);
     expect(readFileSync(target)).toEqual(before);
   });
 
@@ -186,7 +187,7 @@ describe('workflow recovery gate', () => {
     expectDefaultOpenToFailClosed();
 
     expect(readFileSync(paths.WORKFLOWS_DB_PATH)).toEqual(databaseBefore);
-    expect(statSync(target).mode & 0o777).toBe(0o644);
+    expectPosixMode(statSync(target), 0o644);
     expect(readFileSync(target)).toEqual(targetBefore);
   });
 });

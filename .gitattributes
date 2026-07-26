@@ -1,0 +1,38 @@
+# Line endings are load-bearing in this repository.
+#
+# Shipped migration payloads under packages/jinn/template/migrations are
+# content-addressed: each manifest stores a sha256 of the payload bytes, and the
+# migration snapshot compares payloads byte-for-byte against the user's instance
+# files. A contributor with core.autocrlf=true (the Git for Windows default) got
+# CRLF working-tree copies, so every one of those hashes mismatched and the
+# migration service failed to validate its own shipped bundle.
+#
+# Normalize to LF in the repository and in the working tree on every platform.
+* text=auto eol=lf
+
+# Windows script hosts require CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Never touch binary payloads.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.webp binary
+*.ico  binary
+*.svg  text eol=lf
+*.mp4  binary
+*.webm binary
+*.mov  binary
+*.woff  binary
+*.woff2 binary
+*.ttf  binary
+*.otf  binary
+*.node binary
+*.wasm binary
+*.db   binary
+*.sqlite binary
+*.gz   binary
+*.zip  binary

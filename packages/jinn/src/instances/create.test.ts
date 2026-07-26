@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadInstances, saveInstances } from "./directory.js";
+import { expectPosixMode } from "../shared/test-support/posix-mode.js";
 import {
   createInstance,
   normalizeWorkspaceName,
@@ -38,9 +39,13 @@ describe("workspace naming", () => {
 
   it("resolves legacy and prefixed selectors through registered homes", () => {
     const instances = [{ id: "id", name: "jinn-john", displayName: "John", port: 7788, home: "/custom/john", createdAt: "now" }];
+    // A registered home is returned verbatim, so it stays exactly as stored.
     expect(resolveInstanceHome("john", instances, "/home/operator")).toBe("/custom/john");
     expect(resolveInstanceHome("jinn-john", instances, "/home/operator")).toBe("/custom/john");
-    expect(resolveInstanceHome("newco", [], "/home/operator")).toBe("/home/operator/.jinn-newco");
+    // An unregistered selector is derived with path.join, which correctly yields
+    // native separators — backslashes on Windows. Build the expectation the same
+    // way rather than hard-coding a POSIX path.
+    expect(resolveInstanceHome("newco", [], "/home/operator")).toBe(path.join("/home/operator", ".jinn-newco"));
   });
 });
 
@@ -100,7 +105,7 @@ describe("workspace creation", () => {
     const gatewayPath = path.join(root, ".jinn-john", "gateway.json");
     const gateway = JSON.parse(fs.readFileSync(gatewayPath, "utf8")) as { token?: string };
     expect(gateway.token?.length).toBeGreaterThanOrEqual(32);
-    expect(fs.statSync(gatewayPath).mode & 0o777).toBe(0o600);
+    expectPosixMode(fs.statSync(gatewayPath), 0o600);
     expect(loadInstances({ registryPath, legacyRegistryPath })).toHaveLength(1);
   });
 

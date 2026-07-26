@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { expectPosixMode } from "../../shared/test-support/posix-mode.js";
 import {
   authCookieHeaders,
   authCookieName,
@@ -42,8 +43,7 @@ describe("gateway auth", () => {
     expect(first.length).toBeGreaterThanOrEqual(32);
 
     const tokenFile = path.join(home, "gateway.json");
-    const mode = fs.statSync(tokenFile).mode & 0o777;
-    expect(mode).toBe(0o600);
+    expectPosixMode(tokenFile, 0o600);
     expect(JSON.parse(fs.readFileSync(tokenFile, "utf-8")).token).toBe(first);
   });
 

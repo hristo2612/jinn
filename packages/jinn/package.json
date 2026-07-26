@@ -20,7 +20,7 @@
   ],
   "scripts": {
     "postinstall": "node scripts/fix-node-pty-permissions.mjs",
-    "build": "rm -rf dist/bin dist/src && tsc -p tsconfig.build.json && mkdir -p dist/src/talk && (cp src/talk/*.md src/talk/*.py dist/src/talk/ 2>/dev/null || true)",
+    "build": "node scripts/build.mjs",
     "dev": "tsc && (tsc --watch &) && node --watch-path=dist dist/bin/jinn.js start",
     "typecheck": "tsc --noEmit",
     "test": "pnpm build && vitest run",
@@ -28,7 +28,7 @@
     "test:watch": "vitest",
     "migration:generate": "node scripts/instance-migration-bundle.mjs generate",
     "migration:check": "node scripts/instance-migration-bundle.mjs check",
-    "clean": "rm -rf dist"
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\""
   },
   "dependencies": {
     "@slack/bolt": "^4.7.3",

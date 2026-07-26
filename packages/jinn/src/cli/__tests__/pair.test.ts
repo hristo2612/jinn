@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { expectPosixMode } from "../../shared/test-support/posix-mode.js";
 import {
   formatPairedDevices,
   formatPairingInstructions,
@@ -35,7 +36,7 @@ describe("pair CLI helpers", () => {
       expect(url).toBe("http://127.0.0.1:7777/api/auth/pairing-codes");
       expect(JSON.parse(String(init?.body))).toEqual({ challengeId });
       expect(fs.readFileSync(challengePath, "utf-8")).toBe(nonce);
-      expect(fs.statSync(challengePath).mode & 0o777).toBe(0o600);
+      expectPosixMode(fs.statSync(challengePath), 0o600);
       return new Response(JSON.stringify({
         status: "ok",
         code: "ABCD-EFGH-JKLM",

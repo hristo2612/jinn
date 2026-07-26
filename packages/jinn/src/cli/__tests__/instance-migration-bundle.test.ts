@@ -24,6 +24,12 @@ function fixture(): string {
   git(root, "init", "-q")
   git(root, "config", "user.name", "Test Operator")
   git(root, "config", "user.email", "test@example.invalid")
+  // A throwaway fixture must not inherit the developer's line-ending config.
+  // With core.autocrlf=true (the Git for Windows default) git prints "LF will be
+  // replaced by CRLF" advisories to stderr, and one case below asserts stderr is
+  // empty — so the suite failed on Windows for a property it never meant to test.
+  git(root, "config", "core.autocrlf", "false")
+  git(root, "config", "core.eol", "lf")
   write(root, "CLAUDE.md", "base doctrine\n")
   write(root, "skills/old/SKILL.md", "renamed body\n")
   write(root, "removed.txt", "remove me\n")

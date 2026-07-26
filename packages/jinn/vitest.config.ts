@@ -13,6 +13,18 @@ import { defineConfig } from 'vitest/config'
 // Local runs keep full parallelism and the snappy default timeouts.
 const isCI = !!process.env.CI
 
+// Windows needs the same headroom, for a different reason: it has no fork(), so
+// every pool worker is a full process spawn that re-resolves the module graph
+// from scratch, over NTFS, with realtime AV scanning each file. Suites whose
+// beforeAll does `await import("../api.js")` — a 350KB module pulling in most of
+// the gateway — routinely pass 10s under full local parallelism.
+//
+// This matters more than a slow test: vitest reports a timed-out hook by marking
+// the file's tests SKIPPED, not failed. Around twenty suites (~180 tests,
+// including the work-item and privileged-read guards) were dropping out of local
+// Windows runs while the run still reported green.
+const isWindows = process.platform === 'win32'
+
 export default defineConfig({
   test: {
     globals: true,
@@ -31,8 +43,8 @@ export default defineConfig({
     ...(isCI ? { minWorkers: 1, maxWorkers: 2 } : {}),
     // Give slow, resource-starved CI runners enough headroom to boot real
     // servers/workers/PTYs without tripping spurious timeouts.
-    testTimeout: isCI ? 30000 : 5000,
-    hookTimeout: isCI ? 30000 : 10000,
+    testTimeout: isCI || isWindows ? 30000 : 5000,
+    hookTimeout: isCI || isWindows ? 30000 : 10000,
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],

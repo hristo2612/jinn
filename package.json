@@ -14,7 +14,7 @@
     "test": "turbo run test --concurrency=1",
     "coverage": "turbo run coverage",
     "test:e2e": "playwright test",
-    "clean": "rm -rf .turbo node_modules/.cache && turbo clean",
+    "clean": "node -e \"const fs=require('fs');for(const d of ['.turbo','node_modules/.cache'])fs.rmSync(d,{recursive:true,force:true})\" && turbo clean",
     "jinn": "node packages/jinn/dist/bin/jinn.js",
     "setup": "pnpm build && node packages/jinn/dist/bin/jinn.js setup",
     "setup:force": "pnpm build && node packages/jinn/dist/bin/jinn.js setup --force",

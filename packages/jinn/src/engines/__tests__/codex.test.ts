@@ -82,6 +82,7 @@ vi.mock("node:child_process", () => ({
 
 import { CodexEngine, type CodexEngineOpts } from "../codex.js";
 import type { StreamDelta, EngineResult } from "../../shared/types.js";
+import { expectPosixMode } from "../../shared/test-support/posix-mode.js";
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -387,7 +388,7 @@ describe("CodexEngine — systemPrompt / developer_instructions injection", () =
 
       // config.toml is 0600, carries the capability, and merged the operator base.
       const cfgPath = path.join(expectedHome, "config.toml");
-      expect(fs.statSync(cfgPath).mode & 0o777).toBe(0o600);
+      expectPosixMode(fs.statSync(cfgPath), 0o600);
       const cfg = fs.readFileSync(cfgPath, "utf-8");
       expect(cfg).toContain(`JINN_SESSION_CAPABILITY = ${JSON.stringify(capability)}`);
       expect(cfg).toContain('approval_policy = "never"'); // operator base preserved

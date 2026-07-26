@@ -5,6 +5,7 @@ import path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 import { createMigrationSnapshot, verifyMigrationSnapshot } from "../snapshot.js"
 import { migrationMaterializationInputsSha256, type MigrationMaterializationPlan } from "../service.js"
+import { expectPosixMode } from "../../shared/test-support/posix-mode.js";
 
 const roots: string[] = []
 const hash = (value: Buffer | string) => crypto.createHash("sha256").update(value).digest("hex")
@@ -97,7 +98,7 @@ describe("migration snapshots", () => {
     expect(fs.readFileSync(target, "utf8")).toBe("# My Mixed CASE Portal\nRun my-mixed-case-portal now.\nUnknown {{futureValue}}.\n")
     expect(fs.readFileSync(json, "utf8")).toBe(genericJson)
     expect(fs.readFileSync(path.join(snapshot.path, "materialized/legacy/0.9.0/MIGRATION.md"), "utf8")).toBe("# Legacy My Mixed CASE Portal\n")
-    expect(fs.statSync(base).mode & 0o777).toBe(0o444)
+    expectPosixMode(fs.statSync(base), 0o444)
     expect(fs.readFileSync(path.join(snapshot.path, "docs/overview.md"), "utf8")).toBe("# My Mixed CASE Portal\nGenuine user edit.\n")
     expect(fs.readFileSync(path.join(sources, "base/docs/overview.md"), "utf8")).toBe(genericBase)
     const audit = JSON.parse(fs.readFileSync(path.join(snapshot.path, "materialization.json"), "utf8"))
@@ -133,7 +134,7 @@ describe("migration snapshots", () => {
     expect(verifyMigrationSnapshot(options)).toBe(true)
     expect(fs.readFileSync(path.join(first.path, "skills/stock/SKILL.md"), "utf8")).toBe("custom skill\n")
     expect(fs.lstatSync(path.join(first.path, "AGENTS.md")).isSymbolicLink()).toBe(true)
-    expect(fs.statSync(path.join(first.path, "CLAUDE.md")).mode & 0o777).toBe(0o640)
+    expectPosixMode(fs.statSync(path.join(first.path, "CLAUDE.md")), 0o640)
     expect(fs.existsSync(path.join(first.path, "secrets"))).toBe(false)
     expect(JSON.parse(fs.readFileSync(path.join(first.path, "snapshot.json"), "utf8"))).toMatchObject({
       migrationKey: options.migrationKey,

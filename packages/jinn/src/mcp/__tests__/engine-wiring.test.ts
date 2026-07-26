@@ -40,6 +40,7 @@ import {
   ANTIGRAVITY_JINN_MCP_MARKER,
 } from "../../engines/antigravity-mcp.js";
 import type { McpGlobalConfig } from "../../shared/types.js";
+import { expectPosixMode } from "../../shared/test-support/posix-mode.js";
 
 const GATEWAY_URL = "http://127.0.0.1:56789";
 const TOKEN = "wiring-test-secret-token";
@@ -74,7 +75,7 @@ describe("per-engine jinn-server wiring (GRS-018 seam for GRS-017 default-on)", 
     const resolved = resolveMcpServers(ON, undefined);
     const p = writeMcpConfigFile(resolved, "wiring-claude");
     try {
-      expect(fs.statSync(p).mode & 0o777).toBe(0o600);
+      expectPosixMode(fs.statSync(p), 0o600);
       const onDisk = JSON.parse(fs.readFileSync(p, "utf-8"));
       expect(onDisk.mcpServers.jinn.command).toBeTruthy();
       // GRS-018 unified builtin env: URL + JINN_HOME (token-fallback hint) —
@@ -143,7 +144,7 @@ describe("per-engine jinn-server wiring (GRS-018 seam for GRS-017 default-on)", 
       const capability = capabilityOf(resolved);
       const p = writeMcpConfigFile(resolved, "wiring-claude-sid");
       try {
-        expect(fs.statSync(p).mode & 0o777).toBe(0o600);
+        expectPosixMode(fs.statSync(p), 0o600);
         expect(path.basename(path.dirname(p))).toBe("wiring-claude-sid");
         const onDisk = JSON.parse(fs.readFileSync(p, "utf-8"));
         expect(onDisk.mcpServers.jinn.env.JINN_SESSION_ID).toBe(SID);
@@ -196,7 +197,7 @@ describe("per-engine jinn-server wiring (GRS-018 seam for GRS-017 default-on)", 
       expect(home).toBeDefined();
       try {
         const cfgPath = path.join(home!.home, "config.toml");
-        expect(fs.statSync(cfgPath).mode & 0o777).toBe(0o600);
+        expectPosixMode(fs.statSync(cfgPath), 0o600);
         const toml = fs.readFileSync(cfgPath, "utf-8");
         expect(toml).toContain(`JINN_GATEWAY_URL = ${JSON.stringify(GATEWAY_URL)}`);
         expect(toml).toContain(`JINN_SESSION_ID = ${JSON.stringify(SID)}`);
@@ -271,7 +272,7 @@ describe("per-engine jinn-server wiring (GRS-018 seam for GRS-017 default-on)", 
       expect(handle.attached).toBe(true);
       try {
         if (!handle.attached) throw new Error("expected pi MCP extension to attach");
-        expect(fs.statSync(handle.extensionPath).mode & 0o777).toBe(0o600);
+        expectPosixMode(fs.statSync(handle.extensionPath), 0o600);
         const source = fs.readFileSync(handle.extensionPath, "utf-8");
         expect(source).toContain("registerTool");
         expect(source).toContain("buildTools");

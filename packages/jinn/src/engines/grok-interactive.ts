@@ -57,23 +57,29 @@ function walkFiles(dir: string, out: string[] = []): string[] {
   let entries: fs.Dirent[];
   try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return out; }
   for (const entry of entries) {
-    const p = `${dir}/${entry.name}`;
+    // path.join, not `${dir}/${name}`: the latter produced mixed separators on
+    // Windows ("C:\...\root/session-x/updates.jsonl"). Windows opens such a path
+    // fine, so reads worked, but the string never equalled a path.join-built one
+    // — so equality checks, dedupe by path, and path.relative all misbehaved.
+    const p = path.join(dir, entry.name);
     if (entry.isDirectory()) walkFiles(p, out);
     else if (entry.isFile()) out.push(p);
   }
   return out;
 }
 
+/** Transcript file names Grok writes, most authoritative first. Matched on the
+ *  basename so the separator never enters the comparison. */
+const GROK_TRANSCRIPT_NAMES = ["updates.jsonl", "chat_history.jsonl", "events.jsonl"];
+
 function isGrokTranscriptFile(file: string): boolean {
-  return file.endsWith("/updates.jsonl") || file.endsWith("/chat_history.jsonl") || file.endsWith("/events.jsonl");
+  return GROK_TRANSCRIPT_NAMES.includes(path.basename(file));
 }
 
 function sortGrokTranscriptFiles(files: string[]): string[] {
   const rank = (file: string) => {
-    if (file.endsWith("/updates.jsonl")) return 0;
-    if (file.endsWith("/chat_history.jsonl")) return 1;
-    if (file.endsWith("/events.jsonl")) return 2;
-    return 3;
+    const index = GROK_TRANSCRIPT_NAMES.indexOf(path.basename(file));
+    return index === -1 ? GROK_TRANSCRIPT_NAMES.length : index;
   };
   return files.filter(isGrokTranscriptFile).sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
 }
