@@ -682,7 +682,11 @@ describe('rendered copy carries no em or en dashes', () => {
   function strippedLines(file: string): Array<{ line: number; text: string }> {
     let source = fs.readFileSync(file, 'utf-8')
     source = source.replace(/\/\*[\s\S]*?\*\//g, '')
-    return source.split('\n')
+    // Split on CRLF too. A trailing \r survives a split on '\n', and `.` never
+    // matches \r, so the comment-stripping `.*$` below cannot reach the end of
+    // the line and strips nothing — on a CRLF checkout every commented dash in
+    // the codebase reports as rendered copy.
+    return source.split(/\r?\n/)
       .map((text, index) => ({ line: index + 1, text: text.replace(/(^|[^:])\/\/.*$/, '$1') }))
       // Regex literals legitimately MATCH dashes (e.g. tab-title parsing) —
       // they parse them, they don't render them.
