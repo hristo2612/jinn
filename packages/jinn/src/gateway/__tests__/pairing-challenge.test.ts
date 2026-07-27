@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { expectPosixMode } from "../../shared/test-support/posix-mode.js";
-import { enforceOwnerOnlyDirectory } from "../../shared/owner-only.js";
+import { currentWindowsSid, enforceOwnerOnlyDirectory, parseSddlTrustees, pathIsOwnerOnly } from "../../shared/owner-only.js";
 import {
   consumePairingChallenge,
   issuePairingChallenge,
@@ -20,6 +20,34 @@ function icacls(): string {
   return path.join(root, "System32", "icacls.exe");
 }
 
+/** What the owner-only check actually sees, for failure messages.
+ *
+ *  A bare "expected false to be true" from these cases is close to undiagnosable
+ *  on a machine you cannot log into: it could be identity resolution, the ACL
+ *  edit, or inheritance onto the proof file. Naming the state costs one icacls
+ *  call on the failure path only. */
+function ownerOnlyDiagnosis(target: string): string {
+  if (process.platform !== "win32") {
+    const stat = fs.statSync(target, { throwIfNoEntry: false });
+    return stat ? `mode=0o${(stat.mode & 0o777).toString(8)} uid=${stat.uid}` : "missing";
+  }
+  const dump = path.join(os.tmpdir(), `pair-diag-${process.pid}-${Math.abs(hashPath(target))}.sddl`);
+  try {
+    execFileSync(icacls(), [target, "/save", dump, "/Q"], { windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+    return `sid=${currentWindowsSid() ?? "UNRESOLVED"} trustees=[${parseSddlTrustees(fs.readFileSync(dump, "utf16le")).join(", ")}]`;
+  } catch (error) {
+    return `sid=${currentWindowsSid() ?? "UNRESOLVED"} icacls-save-failed: ${(error as Error).message.slice(0, 120)}`;
+  } finally {
+    try { fs.unlinkSync(dump); } catch { /* nothing written */ }
+  }
+}
+
+function hashPath(value: string): number {
+  let h = 0;
+  for (let i = 0; i < value.length; i += 1) h = (h * 31 + value.charCodeAt(i)) | 0;
+  return h;
+}
+
 function tempHome(): string {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "jinn-pair-challenge-"));
   // The proof is only meaningful in a home nobody else can reach, and these
@@ -27,7 +55,11 @@ function tempHome(): string {
   // not on Windows, where a temp directory inherits whatever %TEMP% grants —
   // often several groups with Modify. Establish it explicitly so the fixture
   // matches the precondition on both platforms.
-  enforceOwnerOnlyDirectory(home);
+  //
+  // Asserted rather than assumed: if this fails, every acceptance case below
+  // fails with "expected false to be true" and the real cause is invisible.
+  const applied = enforceOwnerOnlyDirectory(home);
+  expect(applied, `could not establish an owner-only home at ${home} — ${ownerOnlyDiagnosis(home)}`).toBe(true);
   return home;
 }
 
@@ -55,6 +87,10 @@ describe("pairing filesystem challenges", () => {
 
     expect(fs.statSync(challenge.path).uid).toBe(fs.statSync(home).uid);
     expectPosixMode(fs.statSync(challenge.path), 0o600);
+    // The proof inherits the home's restriction rather than setting its own on
+    // Windows, so check that separately: it is the half a mode-only assertion
+    // cannot see, and the half that fails if inheritance did not apply.
+    expect(pathIsOwnerOnly(challenge.path), `proof file is not owner-only — ${ownerOnlyDiagnosis(challenge.path)}`).toBe(true);
     expect(consumePairingChallenge(home, challenge.challengeId, store, 1_001)).toBe(true);
     expect(fs.existsSync(challenge.path)).toBe(false);
     expect(consumePairingChallenge(home, challenge.challengeId, store, 1_002)).toBe(false);
