@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { parseSddlTrustees, pathIsOwnerOnly } from "../owner-only.js";
+import { enforceOwnerOnlyDirectory, parseSddlTrustees, pathIsOwnerOnly } from "../owner-only.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -73,5 +73,33 @@ describe("pathIsOwnerOnly", () => {
 
   it("answers for a real path on this platform without throwing", () => {
     expect(typeof pathIsOwnerOnly(tempDir())).toBe("boolean");
+  });
+});
+
+describe("enforceOwnerOnlyDirectory", () => {
+  it("reports the verified state, never a bare exit code", () => {
+    // The caller prints this as an assurance ("Restricted ~/.jinn to your
+    // account"), so the return value has to mean the directory IS owner-only
+    // afterwards. On Windows /grant:r replaces permissions only for the trustees
+    // it names, so a pre-existing explicit ACE for an unrelated group can survive
+    // a successful invocation — returning true on exit code alone would be the
+    // same "reports success, silently does nothing" bug this module removes.
+    const dir = tempDir();
+    const applied = enforceOwnerOnlyDirectory(dir);
+    expect(applied).toBe(pathIsOwnerOnly(dir));
+    if (applied) expect(pathIsOwnerOnly(dir)).toBe(true);
+  });
+
+  it("fails closed for a path that does not exist, without throwing", () => {
+    // A hardening failure must not stop the gateway from starting.
+    expect(enforceOwnerOnlyDirectory(path.join(tempDir(), "definitely-absent"))).toBe(false);
+  });
+
+  it.skipIf(process.platform === "win32")("tightens a group-readable directory", () => {
+    const dir = tempDir();
+    fs.chmodSync(dir, 0o755);
+    expect(pathIsOwnerOnly(dir)).toBe(false);
+    expect(enforceOwnerOnlyDirectory(dir)).toBe(true);
+    expect(pathIsOwnerOnly(dir)).toBe(true);
   });
 });

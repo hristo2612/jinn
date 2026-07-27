@@ -140,17 +140,32 @@ export function pathIsOwnerOnly(target: string, stats?: fs.Stats): boolean {
  * is why this is a directory operation rather than a per-file chmod: on Windows
  * inheritance is the only way to get the property without touching each file.
  *
- * Returns true when the restriction was applied. Never throws: a hardening
- * failure must not stop the gateway from starting, and the caller logs it.
+ * Returns true only when the directory is owner-only AFTERWARDS — the result is
+ * verified, never assumed, because the caller prints it as an assurance. Never
+ * throws: a hardening failure must not stop the gateway from starting, and the
+ * caller logs it.
  */
 export function enforceOwnerOnlyDirectory(directory: string): boolean {
   try {
     if (process.platform !== "win32") {
       fs.chmodSync(directory, 0o700);
-      return true;
+      return pathIsOwnerOnly(directory);
     }
     const mySid = currentWindowsSid();
     if (!mySid) return false;
+    // /reset first: /inheritance:r below drops only INHERITED ACEs, so without
+    // this a pre-existing EXPLICIT ACE for an unrelated group survives the whole
+    // operation. /reset drops explicit ACEs and leaves inherited ones for
+    // /inheritance:r to remove.
+    execFileSync(system32("icacls.exe"), [directory, "/reset", "/Q"], {
+      encoding: "utf-8",
+      windowsHide: true,
+      timeout: 10_000,
+      // icacls writes its own progress and errors to the console; without this
+      // they print raw over `jinn setup`'s formatted output. The read path above
+      // already does the same.
+      stdio: ["ignore", "pipe", "ignore"],
+    });
     // /inheritance:r drops ACEs inherited from the profile — the mechanism by
     // which an unrelated group can otherwise reach the whole instance.
     // /grant:r replaces rather than adds, so re-running is idempotent.
@@ -165,8 +180,13 @@ export function enforceOwnerOnlyDirectory(directory: string): boolean {
       "/grant:r", "*S-1-5-18:(OI)(CI)(F)",      // NT AUTHORITY\SYSTEM
       "/grant:r", "*S-1-5-32-544:(OI)(CI)(F)",  // BUILTIN\Administrators
       "/Q",
-    ], { encoding: "utf-8", windowsHide: true, timeout: 10_000 });
-    return true;
+    ], { encoding: "utf-8", windowsHide: true, timeout: 10_000, stdio: ["ignore", "pipe", "ignore"] });
+    // Verify rather than assume. /grant:r replaces permissions only for the
+    // trustees it names, so this cannot report success on the strength of an
+    // exit code alone — that is the same "reports success, silently does
+    // nothing" failure this module exists to remove. `undefined` means the ACL
+    // could not be read, which is a failure here, not a pass.
+    return windowsPathIsOwnerOnly(directory) === true;
   } catch {
     return false;
   }

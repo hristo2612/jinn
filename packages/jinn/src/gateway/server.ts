@@ -42,10 +42,6 @@ import { setTodoStatusChangeListener } from "../work-items/transitions.js";
 import { seedTrust, cleanupSessionSettings } from "../shared/claude-settings.js";
 import { GATEWAY_INFO_FILE, HOOK_RELAY_SCRIPT, JINN_HOME, CLAUDE_SETTINGS_DIR } from "../shared/paths.js";
 import { enforceOwnerOnlyDirectory, pathIsOwnerOnly } from "../shared/owner-only.js";
-
-/** Records that boot already tightened JINN_HOME once, so an operator who
- *  deliberately re-widens it afterwards is warned rather than silently overridden. */
-const OWNER_ONLY_HEAL_MARKER = path.join(JINN_HOME, ".owner-only-healed");
 import { handleApiRequest, isSameOriginBrowserRequest, resumePendingWebQueueItems, type ApiContext } from "./api.js";
 import { resolveCallerIdentity, sessionCommGuards, LATERAL_MAX_HOPS, type CallerIdentityOptions } from "./session-comm-guards.js";
 import { UNIDENTIFIED_TOOL_CALL_ERROR, verifySessionCapability } from "../mcp/identity.js";
@@ -104,6 +100,10 @@ import { scanOrg } from "./org.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+/** Records that boot already tightened JINN_HOME once, so an operator who
+ *  deliberately re-widens it afterwards is warned rather than silently overridden. */
+const OWNER_ONLY_HEAL_MARKER = path.join(JINN_HOME, ".owner-only-healed");
 
 type UpgradeRejectionSocket = {
   write(chunk: string): unknown;
@@ -364,21 +364,6 @@ export async function startGateway(
   const host = config.gateway.host || "127.0.0.1";
   const exposure = validateGatewayExposure(config);
   if (!exposure.ok) throw new Error(exposure.error);
-  const gatewayAuthToken = ensureGatewayAuthToken(JINN_HOME);
-  if (shouldRequireGatewayAuth(config)) logger.info("Gateway auth enabled for privileged API and WebSocket routes");
-
-  // Expose the auth token + base URL to spawned sessions. Every engine builds its
-  // child PTY env by spreading `process.env`, so an in-session agent inherits these
-  // and can dispatch/poll child sessions in one curl instead of hunting for the
-  // token. Same trust boundary as the 0600 gateway.json it already came from.
-  // gatewayBaseUrl maps a wildcard bind (0.0.0.0) to 127.0.0.1 and keeps a specific
-  // host as-is, so the URL is always reachable from the child.
-  process.env.JINN_GATEWAY_TOKEN = gatewayAuthToken;
-  process.env.JINN_GATEWAY_URL = gatewayBaseUrl({ port, host });
-
-  // Normalize claude engine config (idempotent — loadConfig already normalized it)
-  const claudeCfg = normalizeClaudeEngineConfig(config.engines.claude);
-
   // The instance holds the gateway token, connector secrets and every session
   // transcript. Report when something else can read it — a broad ACE inherited
   // from the profile on Windows, or group/other bits on POSIX.
@@ -395,6 +380,10 @@ export async function startGateway(
   //
   // Once, not every boot: a marker records the attempt, so an operator who
   // deliberately re-widens the directory is told rather than overridden.
+  //
+  // Deliberately BEFORE ensureGatewayAuthToken below: on a pre-existing 0755 home
+  // the other order materializes the token while the directory is still
+  // group-readable, then tightens it.
   if (!pathIsOwnerOnly(JINN_HOME)) {
     const healed = process.platform !== "win32" && !fs.existsSync(OWNER_ONLY_HEAL_MARKER)
       && enforceOwnerOnlyDirectory(JINN_HOME);
@@ -415,6 +404,21 @@ export async function startGateway(
       );
     }
   }
+
+  const gatewayAuthToken = ensureGatewayAuthToken(JINN_HOME);
+  if (shouldRequireGatewayAuth(config)) logger.info("Gateway auth enabled for privileged API and WebSocket routes");
+
+  // Expose the auth token + base URL to spawned sessions. Every engine builds its
+  // child PTY env by spreading `process.env`, so an in-session agent inherits these
+  // and can dispatch/poll child sessions in one curl instead of hunting for the
+  // token. Same trust boundary as the 0600 gateway.json it already came from.
+  // gatewayBaseUrl maps a wildcard bind (0.0.0.0) to 127.0.0.1 and keeps a specific
+  // host as-is, so the URL is always reachable from the child.
+  process.env.JINN_GATEWAY_TOKEN = gatewayAuthToken;
+  process.env.JINN_GATEWAY_URL = gatewayBaseUrl({ port, host });
+
+  // Normalize claude engine config (idempotent — loadConfig already normalized it)
+  const claudeCfg = normalizeClaudeEngineConfig(config.engines.claude);
 
   // Reap any orphaned PTYs from a prior crashed run before writing the fresh gateway.json.
   const oldInfo = readGatewayInfo(GATEWAY_INFO_FILE);

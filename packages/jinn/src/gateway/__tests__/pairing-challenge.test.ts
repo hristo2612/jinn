@@ -12,6 +12,14 @@ import {
   type PairingChallengeStore,
 } from "../pairing-challenge.js";
 
+/** Resolve icacls from System32, never PATH. MSYS/Cygwin/Git Bash ship their own
+ *  utilities ahead of Windows', and a bare name gets whichever comes first — the
+ *  hazard `owner-only.ts` documents and this fixture must not reintroduce. */
+function icacls(): string {
+  const root = process.env.SystemRoot || process.env.windir || "C:\\Windows";
+  return path.join(root, "System32", "icacls.exe");
+}
+
 function tempHome(): string {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "jinn-pair-challenge-"));
   // The proof is only meaningful in a home nobody else can reach, and these
@@ -84,7 +92,7 @@ describe("pairing filesystem challenges", () => {
       // chmod cannot widen anything on Windows. Grant the Everyone SID instead -
       // by SID, because the name is localized - which is what "readable by more
       // than the owner" actually means on this platform.
-      execFileSync("icacls", [broad.path, "/grant", "*S-1-1-0:(R)"], { windowsHide: true });
+      execFileSync(icacls(), [broad.path, "/grant", "*S-1-1-0:(R)"], { windowsHide: true });
     } else {
       fs.chmodSync(broad.path, 0o644);
     }
@@ -93,24 +101,24 @@ describe("pairing filesystem challenges", () => {
     // A forged uid is a POSIX-only notion: the Windows check reads the ACL, and
     // ownership cannot be reassigned to another account from inside a test.
     if (process.platform !== "win32") {
-    const foreign = issuePairingChallenge(
-      home,
-      store,
-      2_000,
-      () => "challenge-id-foreign0001",
-      () => "nonce-value-foreign0001",
-    );
-    fs.writeFileSync(foreign.path, foreign.nonce, { mode: 0o600 });
-    const realLstat = fs.lstatSync.bind(fs);
-    vi.spyOn(fs, "lstatSync").mockImplementation(((file: fs.PathLike) => {
-      const stat = realLstat(file);
-      if (path.resolve(String(file)) !== path.resolve(foreign.path)) return stat;
-      const forged = Object.create(stat) as fs.Stats;
-      Object.defineProperty(forged, "uid", { value: stat.uid + 1 });
-      return forged;
-    }) as typeof fs.lstatSync);
-    expect(consumePairingChallenge(home, foreign.challengeId, store, 2_001)).toBe(false);
-    vi.restoreAllMocks();
+      const foreign = issuePairingChallenge(
+        home,
+        store,
+        2_000,
+        () => "challenge-id-foreign0001",
+        () => "nonce-value-foreign0001",
+      );
+      fs.writeFileSync(foreign.path, foreign.nonce, { mode: 0o600 });
+      const realLstat = fs.lstatSync.bind(fs);
+      vi.spyOn(fs, "lstatSync").mockImplementation(((file: fs.PathLike) => {
+        const stat = realLstat(file);
+        if (path.resolve(String(file)) !== path.resolve(foreign.path)) return stat;
+        const forged = Object.create(stat) as fs.Stats;
+        Object.defineProperty(forged, "uid", { value: stat.uid + 1 });
+        return forged;
+      }) as typeof fs.lstatSync);
+      expect(consumePairingChallenge(home, foreign.challengeId, store, 2_001)).toBe(false);
+      vi.restoreAllMocks();
     }
 
     const symlink = issuePairingChallenge(

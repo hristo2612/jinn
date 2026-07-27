@@ -49,7 +49,13 @@ function unlinkProof(file: string): void {
  *  process. Windows has neither concept — every uid is 0 and mode is synthetic —
  *  so the 0o600 test could never pass there and local pairing was impossible.
  *  Ask the ACL instead, which is what actually governs access on that platform.
- *  Both paths fail closed. */
+ *  Both paths fail closed.
+ *
+ *  The checks are not symmetric: POSIX also pins the uid triple, while Windows
+ *  verifies the DACL only, because `icacls /save` emits the DACL and not the
+ *  owner. Planting a proof file still requires write access to a home that this
+ *  same call asserts is owner-only, so the gap is not reachable on its own — but
+ *  it is a gap, and an owner check belongs here if one becomes available. */
 function proofOwnershipIsExclusive(jinnHome: string, file: string, proofStat: fs.Stats): boolean {
   if (process.platform === "win32") {
     return pathIsOwnerOnly(file) && pathIsOwnerOnly(jinnHome);
