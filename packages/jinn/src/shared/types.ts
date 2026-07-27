@@ -163,7 +163,6 @@ export function isInterruptibleEngine(engine: Engine): engine is InterruptibleEn
  *  turn heartbeat cannot, because it ticks for exactly as long as run() is pending
  *  and so reads healthy for a permanently wedged turn. */
 export interface TurnProgress {
-  turnStartedAt: number;
   /** Newest of: turn start, last hook, last engine output. */
   lastProgressAt: number;
   /** The prompt was handed to the engine but never acknowledged as started. */

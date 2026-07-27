@@ -53,7 +53,6 @@ function makeContext(
 
 /** An engine that reports turn progress, as the interactive Claude engine does. */
 function makeProgressEngine(progress: {
-  turnStartedAt: number;
   lastProgressAt: number;
   awaitingSubmit: boolean;
   activeTools: number;
@@ -163,7 +162,6 @@ describe("serializeSession", () => {
 describe("serializeSession: turnProgress", () => {
   const NOW = new Date("2026-06-01T00:00:00.000Z").getTime();
   const live = {
-    turnStartedAt: NOW - 5_000,
     lastProgressAt: NOW - 5_000,
     awaitingSubmit: false,
     activeTools: 0,

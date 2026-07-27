@@ -1460,7 +1460,6 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
     const entry = this.active.get(sessionId);
     if (!entry) return undefined;
     return {
-      turnStartedAt: entry.startedAt,
       lastProgressAt: Math.max(entry.startedAt, entry.lastHookAt, this.lastOutputAt.get(sessionId) ?? 0),
       awaitingSubmit: !entry.promptSubmitted,
       activeTools: entry.activeTools,
