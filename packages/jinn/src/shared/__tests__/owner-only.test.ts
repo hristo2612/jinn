@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { enforceOwnerOnlyDirectory, parseSddlTrustees, pathIsOwnerOnly } from "../owner-only.js";
+import { enforceOwnerOnlyDirectory, parseSddlTrustees, pathIsOwnerOnly, trusteesAreOwnerOnly } from "../owner-only.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -51,6 +51,47 @@ D:(D;;FA;;;S-1-5-21-4-4-4-4)(A;;FA;;;SY)`;
 
   it("skips malformed ACEs rather than guessing a trustee", () => {
     expect(parseSddlTrustees("x\nD:(A;;FA)(A;;FA;;;SY)")).toEqual(["SY"]);
+  });
+});
+
+describe("trusteesAreOwnerOnly", () => {
+  const ME = "S-1-5-21-111-222-333-1001";
+
+  it("accepts the user plus the unavoidable privileged trustees", () => {
+    expect(trusteesAreOwnerOnly([ME, "SY", "BA"], ME)).toBe(true);
+    expect(trusteesAreOwnerOnly([ME, "S-1-5-18", "S-1-5-32-544", "CO", "OW"], ME)).toBe(true);
+  });
+
+  it("rejects any other principal", () => {
+    expect(trusteesAreOwnerOnly([ME, "SY", "S-1-5-21-999-888-777-1005"], ME)).toBe(false);
+    // Everyone / Authenticated Users / Users, the aliases that actually show up.
+    for (const alias of ["WD", "AU", "BU"]) {
+      expect(trusteesAreOwnerOnly([ME, alias], ME)).toBe(false);
+    }
+  });
+
+  it("accepts the SDDL alias for the current account, not just its raw SID", () => {
+    // GitHub's windows-latest runs as the built-in Administrator (RID 500), and
+    // icacls /save writes that SID back as `LA` even though /grant was given the
+    // raw form. Matching the SID alone read the user's own grant as a stranger's
+    // and reported a correctly restricted directory as shared — the exact ACL
+    // below is what the runner produced.
+    const admin = "S-1-5-21-1742564184-1656218818-310408600-500";
+    expect(trusteesAreOwnerOnly(["BA", "SY", "LA"], admin)).toBe(true);
+    expect(trusteesAreOwnerOnly(["BA", "SY", admin], admin)).toBe(true);
+    expect(trusteesAreOwnerOnly(["BA", "SY", "LG"], "S-1-5-21-1-2-3-501")).toBe(true);
+  });
+
+  it("does not accept another account's alias as the current user", () => {
+    // LA is THIS machine's Administrator. For anyone who is not that account it
+    // is a different principal with access, so it must still read as shared.
+    expect(trusteesAreOwnerOnly(["BA", "SY", "LA"], ME)).toBe(false);
+    expect(trusteesAreOwnerOnly(["BA", "SY", "LG"], ME)).toBe(false);
+    expect(trusteesAreOwnerOnly(["BA", "SY", "LA"], "S-1-5-21-1-2-3-501")).toBe(false);
+  });
+
+  it("treats an unparsed descriptor as not owner-only", () => {
+    expect(trusteesAreOwnerOnly([], ME)).toBe(false);
   });
 });
 

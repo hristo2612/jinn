@@ -87,6 +87,41 @@ export function parseSddlTrustees(sddl: string): string[] {
   return trustees;
 }
 
+/** Every SDDL spelling of one specific account SID.
+ *
+ *  SDDL serializes some well-known SIDs as two-letter aliases, so an ACE granting
+ *  exactly this user can come back as `LA` rather than `S-1-5-21-…-500` — the
+ *  form `icacls /grant` was given. Comparing the raw SID alone then reads the
+ *  user's own grant as a stranger's and reports a correctly restricted directory
+ *  as shared. Observed on GitHub's windows-latest runner, which runs as the
+ *  built-in Administrator.
+ *
+ *  Derived from the RID rather than accepted unconditionally: `LA` denotes THIS
+ *  machine's Administrator account, so it is the current user only when the
+ *  current user is that account. For anyone else it is a different principal and
+ *  must still count as shared. */
+function sddlSpellingsOf(sid: string): Set<string> {
+  const spellings = new Set([sid.toUpperCase()]);
+  // Local account RIDs: 500 = Administrator, 501 = Guest. Domain accounts start
+  // at 1000 and have no alias.
+  if (/-500$/.test(sid)) spellings.add("LA");
+  if (/-501$/.test(sid)) spellings.add("LG");
+  return spellings;
+}
+
+/** Whether a DACL's trustees mean "only this user can reach it".
+ *
+ *  Exported for tests: with {@link parseSddlTrustees} this is the whole verdict,
+ *  and it must be checkable without a Windows box to read an ACL from.
+ *
+ *  Empty is not a pass — no parsed trustee means the descriptor was not
+ *  understood, and guessing there would report an unreadable ACL as safe. */
+export function trusteesAreOwnerOnly(trustees: readonly string[], mySid: string): boolean {
+  if (trustees.length === 0) return false;
+  const mine = sddlSpellingsOf(mySid);
+  return trustees.every((t) => mine.has(t.toUpperCase()) || ALWAYS_PRIVILEGED_TRUSTEES.has(t.toUpperCase()));
+}
+
 /** True when only the current user (plus the unavoidable privileged trustees)
  *  can reach `target`. Windows only; undefined when it cannot tell.
  *
@@ -109,7 +144,7 @@ export function windowsPathIsOwnerOnly(target: string): boolean | undefined {
     const sddl = fs.readFileSync(dump, "utf16le");
     const trustees = parseSddlTrustees(sddl);
     if (trustees.length === 0) return undefined; // parsed nothing — do not guess
-    return trustees.every((t) => t === mySid || ALWAYS_PRIVILEGED_TRUSTEES.has(t));
+    return trusteesAreOwnerOnly(trustees, mySid);
   } catch {
     return undefined;
   } finally {
