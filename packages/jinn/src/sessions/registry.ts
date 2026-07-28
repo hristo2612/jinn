@@ -845,8 +845,25 @@ function runImmediateMigrationWithRetry<T>(migration: Database.Transaction<() =>
   return runSqliteBusyRetry(() => migration.immediate());
 }
 
+/** Error classes worth waiting out when several processes open one database.
+ *
+ *  SQLITE_BUSY is the obvious one. SQLITE_READONLY belongs here too, and only
+ *  Windows shows why: `journal_mode = WAL` has to take a brief exclusive lock to
+ *  rewrite the header, and when a peer holds the file at that instant SQLite
+ *  reports "attempt to write a readonly database" rather than BUSY. Sixteen
+ *  processes racing to initialize produced it roughly one run in five.
+ *
+ *  Retrying a database that is genuinely read-only — bad permissions, a
+ *  read-only mount — costs the same bounded wait and then throws the identical
+ *  error, so nothing is masked by including it. */
+function isTransientSqliteError(code: string): boolean {
+  return code.startsWith('SQLITE_BUSY') || code.startsWith('SQLITE_READONLY');
+}
+
 function runSqliteBusyRetry<T>(operation: () => T): T {
-  const retryDelaysMs = [10, 50, 200];
+  // Windows takes longer to release a lock than POSIX, and the race that needs
+  // this is at process start, where a few hundred extra milliseconds are free.
+  const retryDelaysMs = process.platform === 'win32' ? [10, 50, 200, 500, 1000] : [10, 50, 200];
   for (let attempt = 0; ; attempt++) {
     try {
       return operation();
@@ -854,7 +871,7 @@ function runSqliteBusyRetry<T>(operation: () => T): T {
       const code = error && typeof error === 'object' && 'code' in error
         ? String((error as { code?: unknown }).code)
         : '';
-      if (!code.startsWith('SQLITE_BUSY') || attempt >= retryDelaysMs.length) throw error;
+      if (!isTransientSqliteError(code) || attempt >= retryDelaysMs.length) throw error;
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, retryDelaysMs[attempt]);
     }
   }
