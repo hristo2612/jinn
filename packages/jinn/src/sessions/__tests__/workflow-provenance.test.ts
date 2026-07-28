@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { removeTempDir } from '../../shared/test-support/temp-dir.js';
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'jinn-workflow-provenance-'));
 process.env.JINN_HOME = home;
@@ -15,7 +16,10 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
-  fs.rmSync(home, { recursive: true, force: true });
+  // Close the database before removing its directory: Windows refuses to unlink
+  // a file with an open handle, so the sqlite connection has to go first.
+  registry.__closeDbForTest();
+  removeTempDir(home);
 });
 
 describe('workflow session provenance', () => {

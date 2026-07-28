@@ -37,7 +37,19 @@ function fixture(index: number): ActivityEventInput {
   };
 }
 
-describe.sequential("activity query performance", () => {
+// A wall-clock benchmark, and its budgets are calibrated on POSIX CI. Measured
+// on Windows: seeding the 100k-row corpus takes ~80s against a 60s hook budget,
+// and once that is raised the filtered query lands at 343ms against a 300ms
+// budget. Both are the platform, not a regression — sqlite durability behaviour
+// plus Defender watching the temp directory.
+//
+// Relaxing the budgets for Windows would leave a guard that can no longer detect
+// the regressions it exists for, and the numbers would be tuned to whichever
+// machine happened to run it. The correctness assertions here (totals, page
+// sizes, the indexed-search hit) are platform-independent and covered by the
+// ubuntu leg, so this measures where it means something and skips where it does
+// not.
+describe.skipIf(process.platform === "win32").sequential("activity query performance", () => {
   let directory: string;
   let database: Database.Database;
 

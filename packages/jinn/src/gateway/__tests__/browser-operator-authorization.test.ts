@@ -4,6 +4,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { removeTempDir } from "../../shared/test-support/temp-dir.js";
 import type { AddressInfo } from "node:net";
 import type { JinnConfig } from "../../shared/types.js";
 
@@ -222,7 +223,10 @@ beforeAll(async () => {
 afterAll(async () => {
   await new Promise<void>((resolve, reject) => viteProxy.close((error) => error ? reject(error) : resolve()));
   await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
-  fs.rmSync(testHome, { recursive: true, force: true });
+  // Close the database before removing its directory: Windows refuses to unlink
+  // a file with an open handle, so the sqlite connection has to go first.
+  registry.__closeDbForTest();
+  removeTempDir(testHome);
 });
 
 describe("browser operator authorization", () => {

@@ -6,7 +6,7 @@
     "node": ">=24 <25"
   },
   "scripts": {
-    "postinstall": "chmod +x node_modules/.pnpm/node-pty@*/node_modules/node-pty/prebuilds/*/spawn-helper 2>/dev/null || true",
+    "postinstall": "node scripts/fix-prebuild-permissions.mjs",
     "build": "turbo build && node scripts/sync-web-dist.mjs",
     "dev": "turbo dev",
     "lint": "turbo lint",

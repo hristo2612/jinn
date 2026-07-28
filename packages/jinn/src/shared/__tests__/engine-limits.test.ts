@@ -169,7 +169,17 @@ describe("collectEngineLimits — claude statusline snapshot", () => {
   });
 });
 
-describe("collectEngineLimits — codex session rollout", () => {
+// The stubs below are `#!/usr/bin/env node` files made executable with chmod.
+// Windows has neither a shebang nor an executable bit, so `spawn(bin, …)` never
+// starts them and all three cases fail on what the fixture cannot express rather
+// than on what they test.
+//
+// Not merely a fixture limitation: production spawns the engine binary the same
+// way, and an npm-installed `codex` on Windows is a `.cmd` shim that Node has
+// refused to spawn without a shell since 18.20.2. That is issue #103, and the
+// fix for it is what makes a `.cmd` stub — and therefore real coverage here —
+// possible. Re-enable these with that change rather than by relaxing them.
+describe.skipIf(process.platform === "win32")("collectEngineLimits — codex session rollout", () => {
   it("prefers a successful live app-server response over an older rollout snapshot", async () => {
     const ts = new Date(Date.now() - 5 * 60_000).toISOString();
     writeCodexRollout(ts, 72);

@@ -95,6 +95,14 @@ export default function setup(): () => void {
     fs.rmSync(cleanupRoot, {
       recursive: true,
       force: true,
+      // Windows refuses to unlink a file whose handle is still open, and a
+      // handle can outlive the code that owned it — a sqlite connection just
+      // closed, or a child process the OS has not finished reaping. Retrying is
+      // Node's documented mitigation (EBUSY/EMFILE/ENFILE/ENOTEMPTY/EPERM).
+      // Without it this throws out of teardown and reports the whole run as
+      // failed after every test has already passed.
+      maxRetries: process.platform === 'win32' ? 10 : 0,
+      retryDelay: 50,
     });
   };
 }
