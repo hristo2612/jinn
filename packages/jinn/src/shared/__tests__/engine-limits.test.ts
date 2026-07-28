@@ -82,10 +82,22 @@ function writeCodexAppServerStub(
         "});",
       ].join("\n")
     : "process.exit(1);";
-  fs.writeFileSync(
-    bin,
-    `#!/usr/bin/env node\nimport fs from "node:fs";\nfs.writeFileSync(${JSON.stringify(startedFile)}, "started");\n${behavior}\n`,
-  );
+  const body = `import fs from "node:fs";\nfs.writeFileSync(${JSON.stringify(startedFile)}, "started");\n${behavior}\n`;
+
+  // Windows has neither a shebang nor an executable bit, so the POSIX stub is
+  // inert there and these cases used to be skipped. A .cmd is not merely a
+  // workaround: it is exactly the shape npm installs a CLI in on Windows, so
+  // this now exercises the .cmd spawn path in engine-limits rather than
+  // pretending the platform cannot be tested.
+  if (process.platform === "win32") {
+    const script = `${bin}.mjs`;
+    fs.writeFileSync(script, body);
+    const shim = `${bin}.cmd`;
+    fs.writeFileSync(shim, `@echo off\r\nnode "%~dp0${path.basename(script)}" %*\r\n`);
+    return { bin: shim, startedFile };
+  }
+
+  fs.writeFileSync(bin, `#!/usr/bin/env node\n${body}`);
   fs.chmodSync(bin, 0o755);
   return { bin, startedFile };
 }

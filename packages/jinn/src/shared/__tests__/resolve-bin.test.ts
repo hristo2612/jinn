@@ -70,4 +70,43 @@ describe("resolveBin", () => {
       process.env.PATH = prev;
     }
   });
+
+  it.skipIf(process.platform !== "win32")("finds a .cmd shim, which is how npm installs a CLI on Windows", () => {
+    // The bug behind #103's first half: dir + bare name matches nothing, because
+    // an npm-installed `codex` on Windows is `codex.cmd`. Resolution then fell
+    // through to the bare name, and CreateProcess cannot start that either — it
+    // tries .exe and .com but never .cmd.
+    const shimDir = fs.mkdtempSync(path.join(os.tmpdir(), "resolvebin-cmd-"));
+    const shim = path.join(shimDir, "jinn-fake-shim-xyz.cmd");
+    fs.writeFileSync(shim, "@echo off\r\n");
+    const prev = process.env.PATH;
+    process.env.PATH = `${shimDir}${path.delimiter}${prev ?? ""}`;
+    try {
+      expect(resolveBin("jinn-fake-shim-xyz")).toBe(shim);
+    } finally {
+      process.env.PATH = prev;
+      fs.rmSync(shimDir, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform !== "win32")("prefers PATHEXT order, so a real .exe wins over a .cmd shim", () => {
+    const shimDir = fs.mkdtempSync(path.join(os.tmpdir(), "resolvebin-order-"));
+    const base = path.join(shimDir, "jinn-fake-order-xyz");
+    fs.writeFileSync(`${base}.cmd`, "@echo off\r\n");
+    fs.writeFileSync(`${base}.exe`, "");
+    const prev = process.env.PATH;
+    const prevExt = process.env.PATHEXT;
+    process.env.PATH = `${shimDir}${path.delimiter}${prev ?? ""}`;
+    process.env.PATHEXT = ".COM;.EXE;.BAT;.CMD";
+    try {
+      // A native executable is spawnable directly and needs no interpreter, so
+      // it must win when both exist.
+      expect(resolveBin("jinn-fake-order-xyz")).toBe(`${base}.exe`);
+    } finally {
+      process.env.PATH = prev;
+      if (prevExt === undefined) delete process.env.PATHEXT;
+      else process.env.PATHEXT = prevExt;
+      fs.rmSync(shimDir, { recursive: true, force: true });
+    }
+  });
 });

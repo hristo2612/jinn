@@ -1,4 +1,5 @@
 import { spawn, execFile } from "node:child_process";
+import { killProcessTree, spawnableCommand } from "./windows-spawn.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -196,7 +197,11 @@ async function fetchClaudeOAuthUsage(): Promise<JsonRecord | undefined> {
 async function claudeAuthPlan(config: JinnConfig): Promise<string | undefined> {
   const bin = resolveBin("claude", config.engines.claude?.bin);
   return new Promise((resolve) => {
-    execFile(bin, ["auth", "status"], { timeout: 3000 }, (err, stdout) => {
+    // An npm-installed CLI on Windows is a .cmd shim, which Node refuses to
+    // spawn without a shell; without this the call fails against a working
+    // install and the plan silently reads as unknown.
+    const auth = spawnableCommand(bin, ["auth", "status"]);
+    execFile(auth.command, auth.args, { timeout: 3000, windowsHide: true, ...auth.options }, (err, stdout) => {
       if (err) return resolve(undefined);
       try {
         const parsed = JSON.parse(stdout);
@@ -352,14 +357,17 @@ async function readCodexRateLimits(config: JinnConfig): Promise<JsonRecord> {
   const request = { id: 2, method: "account/rateLimits/read", params: null };
 
   return new Promise((resolve, reject) => {
-    const child = spawn(bin, ["app-server", "--stdio"], { stdio: ["pipe", "pipe", "pipe"] });
+    // Same .cmd constraint as above. Codex usage limits were unavailable on
+    // Windows entirely because this threw EINVAL and the error was swallowed.
+    const appServer = spawnableCommand(bin, ["app-server", "--stdio"]);
+    const child = spawn(appServer.command, appServer.args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true, ...appServer.options });
     let stdout = "";
     let stderr = "";
     let settled = false;
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
-      child.kill("SIGTERM");
+      killProcessTree(child);
       reject(new Error(stderr.trim() || "Timed out reading Codex rate limits"));
     }, 5000);
 
@@ -367,7 +375,7 @@ async function readCodexRateLimits(config: JinnConfig): Promise<JsonRecord> {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      child.kill("SIGTERM");
+      killProcessTree(child);
       resolve(value);
     }
 

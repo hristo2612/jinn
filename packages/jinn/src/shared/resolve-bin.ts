@@ -16,11 +16,30 @@ function isExecutableFile(p: string): boolean {
   try {
     const st = fs.statSync(p);
     if (!st.isFile()) return false;
+    // Windows has no executable bit: X_OK succeeds for any readable file, so the
+    // check is meaningless there and what makes a file runnable is its extension
+    // (see windowsCandidates).
+    if (process.platform === "win32") return true;
     fs.accessSync(p, fs.constants.X_OK);
     return true;
   } catch {
     return false;
   }
+}
+
+/** Extensions Windows will actually execute, most-specific first.
+ *
+ *  A CLI installed by npm on Windows is `name.cmd`, never a bare `name`, so
+ *  joining dir + name finds nothing and resolution falls through to the bare
+ *  name — which CreateProcess then cannot start either, because it tries .exe
+ *  and .com but not .cmd. Both halves have to know about PATHEXT. */
+function windowsCandidates(name: string): string[] {
+  if (path.extname(name)) return [name]; // already explicit
+  const pathext = (process.env.PATHEXT || ".COM;.EXE;.BAT;.CMD")
+    .split(";")
+    .map((ext) => ext.trim())
+    .filter(Boolean);
+  return [...pathext.map((ext) => `${name}${ext.toLowerCase()}`), name];
 }
 
 /** Common install locations not guaranteed to be on a daemon's PATH. */
@@ -56,8 +75,11 @@ function findOnPath(name: string): string | null {
   for (const dir of [...pathDirs, ...commonBinDirs()]) {
     if (seen.has(dir)) continue;
     seen.add(dir);
-    const candidate = path.join(dir, name);
-    if (isExecutableFile(candidate)) return candidate;
+    const names = process.platform === "win32" ? windowsCandidates(name) : [name];
+    for (const candidate of names) {
+      const full = path.join(dir, candidate);
+      if (isExecutableFile(full)) return full;
+    }
   }
   return null;
 }
