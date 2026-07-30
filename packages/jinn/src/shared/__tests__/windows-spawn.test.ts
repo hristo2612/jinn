@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
-import { needsCmdShim, spawnableCommand } from "../windows-spawn.js";
+import { cmdExePath, needsCmdShim, spawnableCommand, windowsRoot } from "../windows-spawn.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -14,6 +14,49 @@ function tempDir(): string {
   roots.push(dir);
   return dir;
 }
+
+describe("windowsRoot", () => {
+  const saved = { SystemRoot: process.env.SystemRoot, windir: process.env.windir };
+  afterEach(() => {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  it("prefers SystemRoot, then windir", () => {
+    process.env.SystemRoot = "D:\\Alt";
+    process.env.windir = "E:\\Other";
+    expect(windowsRoot()).toBe("D:\\Alt");
+    delete process.env.SystemRoot;
+    expect(windowsRoot()).toBe("E:\\Other");
+  });
+
+  it("falls back to a ROOTED default when the environment omits both", () => {
+    // Regression: one of two copies of this fallback was written "C:\Windows",
+    // where \W is not an escape sequence — JavaScript dropped the backslash and
+    // produced the drive-RELATIVE "C:Windows". taskkill.exe beneath it cannot be
+    // found, and killProcessTree's catch then silently degraded to a plain kill,
+    // leaving the grandchild it exists to reap. Reachable in a stripped service
+    // environment where neither variable is set.
+    delete process.env.SystemRoot;
+    delete process.env.windir;
+    expect(windowsRoot()).toBe("C:\\Windows");
+    expect(path.win32.isAbsolute(windowsRoot())).toBe(true);
+    // Pin the distinction the bug turned on, so the assertion above cannot be
+    // "fixed" later by matching whatever the code happens to produce.
+    expect(path.win32.isAbsolute("C:Windows")).toBe(false);
+  });
+
+  it("keeps every System32 consumer rooted, not just the one that was correct", () => {
+    delete process.env.SystemRoot;
+    delete process.env.windir;
+    // cmdExePath and killProcessTree's taskkill share this resolver now, so one
+    // assertion covers both rather than each carrying its own copy to proofread.
+    expect(path.win32.isAbsolute(cmdExePath().replace(/\//g, "\\"))).toBe(true);
+    expect(cmdExePath()).toContain("System32");
+  });
+});
 
 describe("needsCmdShim", () => {
   it.skipIf(process.platform !== "win32")("recognises the extensions Node refuses to spawn", () => {

@@ -32,9 +32,28 @@ function quoteForCmd(arg: string): string {
   return `"${arg.replace(/(\\+)$/, "$1$1")}"`;
 }
 
+/** The Windows installation root, from the environment or its documented default.
+ *
+ *  One resolver, deliberately. This fallback existed twice in this file and the
+ *  copies drifted: one was written `"C:\Windows"`, where `\W` is not an escape
+ *  sequence, so JavaScript dropped the backslash and produced the drive-relative
+ *  `"C:Windows"`. That directory does not exist, `taskkill.exe` beneath it cannot
+ *  be found, and `killProcessTree` then degraded into exactly the grandchild leak
+ *  it exists to prevent — silently, because its catch falls back to a plain kill.
+ *
+ *  Exported so a test pins it instead of proofreading catching it next time. */
+export function windowsRoot(): string {
+  return process.env.SystemRoot || process.env.windir || "C:\\Windows";
+}
+
+/** Absolute path to a System32 tool. Never invoke these by bare name: MSYS,
+ *  Cygwin and Git Bash ship their own and place them ahead on PATH. */
+function system32(exe: string): string {
+  return path.join(windowsRoot(), "System32", exe);
+}
+
 export function cmdExePath(): string {
-  const root = process.env.SystemRoot || process.env.windir || "C:\\Windows";
-  return path.join(root, "System32", "cmd.exe");
+  return system32("cmd.exe");
 }
 
 /**
@@ -82,8 +101,7 @@ export function killProcessTree(child: { pid?: number; kill: (signal?: NodeJS.Si
     return;
   }
   try {
-    const root = process.env.SystemRoot || process.env.windir || "C:\Windows";
-    execFileSync(path.join(root, "System32", "taskkill.exe"), ["/pid", String(child.pid), "/t", "/f"], {
+    execFileSync(system32("taskkill.exe"), ["/pid", String(child.pid), "/t", "/f"], {
       windowsHide: true,
       timeout: 5_000,
       stdio: ["ignore", "ignore", "ignore"],
