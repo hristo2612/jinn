@@ -900,19 +900,45 @@ function isTransientSqliteError(code: string): boolean {
   return code.startsWith('SQLITE_BUSY') || code.startsWith('SQLITE_READONLY');
 }
 
+/** How long to keep retrying transient contention before giving up.
+ *
+ *  A time budget rather than an attempt count, because the thing being waited
+ *  out is a window of contention whose length has nothing to do with how many
+ *  times we have asked. The previous fixed ladder spent ~1.76s on Windows and
+ *  then threw; sixteen processes initializing one database on a CI runner held
+ *  the lock for longer than that, so the ladder ran out mid-race.
+ *
+ *  Matched to the `busy_timeout` already set on the connection: SQLite waits ten
+ *  seconds for a BUSY lock, so waiting a comparable span for the same class of
+ *  contention is consistent rather than arbitrary. Only ever reached on an error
+ *  path — a database that is genuinely read-only pays this once at boot and then
+ *  fails with the same message it would have before.
+ *
+ *  This raises a ceiling; it does not remove one. Instrumented at six times CI's
+ *  concurrency the loop still exhausts the full budget and throws, because no
+ *  bounded wait can be sufficient for unbounded contention. Serializing
+ *  initialization across processes is the fix that would not have a ceiling, and
+ *  it is a larger change than this one. */
+const SQLITE_RETRY_BUDGET_MS = process.platform === 'win32' ? 15_000 : 5_000;
+
 function runSqliteBusyRetry<T>(operation: () => T): T {
-  // Windows takes longer to release a lock than POSIX, and the race that needs
-  // this is at process start, where a few hundred extra milliseconds are free.
-  const retryDelaysMs = process.platform === 'win32' ? [10, 50, 200, 500, 1000] : [10, 50, 200];
-  for (let attempt = 0; ; attempt++) {
+  const deadline = Date.now() + SQLITE_RETRY_BUDGET_MS;
+  let delayMs = 10;
+  for (;;) {
     try {
       return operation();
     } catch (error) {
       const code = error && typeof error === 'object' && 'code' in error
         ? String((error as { code?: unknown }).code)
         : '';
-      if (!isTransientSqliteError(code) || attempt >= retryDelaysMs.length) throw error;
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, retryDelaysMs[attempt]);
+      const remainingMs = deadline - Date.now();
+      if (!isTransientSqliteError(code) || remainingMs <= 0) throw error;
+      // Jittered exponential backoff. Without the jitter, peers that collided
+      // once back off by the same amount and collide again on every subsequent
+      // attempt, which is how a ladder that looks generous still exhausts itself.
+      const jittered = delayMs * (0.5 + Math.random());
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(1, Math.min(jittered, remainingMs)));
+      delayMs = Math.min(delayMs * 2, 500);
     }
   }
 }
