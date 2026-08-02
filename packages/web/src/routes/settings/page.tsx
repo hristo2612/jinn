@@ -54,8 +54,6 @@ interface Config {
     grok?: { bin?: string; model?: string; effortLevel?: string }
   }
   sessions?: {
-    maxDurationMinutes?: number
-    maxCostUsd?: number
     interruptOnNewMessage?: boolean
     rateLimitStrategy?: "wait" | "fallback"
     fallbackEngine?: "codex"

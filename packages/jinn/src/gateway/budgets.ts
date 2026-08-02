@@ -1,22 +1,18 @@
 import { initDb } from '../sessions/registry.js';
 
-export type BudgetStatus = 'ok' | 'warning' | 'exceeded' | 'paused';
-
-export function checkBudget(employee: string, budgetConfig: Record<string, number>): BudgetStatus {
-  const db = initDb();
-  const limit = budgetConfig[employee];
-  if (!limit) return 'ok';
+/** True when the employee has spent at or above their calendar-month cap.
+ *  This is the only budget question any caller asks — block the turn or not.
+ *  An unset or non-positive cap means uncapped. */
+export function isBudgetExhausted(employee: string, budgetConfig: Record<string, number> | undefined): boolean {
+  const limit = budgetConfig?.[employee];
+  if (!limit || limit <= 0) return false;
 
   const now = new Date();
   const monthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
 
-  const row = db.prepare(
+  const row = initDb().prepare(
     `SELECT COALESCE(SUM(total_cost), 0) as spend FROM sessions WHERE employee = ? AND created_at >= ?`
   ).get(employee, monthStart) as { spend: number };
 
-  const percent = limit > 0 ? Math.round((row.spend / limit) * 100) : 0;
-
-  if (percent >= 100) return 'paused';
-  if (percent >= 80) return 'warning';
-  return 'ok';
+  return row.spend >= limit;
 }

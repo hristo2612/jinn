@@ -43,7 +43,7 @@ import { detectRateLimit, isDeadSessionError, rateLimitEngineLabel } from "../sh
 import { getClaudeExpectedResetAt, isLikelyNearClaudeUsageLimit } from "../shared/usageAwareness.js";
 import { loadJobs } from "../cron/jobs.js";
 import { setCronJobEnabled, triggerCronJob } from "../cron/scheduler.js";
-import { checkBudget } from "../gateway/budgets.js";
+import { isBudgetExhausted } from "../gateway/budgets.js";
 import { markTranscriptSyncedThrough } from "../gateway/external-turns.js";
 import { handleRateLimit } from "./rate-limit-handler.js";
 import { resolveEngineRunMcp } from "./engine-run-mcp.js";
@@ -502,28 +502,22 @@ export class SessionManager {
       }
 
       // Budget enforcement — check BEFORE engine.run()
-      if (session.employee) {
-        const budgetConfig = (this.config as any).budgets?.employees as Record<string, number> | undefined;
-        if (budgetConfig && session.employee in budgetConfig) {
-          const budgetStatus = checkBudget(session.employee, budgetConfig);
-          if (budgetStatus === 'paused') {
-            logger.warn(`Session ${session.id} blocked: employee "${session.employee}" has exceeded their budget`);
-            const pausedMsg = `Budget limit exceeded for employee "${session.employee}". Session blocked.`;
-            completeSessionAttempt(session.id, attemptToken, {
-              status: 'error',
-              lastActivity: new Date().toISOString(),
-              lastError: pausedMsg,
-            });
-            if (decorateMessages && connector.setTypingStatus) {
-              await connector.setTypingStatus(target.channel, threadTs, '').catch(() => {});
-            }
-            await connector.replyMessage(target, `⛔ ${pausedMsg}`).catch(() => {});
-            if (decorateMessages && capabilities.reactions) {
-              await connector.removeReaction(target, 'eyes').catch(() => {});
-            }
-            return;
-          }
+      if (session.employee && isBudgetExhausted(session.employee, this.config.budgets?.employees)) {
+        logger.warn(`Session ${session.id} blocked: employee "${session.employee}" has exceeded their budget`);
+        const pausedMsg = `Budget limit exceeded for employee "${session.employee}". Session blocked.`;
+        completeSessionAttempt(session.id, attemptToken, {
+          status: 'error',
+          lastActivity: new Date().toISOString(),
+          lastError: pausedMsg,
+        });
+        if (decorateMessages && connector.setTypingStatus) {
+          await connector.setTypingStatus(target.channel, threadTs, '').catch(() => {});
         }
+        await connector.replyMessage(target, `⛔ ${pausedMsg}`).catch(() => {});
+        if (decorateMessages && capabilities.reactions) {
+          await connector.removeReaction(target, 'eyes').catch(() => {});
+        }
+        return;
       }
 
       // Heuristic preflight warning: Claude usage limits don't expose a precise "remaining" budget.

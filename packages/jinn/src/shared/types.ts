@@ -530,8 +530,6 @@ export interface Employee {
    *  general `mcp` field (specific-over-general); the global `enabled: false` kill
    *  switch and a per-engine opt-out beat it. */
   jinnMcp?: boolean;
-  /** Max cost in USD for a single session. Overrides global config. */
-  maxCostUsd?: number;
   /** Default effort level for sessions assigned to this employee */
   effortLevel?: string;
   /** Whether to notify the parent session when this employee's child session completes. Default: true */
@@ -929,9 +927,10 @@ export interface JinnConfig {
   };
   logging: { file: boolean; stdout: boolean; level: string };
   mcp?: McpGlobalConfig;
+  /** Spend caps keyed by employee name: a USD cap on that employee's total spend across the
+   *  current calendar month — NOT a per-session cap. At or above it, their turns are blocked. */
+  budgets?: { employees?: Record<string, number> };
   sessions?: {
-    maxDurationMinutes?: number;
-    maxCostUsd?: number;
     interruptOnNewMessage?: boolean;
     /** Max relay hops a lateral (agent-to-agent) send chain may traverse before
      *  the gateway refuses and tells the sender to escalate. Default 12; clamped

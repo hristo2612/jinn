@@ -302,10 +302,11 @@ portal:
 #                                                   # of curl recipes. Off while commented; false =
 #                                                   # kill switch. Per-engine opt-out available:
 #                                                   # gateway: { enabled: true, engines: { grok: false } }
-# Per-session safety limits (can be overridden per-employee in their YAML).
-# sessions:
-#   maxDurationMinutes: 30
-#   maxCostUsd: 10.00
+# Spend caps per employee — USD for the whole calendar month, not per session. At or
+# above it the gateway blocks that employee's turns. Unlisted employees run uncapped.
+# budgets:
+#   employees:
+#     a-lead: 25.00
 # Cron alerting — route failed scheduled jobs to a connector channel.
 # cron:
 #   alertConnector: slack

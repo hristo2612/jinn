@@ -107,6 +107,7 @@ export {
   foldPartialText,
   normalizeBlockDeltaForTurn,
 } from "../sessions/partial-stream.js";
+import { isBudgetExhausted } from "./budgets.js";
 import { forkEngineSession } from "../sessions/fork.js";
 import { removeCodexSessionHome } from "../engines/codex.js";
 import { ptySnapshotStore } from "../engines/pty-snapshot.js";
@@ -6874,6 +6875,19 @@ async function runWebSession(
     if (erroredSession) {
       notifyParentSession(erroredSession, { error: errMsg }, { alwaysNotify: employee?.alwaysNotify });
     }
+    return;
+  }
+
+  // Budget enforcement — block before the engine runs, mirroring manager.ts's connector path.
+  // Everything else lands here: dashboard chats, delegations, workflow nodes, MCP spawns.
+  if (currentSession.employee && isBudgetExhausted(currentSession.employee, config.budgets?.employees)) {
+    const errMsg = `Budget limit exceeded for employee "${currentSession.employee}". Session blocked.`;
+    logger.warn(`Web session ${currentSession.id} blocked: ${errMsg}`);
+    insertMessage(currentSession.id, "assistant", `⛔ ${errMsg}`);
+    const erroredSession = completeSessionAttempt(currentSession.id, attemptToken, { status: "error", lastActivity: new Date().toISOString(), lastError: errMsg });
+    context.emit("session:completed", { sessionId: currentSession.id, result: null, error: errMsg });
+    maybeEmitTalkGraph(currentSession.id, "completed", { getSession, emit: context.emit });
+    if (erroredSession) notifyParentSession(erroredSession, { error: errMsg }, { alwaysNotify: employee?.alwaysNotify });
     return;
   }
 

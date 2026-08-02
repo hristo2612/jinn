@@ -130,7 +130,6 @@ engine: claude
 model: opus
 persona: The content lead
 emoji: "🏠"
-maxCostUsd: 5
 `);
     updateEmployeeYaml("content-lead", { alwaysNotify: false });
 
@@ -141,7 +140,6 @@ maxCostUsd: 5
     expect(data.engine).toBe("claude");
     expect(data.model).toBe("opus");
     expect(data.emoji).toBe("🏠");
-    expect(data.maxCostUsd).toBe(5);
     expect(data.alwaysNotify).toBe(false);
   });
 
@@ -213,35 +211,6 @@ emoji: "🧩"
     expect(data.emoji).toBe("🧩");
     expect(data.engine).toBe("claude");
     expect(data.model).toBe("opus");
-  });
-});
-
-describe("scanOrg maxCostUsd mapping (G2)", () => {
-  beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "org-scan-test-"));
-  });
-  afterEach(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  it("round-trips maxCostUsd on load", () => {
-    writeYaml("platform", "costly.yaml", `
-name: costly
-persona: Pricey worker
-maxCostUsd: 12.5
-`);
-    const registry = scanOrg();
-    expect(registry.get("costly")?.maxCostUsd).toBe(12.5);
-  });
-
-  it("leaves maxCostUsd undefined when absent or non-numeric", () => {
-    writeYaml("platform", "free.yaml", `
-name: free
-persona: No cap
-maxCostUsd: "lots"
-`);
-    const registry = scanOrg();
-    expect(registry.get("free")?.maxCostUsd).toBeUndefined();
   });
 });
 
