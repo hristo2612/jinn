@@ -922,7 +922,14 @@ function isTransientSqliteError(code: string): boolean {
 const SQLITE_RETRY_BUDGET_MS = process.platform === 'win32' ? 15_000 : 5_000;
 
 function runSqliteBusyRetry<T>(operation: () => T): T {
-  const deadline = Date.now() + SQLITE_RETRY_BUDGET_MS;
+  // performance.now(), not Date.now(): this runs at process start and the sleep
+  // below blocks the thread outright, so a backward wall-clock step during the
+  // wait (w32time resyncing at boot, an NTP correction, a VM snapshot restore)
+  // would extend a synchronous block by the size of the step, unbounded and
+  // unlogged — the gateway would simply appear hung. A forward step would
+  // silently truncate the budget instead. performance.now() is monotonic from
+  // process start and immune to both.
+  const deadline = performance.now() + SQLITE_RETRY_BUDGET_MS;
   let delayMs = 10;
   for (;;) {
     try {
@@ -931,7 +938,7 @@ function runSqliteBusyRetry<T>(operation: () => T): T {
       const code = error && typeof error === 'object' && 'code' in error
         ? String((error as { code?: unknown }).code)
         : '';
-      const remainingMs = deadline - Date.now();
+      const remainingMs = deadline - performance.now();
       if (!isTransientSqliteError(code) || remainingMs <= 0) throw error;
       // Jittered exponential backoff. Without the jitter, peers that collided
       // once back off by the same amount and collide again on every subsequent
