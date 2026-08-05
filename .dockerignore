@@ -50,6 +50,7 @@ packages/jinn/.npmrc
 Dockerfile
 .dockerignore
 docker-compose.yml
+docker-compose.build.yml
 docker-compose.override.yml
 
 # Docs are not needed at runtime; the image serves the dashboard, not the repo.

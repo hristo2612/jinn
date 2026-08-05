@@ -8,9 +8,33 @@ In a container, the filesystem radius is every writable mount: project bind moun
 
 Containerising also avoids a class of packaging problem. `better-sqlite3` needs its native binding compiled and `node-pty` needs its prebuilt `spawn-helper` to be executable, both at install time. Any install that skips lifecycle scripts yields a Jinn that crashes on boot or fails every PTY spawn with `posix_spawnp failed.` The image installs normally, so both are correct by construction.
 
+## The image
+
+Releases are published to this repository's GitHub Container Registry package — **`ghcr.io/<owner>/jinn`** — as a multi-architecture manifest covering `linux/amd64` and `linux/arm64`, so Apple Silicon and x86 both pull a native image and neither runs under emulation. It is public and unauthenticated: pulling it needs no `docker login`.
+
+`<owner>` is written out in exactly two places, and this guide is not one of them, so that a fork inherits nothing it then has to correct. `.github/workflows/publish-image.yml` derives the path it publishes to from `github.repository`, and `docker-compose.yml` carries the matching reference as the default of `JINN_IMAGE`:
+
+```bash
+grep image: docker-compose.yml     # the exact reference this checkout pulls
+```
+
+Point `JINN_IMAGE` at a fork or an internal mirror in your `.env` and the rest of the compose file is unchanged. Substitute the same value wherever this guide writes `ghcr.io/<owner>/jinn`.
+
+| Tag | Moves | Use it when |
+| --- | --- | --- |
+| `latest` | every release | You want the current version and are happy to take upgrades when you pull |
+| `0.29.1` | never | You want a build that cannot change under you |
+| `0.29` | patch releases within that minor | You want fixes but not features |
+
+Prereleases (`v1.0.0-rc.1`) get their exact version tag and nothing else — they move neither `latest` nor a `major.minor` tag. Every build also publishes an immutable `sha-<short>` tag, which is all a manually dispatched build from a branch produces.
+
+Nothing here needs a checkout. `docker-compose.yml` is the only file you need; if you would rather build the image from source, see [Building from a checkout](#building-from-a-checkout).
+
 ## Quick start
 
-First, edit `docker-compose.yml` and uncomment at least one entry under **Project mounts**. At least one is required — without it `/work` is empty and the agents have nothing to work on.
+Put `docker-compose.yml` in an empty directory. The README's Docker section has a one-line `curl` for it, or take it from a release tag if you are pinning to that version.
+
+Then edit it and uncomment at least one entry under **Project mounts**. At least one is required — without it `/work` is empty and the agents have nothing to work on.
 
 ```yaml
       # - ${HOME}/code/my-project:/work/my-project     ← uncomment and edit
@@ -19,12 +43,47 @@ First, edit `docker-compose.yml` and uncomment at least one entry under **Projec
 Then:
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 docker compose exec jinn claude      # use /login, complete the flow, then quit
 docker compose exec jinn jinn pair   # prints a single-use pairing code
 ```
 
 Open **http://localhost:7777** and enter the code at the **Pair This Browser** prompt.
+
+To pin a version, put it in a `.env` file beside `docker-compose.yml` — Compose reads that automatically, and the same file is where `TZ`, `JINN_PORT` and a non-default registry belong:
+
+```dotenv
+JINN_VERSION=0.29.1
+# JINN_IMAGE=ghcr.io/you/jinn    # a fork or an internal mirror
+```
+
+### Without Compose
+
+Compose is the recommended path — it is where the mount list, the loopback publish and the volume names are written down. But nothing in the image requires it, and the equivalent `docker run` is short enough to be worth having:
+
+```bash
+docker run -d --name jinn --init --restart unless-stopped \
+  -p 127.0.0.1:7777:7777 \
+  -v jinn-home:/home/node/.jinn \
+  -v jinn-claude:/home/node/.claude \
+  -v "$HOME/code/my-project:/work/my-project" \
+  ghcr.io/<owner>/jinn:latest
+
+docker exec -it jinn claude    # use /login, then quit
+docker exec jinn jinn pair     # prints a pairing code
+```
+
+The image's default command is the entrypoint's private service marker, so a bare `docker run` boots the gateway; passing your own command runs that instead. Upgrading means `docker pull`, then `docker rm -f jinn` and a fresh `docker run` — the two named volumes carry all the state across, so nothing is lost.
+
+### Building from a checkout
+
+Working on Jinn itself, or running a commit that has not been released. From a clone of this repository:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+```
+
+`docker-compose.build.yml` adds the `build:` section and retags the result `jinn:local`, so a local build never shadows the published image for anything else on the machine. Everything else — ports, volumes, project mounts — still comes from `docker-compose.yml`, so edit your mounts there. It is deliberately *not* `docker-compose.override.yml`, which Compose merges automatically: in a checkout that would make every `docker compose up` rebuild instead of pull.
 
 ### Why pairing, when a host install just opens the dashboard
 
@@ -61,7 +120,7 @@ Point your employees' working directories at the container paths (`/work/my-proj
 
 Prefer `:ro` wherever the agents only need to read — that list is the blast radius, and everything on it is writable without a prompt.
 
-> If you would rather not carry local edits in a tracked file, the same entries work in a `docker-compose.override.yml` (git-ignored, merged automatically by `docker compose`). Editing `docker-compose.yml` directly is the simpler default; the override file is there if you want a clean `git status`.
+> Working from a checkout and would rather not carry local edits in a tracked file? The same entries work in a `docker-compose.override.yml` (git-ignored, merged automatically by `docker compose`). Editing `docker-compose.yml` directly is the simpler default; the override file is there if you want a clean `git status`.
 
 ## What the isolation does and does not cover
 
@@ -81,18 +140,14 @@ Prefer `:ro` wherever the agents only need to read — that list is the blast ra
 
 `/talk`, voice notes and the dashboard microphone shell out to `whisper-cli` and `ffmpeg`. The image does not include them — neither does a Homebrew or npm install, where you would run `brew install ffmpeg whisper-cpp` yourself.
 
-Installing them inside a running container with `apt-get` will *not* work: that lands in the container's writable layer, which `docker compose up -d --build` throws away. They have to be baked into an image.
+Installing them inside a running container with `apt-get` will *not* work: that lands in the container's writable layer, which the next image swap throws away. They have to be baked into an image.
 
-Build the base image under its own tag first, so the derived one has something to extend (compose tags its own build `jinn:local`, so `Dockerfile.stt` must not use that name as its base):
-
-```bash
-docker build --tag jinn:base .
-```
-
-Then create `Dockerfile.stt`:
+Extend the published image. Beside your `docker-compose.yml`, create `Dockerfile.stt`:
 
 ```dockerfile
-FROM jinn:base
+# Same reference as `image:` in docker-compose.yml, pinned to a version so an STT
+# rebuild cannot quietly upgrade Jinn too.
+FROM ghcr.io/<owner>/jinn:0.29.1
 USER root
 ARG WHISPER_CPP_REF=v1.7.4
 # curl is not listed: the base image already installs it, because agent turns reach
@@ -106,20 +161,35 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg cmake g+
 USER node
 ```
 
-Point compose at it in `docker-compose.override.yml`:
+Point compose at it in `docker-compose.override.yml`, which Compose merges automatically:
 
 ```yaml
 services:
   jinn:
     build:
+      context: .
       dockerfile: Dockerfile.stt
+    # Its own tag, and `build` so Compose never tries to pull a name no registry has.
+    image: jinn-stt:local
+    pull_policy: build
 ```
 
-Then `docker compose up -d --build` and download a model from the dashboard. **No extra volume is needed** — models are written to `~/.jinn/models/whisper`, already on the `jinn-home` volume, so each one downloads once and survives every later upgrade. Re-run the `docker build --tag jinn:base .` step whenever you upgrade Jinn itself.
+Then `docker compose up -d --build` and download a model from the dashboard. **No extra volume is needed** — models are written to `~/.jinn/models/whisper`, already on the `jinn-home` volume, so each one downloads once and survives every later upgrade.
+
+Upgrading now takes two steps rather than one: bump the `FROM` pin, then `docker compose build --pull && docker compose up -d`. The `JINN_VERSION` variable no longer applies — the `image:` above replaced the published reference it interpolated into.
 
 ## Persistence and upgrades
 
-Upgrading is `docker compose up -d --build` (or a `pull` and recreate). **Nothing is lost** — the same as a `brew upgrade` or `npm i -g` bump. No re-login, no re-pairing, no repeated onboarding, no folder-trust prompts.
+Upgrading is:
+
+```bash
+docker compose pull        # fetch the newer image
+docker compose up -d       # recreate the container against it
+```
+
+**Nothing is lost** — the same as a `brew upgrade` or `npm i -g` bump. No re-login, no re-pairing, no repeated onboarding, no folder-trust prompts.
+
+`pull` is a separate step because `up -d` on its own will not fetch a newer image (`pull_policy: missing` in the compose file). That is deliberate: with `latest`, an `up -d` run for an unrelated reason would otherwise swap versions underneath a working instance. If you pinned `JINN_VERSION`, bump it first — `pull` then fetches the version you asked for rather than a moving tag. Building from a checkout instead? `docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build`.
 
 Two named volumes hold every stateful path:
 
@@ -138,7 +208,7 @@ docker compose exec jinn ls -la ~/.claude/.claude.json
 
 > **A note on that setting.** `CLAUDE_CONFIG_DIR` works (verified against Claude Code 2.1.220) but is not in the published settings documentation, and [anthropics/claude-code#25762](https://github.com/anthropics/claude-code/issues/25762), which asks for exactly this variable, is still open. The use here is deliberately safe: it points at the directory Claude Code already uses, so if a future release stops honouring it the only consequence is that `.claude.json` returns to its unpersisted default — nothing is corrupted.
 >
-> There is a second net under it. `~/.claude.json` is a symlink into the volume, so a release that ignores `CLAUDE_CONFIG_DIR` and updates that path in place still writes to persistent storage. Only a write that *replaces* the path — temp file, then rename — replaces the link with a real file in the container layer; the entrypoint copies that file onto the volume as `.claude.json.stray` on the next boot and says so loudly in `docker compose logs`. It has to copy rather than only warn, because the layer holding it does not survive the `docker compose up -d --build` that upgrades the image.
+> There is a second net under it. `~/.claude.json` is a symlink into the volume, so a release that ignores `CLAUDE_CONFIG_DIR` and updates that path in place still writes to persistent storage. Only a write that *replaces* the path — temp file, then rename — replaces the link with a real file in the container layer; the entrypoint copies that file onto the volume as `.claude.json.stray` on the next boot and says so loudly in `docker compose logs`. It has to copy rather than only warn, because the layer holding it does not survive the container recreation that upgrades the image.
 
 After upgrading, run `jinn migrate` as you would on a host install.
 
@@ -154,7 +224,8 @@ After upgrading, run `jinn migrate` as you would on a host install.
 - **Single instance.** The compose service persists and publishes one Jinn instance. Its gateway holds an exclusive kernel `flock` on `gateway.lock` before setup or stale-record cleanup begins. Every container mounting that home contends on the same lock, and the kernel releases it automatically when the gateway process or container dies. `jinn restart` is disabled inside containers because a self-restart would create a lock gap; `docker compose restart jinn` replaces the container instead. `jinn create`, offline secondary start, `-i/--instance` gateway forwarding and `--take-port` are rejected in the image. A second instance needs a second container, dedicated Jinn/Claude volumes and a separately published port.
 - **Bypass consent.** The container configuration step explicitly records `bypassPermissionsModeAccepted` in `/home/node/.claude/.claude.json`, which is inside the dedicated `jinn-claude` volume. Claude Code answers `--dangerously-skip-permissions` with a one-time blocking dialog, and nothing in a PTY presses a key — without this, every turn hangs and is eventually abandoned with *"no completion signal and no recoverable transcript"*. Host gateway startup does not accept this consent; it remains a container-scoped choice documented here.
 - **Config location.** `CLAUDE_CONFIG_DIR=/home/node/.claude` keeps Claude Code's `.claude.json` inside the volume; see [Persistence and upgrades](#persistence-and-upgrades).
-- **Engine version.** `@anthropic-ai/claude-code` is pinned by the `CLAUDE_CODE_VERSION` build arg so two builds of the same commit get the same engine, and `DISABLE_AUTOUPDATER=1` stops the CLI relocating itself onto the volume and drifting past the pin. Override with `docker compose build --build-arg CLAUDE_CODE_VERSION=<version>`.
+- **Engine version.** `@anthropic-ai/claude-code` is pinned by the `CLAUDE_CODE_VERSION` build arg so two builds of the same commit get the same engine, and `DISABLE_AUTOUPDATER=1` stops the CLI relocating itself onto the volume and drifting past the pin. A published image therefore carries a fixed engine, and moving it means building: `docker compose -f docker-compose.yml -f docker-compose.build.yml build --build-arg CLAUDE_CODE_VERSION=<version>`.
+- **Image provenance.** `.github/workflows/publish-image.yml` builds each architecture on a native runner, boots a gateway from the result (`scripts/docker-smoke.sh` — the same checks CI runs on amd64, which is the only place arm64 is exercised at all), and only then pushes and assembles the manifest list. The workflow triggers on `v*` tags and refuses to publish a tag that disagrees with `packages/jinn/package.json` or is not an ancestor of `main`, so an image tag naming a version is that version.
 - **Timezone.** The container is UTC. Shells do not normally export `TZ`, so `${TZ:-UTC}` takes the default unless you set it explicitly — either in your shell or, more reliably, in a `.env` file beside `docker-compose.yml` (`TZ=Europe/Paris`), which Compose reads automatically. It matters because a cron job with no explicit `timezone` fires in the container's zone; giving each job its own timezone is the more robust fix.
 - **Non-root.** Everything runs as the image's `node` user.
 - **`init: true`.** Each session spawns a PTY that spawns its own children; without an init process, orphans accumulate as zombies.

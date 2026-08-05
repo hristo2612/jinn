@@ -13,7 +13,7 @@
   <a href="https://www.npmjs.com/package/jinn-cli"><img src="https://img.shields.io/npm/v/jinn-cli?color=7c3aed&label=npm" alt="npm version" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/npm/l/jinn-cli?color=7c3aed" alt="license" /></a>
   <img src="https://img.shields.io/node/v/jinn-cli?color=7c3aed" alt="node version" />
-  <img src="https://img.shields.io/badge/Docker-supported-2496ED?logo=docker&logoColor=white" alt="Docker supported" />
+  <a href="https://github.com/hristo2612/jinn/pkgs/container/jinn"><img src="https://img.shields.io/badge/ghcr.io-hristo2612%2Fjinn-2496ED?logo=docker&logoColor=white" alt="Container image on GHCR" /></a>
   <img src="https://img.shields.io/badge/status-beta-7c3aed" alt="status: beta" />
 </p>
 
@@ -74,24 +74,26 @@ jinn setup && jinn start
 
 ### Docker
 
-Docker needs Docker Engine or Docker Desktop with Compose v2, but it does **not** need Node.js or an agent CLI installed on the host. The image includes Claude Code. Containerising bounds the engine's permission-free access to the directories you explicitly mount instead of your whole home directory:
+Docker needs Docker Engine or Docker Desktop with Compose v2, but it does **not** need Node.js, an agent CLI, or a checkout of this repository. The published image includes Claude Code and is built for `linux/amd64` and `linux/arm64`. Containerising bounds the engine's permission-free access to the directories you explicitly mount instead of your whole home directory:
 
 ```bash
-git clone https://github.com/hristo2612/jinn.git
-cd jinn
+# One file, no clone. Swap `main` for a tag (v0.29.1) to take that release's copy.
+curl -O https://raw.githubusercontent.com/hristo2612/jinn/main/docker-compose.yml
 
 # Edit docker-compose.yml and uncomment at least one "Project mounts" entry.
 # Without one, /work is empty and the agents have nothing to work on.
-docker compose up -d --build
+docker compose up -d
 docker compose exec jinn claude     # run once, use /login, then quit
 docker compose exec jinn jinn pair  # prints a code for the browser
 ```
 
 Then open **[http://localhost:7777](http://localhost:7777)** and enter the code at the pairing prompt. The gateway binds `0.0.0.0` inside the container, so it requires auth, and your browser reaches it through Docker's NAT rather than loopback — which is why pairing replaces the automatic sign-in a host install gets.
 
+The image is **`ghcr.io/hristo2612/jinn`**, tagged `latest` plus every release (`0.29.1`, `0.29`). Pin one by putting `JINN_VERSION=0.29.1` in a `.env` file beside the compose file; upgrading is then `docker compose pull && docker compose up -d`, which keeps your login, sessions and pairing.
+
 The compose image runs one Jinn instance. Additional instances need separate containers, dedicated Jinn/Claude volumes and separately published ports. The writable blast radius includes those state volumes (OAuth, sessions and plugins), every writable project mount, and unrestricted network egress; see the Docker guide before mounting sensitive data.
 
-The image ships the `claude` engine only. `codex`, `grok` and `hermes` are not included, and neither are `ffmpeg`/`whisper-cli` for speech-to-text — the same as a Homebrew or npm install, which leave those to you. See **[docs/docker.md](docs/docker.md)** for the mount model, what persists across upgrades, how to add speech-to-text, and what the isolation does and does not cover.
+The image ships the `claude` engine only. `codex`, `grok` and `hermes` are not included, and neither are `ffmpeg`/`whisper-cli` for speech-to-text — the same as a Homebrew or npm install, which leave those to you. See **[docs/docker.md](docs/docker.md)** for the mount model, what persists across upgrades, how to add speech-to-text, building the image from a checkout instead, and what the isolation does and does not cover.
 
 Everyday commands for a native install:
 
@@ -108,6 +110,7 @@ Docker owns the gateway lifecycle instead — `jinn start`, `jinn stop`, and `ji
 docker compose ps                 # status and health
 docker compose logs -f jinn       # follow gateway logs
 docker compose restart jinn       # restart safely
+docker compose pull               # fetch a newer image (then `up -d` to apply it)
 docker compose down               # stop; named volumes remain intact
 ```
 
