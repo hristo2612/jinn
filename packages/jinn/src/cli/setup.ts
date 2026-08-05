@@ -261,9 +261,20 @@ models:
     default: opus
     effortMechanism: claude-flag
     models:
+      # Bare aliases (opus/sonnet) run Claude Code's standard context window.
+      # The "[1m]" variants request the 1M-token window and are separate model
+      # ids, not a flag — "opus" and "opus[1m]" are different models to the CLI.
+      # Pick a [1m] entry if you run large personas or long agentic sessions;
+      # a big injected system prompt against the standard window compacts early
+      # and can thrash. Leave contextWindow unset unless you have measured it:
+      # a declared window that the engine does not honour is worse than none,
+      # and the gateway warns when observed context never approaches it.
       - { id: opus, label: "Opus (Latest)", supportsEffort: true, effortLevels: [low, medium, high, xhigh, max] }
       - { id: sonnet, label: "Sonnet (Latest)", supportsEffort: true, effortLevels: [low, medium, high, xhigh, max] }
       - { id: fable, label: "Fable (Latest)", supportsEffort: true, effortLevels: [low, medium, high, xhigh, max] }
+      # Quoted: "[" is a YAML indicator, so a bare opus[1m] breaks flow style.
+      - { id: "opus[1m]", label: "Opus (1M context)", supportsEffort: true, effortLevels: [low, medium, high, xhigh, max] }
+      - { id: "sonnet[1m]", label: "Sonnet (1M context)", supportsEffort: true, effortLevels: [low, medium, high, xhigh, max] }
   codex:
     default: gpt-5.5
     effortMechanism: codex-config
