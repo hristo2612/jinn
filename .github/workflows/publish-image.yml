@@ -1,13 +1,20 @@
 name: Publish container image
 
-# Publishes ghcr.io/<owner>/jinn so a user can run Jinn without a checkout: they point
-# docker-compose.yml (or a bare `docker run`) at a tag and Docker fetches the image.
+# Publishes ghcr.io/<owner>/jinn as one multi-architecture image (linux/amd64,
+# linux/arm64), so Jinn can be run from a tag instead of a checkout.
 #
-# One manual step, once per repository: the first push creates the GHCR package as
-# PRIVATE. Open Packages → jinn → Package settings and either set the visibility to
-# public or link it to this repository so it inherits repository visibility. Until then
-# `docker pull` fails with "denied" for everyone but the owner, and the workflow itself
-# gives no hint of it — it pushes successfully either way.
+# Nothing in this repository pulls it yet — docker-compose.yml still builds from the
+# source tree. The publisher lands first deliberately: a package that does not exist is
+# not something a README can tell people to pull. Pointing the default at it is a
+# follow-up, gated on all three of:
+#
+#   1. A v* tag drives this workflow to completion.
+#   2. The GHCR package is made public. The first push creates it as PRIVATE, and this
+#      workflow gives no hint of that — it pushes successfully either way. Packages →
+#      jinn → Package settings: set the visibility to public, or link it to this
+#      repository so it inherits repository visibility. Until then `docker pull` fails
+#      with "denied" for everyone but the owner.
+#   3. An anonymous `docker pull` of both architectures is verified to work.
 
 on:
   push:
@@ -16,7 +23,7 @@ on:
   # Deliberately not on pushes to main: a double-architecture build is ~20 runner-minutes
   # per merge, and `latest` tracking releases is what "pin the version" wants. Dispatch
   # covers rebuilding a tag (the GitHub UI's ref picker accepts tags) and dry runs from a
-  # branch, which publish only a branch/sha tag — never `latest`.
+  # branch, which publish only `sha-<short>` — no branch name, and never `latest`.
   workflow_dispatch:
 
 # A version tag moves `latest`, and two runs on the same ref must not race to write the
@@ -209,10 +216,19 @@ jobs:
           # a dispatch from a branch, which reaches neither semver rule and publishes only
           # `sha-<short>`. A prerelease also collapses {{major}}.{{minor}} into {{version}},
           # so it cannot take over `0.29` either.
+          #
+          # No `type=ref,event=branch`: on a dispatch from a branch that emits the branch
+          # name as a tag, so a dry run would publish a mutable `main` that reads like a
+          # release channel and that no doc describes. SHA-only is the branch contract.
+          #
+          # Every tag here is an alias, including these two and `sha-<short>`: a rerun or a
+          # re-dispatch of the same ref repoints them, and the Dockerfile's base image
+          # (`node:24-bookworm-slim`) and apt inputs are tag-resolved, so the same source
+          # commit can build to a different digest. A fixed artifact is a digest — the run
+          # summary prints the one to pin.
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=ref,event=branch
             type=sha,format=short
 
       - name: Log in to GHCR
@@ -249,7 +265,9 @@ jobs:
           docker buildx imagetools create "${tag_args[@]}" "${source_args[@]}"
 
       - name: Verify the published tag resolves for both architectures
+        id: published
         env:
+          IMAGE: ${{ needs.verify.outputs.image }}
           TAGS: ${{ steps.meta.outputs.tags }}
         shell: bash
         run: |
@@ -268,9 +286,19 @@ jobs:
               || { echo "published manifest list is missing linux/$arch" >&2; exit 1; }
           done
 
+          # Every tag this workflow writes is an alias a rerun can repoint. The manifest
+          # list's digest is not, so it is what a caller pins when the artifact has to stay
+          # byte-for-byte fixed — the summary below hands it over rather than making anyone
+          # go and read it back out of the registry.
+          digest="$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$probe")"
+          [[ "$digest" == sha256:* ]] \
+            || { echo "could not read the manifest list digest (got '$digest')" >&2; exit 1; }
+          echo "pinned=${IMAGE}@${digest}" >> "$GITHUB_OUTPUT"
+
       - name: Summarise
         env:
           TAGS: ${{ steps.meta.outputs.tags }}
+          PINNED: ${{ steps.published.outputs.pinned }}
         shell: bash
         run: |
           set -euo pipefail
@@ -280,4 +308,13 @@ jobs:
             while IFS= read -r tag; do
               [[ -n "$tag" ]] && echo "- \`$tag\` (linux/amd64, linux/arm64)"
             done <<< "$TAGS"
+            echo
+            echo "Those are aliases, not fixed artifacts: re-running this workflow on the"
+            echo "same ref repoints them, and the image resolves \`node:24-bookworm-slim\`"
+            echo "and its apt inputs by tag, so the same commit can rebuild to a different"
+            echo "digest. Pin this reference where a build must not change underneath you:"
+            echo
+            echo '```'
+            echo "$PINNED"
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

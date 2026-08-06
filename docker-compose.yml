@@ -2,23 +2,9 @@ name: jinn
 
 services:
   jinn:
-    # The published multi-arch image (linux/amd64, linux/arm64) — no checkout needed to
-    # run Jinn. Both halves are overridable from a .env file beside this one, so neither
-    # needs an edit to a tracked file:
-    #
-    #   JINN_VERSION=0.29.1              pin a release instead of following `latest`
-    #   JINN_IMAGE=ghcr.io/you/jinn      pull from a fork or an internal mirror
-    #
-    # The default owner is the repository publish-image.yml runs in, which builds
-    # ghcr.io/<owner>/jinn from `github.repository` rather than a literal.
-    # Building from a source tree instead is docker-compose.build.yml.
-    image: ${JINN_IMAGE:-ghcr.io/hristo2612/jinn}:${JINN_VERSION:-latest}
-
-    # Pull once, then reuse. Upgrading is an explicit `docker compose pull`, so a
-    # `docker compose up -d` after an unrelated edit cannot swap the image underneath a
-    # running instance — which, with `latest`, would otherwise be a silent major upgrade.
-    pull_policy: missing
-
+    build:
+      context: .
+    image: jinn:local
     # Private image/entrypoint handshake. `docker compose run ... <command>` replaces
     # this value, so one-off commands cannot accidentally enter the service boot path.
     command: ["__jinn_service_start__"]
