@@ -65,9 +65,11 @@ Prefer `:ro` wherever the agents only need to read — that list is the blast ra
 
 ## What the isolation does and does not cover
 
-**Covered.** The host filesystem outside your mounts — SSH keys, browser profiles, credential stores, other repositories, everything in `$HOME` you did not explicitly mount. Host processes. The gateway is published on `127.0.0.1` only, so it is not reachable from your network.
+**Covered.** The host filesystem outside your mounts — SSH keys, browser profiles, credential stores, other repositories, everything in `$HOME` you did not explicitly mount. Host processes.
 
 **Not covered:**
+
+- **The dashboard is published on your network.** `ports:` binds every interface, so anything that can reach the host on 7777 reaches the pairing prompt, and the gateway token is what stands between it and the agent. `JINN_BIND_ADDR=127.0.0.1` in a `.env` file makes it host-only; an interface address publishes on that one alone.
 
 - **Mounted directories are fully writable.** An agent can delete or rewrite anything under a read-write mount without asking. Use `:ro` where you can, and prefer repositories with a clean git state.
 - **The named volumes are writable too.** `jinn-home` contains Jinn secrets, OAuth-adjacent connector state, browser pairing, sessions and transcripts; `jinn-claude` contains Claude OAuth credentials, sessions/history, plugins, MCP configuration and trust state.
@@ -146,7 +148,7 @@ After upgrading, run `jinn migrate` as you would on a host install.
 
 ## Notes on the container
 
-- **Bind address.** The entrypoint starts the gateway with `JINN_HOST=0.0.0.0` when `config.yaml` names a loopback address or none. Inside a container the shipped default binds the container's own loopback, so a published port would resolve to nothing. The published port is still `127.0.0.1:…`, so the gateway is not exposed beyond the host. `config.yaml` is left untouched — the override is an environment variable, so a `jinn-home` volume you later open on a workstation does not carry the container's binding with it. Set `gateway.host` to a non-loopback address yourself and the entrypoint leaves it alone.
+- **Bind address.** The entrypoint starts the gateway with `JINN_HOST=0.0.0.0` when `config.yaml` names a loopback address or none. Inside a container the shipped default binds the container's own loopback, so a published port would resolve to nothing. The host side of that mapping is `JINN_BIND_ADDR`, `0.0.0.0` by default — `127.0.0.1` there keeps the gateway on the host. `config.yaml` is left untouched — the override is an environment variable, so a `jinn-home` volume you later open on a workstation does not carry the container's binding with it. Set `gateway.host` to a non-loopback address yourself and the entrypoint leaves it alone.
 - **Port.** `JINN_PORT` moves it — set it in a `.env` file beside `docker-compose.yml` and both sides of the mapping follow, as does the gateway, which reads `JINN_PORT` in preference to `gateway.port`. Do not change only one of them: a gateway bound where the mapping does not reach refuses connections under a boot log that reads perfectly healthy. `docker compose exec jinn jinn status` sees the same variable, so it stays in agreement. Passing `--port` to the container is rejected outright, because it would move the gateway without moving the mapping.
 - **Editing the binding from the dashboard.** Settings shows the *effective* host and port, so in the container it shows what `JINN_HOST`/`JINN_PORT` resolved to. Saving that page never writes those two values back into `config.yaml` — that is what would carry the container's binding onto the volume. Changing either one there is refused with an explicit message instead of being silently ignored: unset the variable and the field becomes yours again.
 - **Health.** The image ships a `HEALTHCHECK` that asks `/api/status` at the address *and* port the gateway actually bound, both read from `gateway.json` — so a deliberate non-loopback `gateway.host` stays healthy. It catches the failure a restart policy cannot see: a live process that is no longer serving. Docker reports it in `docker compose ps` and does not restart on it.

@@ -13,12 +13,16 @@ services:
     # process those accumulate as zombies.
     init: true
 
-    # Loopback on the HOST, deliberately: the dashboard authenticates with a shared
-    # gateway token, so publishing on 0.0.0.0 would expose agent control — with the
-    # permission gate disabled — to the whole network. Both sides read JINN_PORT, and so
-    # does the gateway; set it in a .env file beside this one to move them together.
+    # Published on every interface, so the dashboard is reachable from another machine on
+    # your network without editing this file. What someone there reaches is the pairing
+    # prompt: the entrypoint's 0.0.0.0 bind counts as network-exposed, so the gateway
+    # requires auth and each browser pairs once — but the agent behind that prompt runs with
+    # the permission gate disabled, so on a network you do not trust, set
+    # JINN_BIND_ADDR=127.0.0.1 in a .env file beside this one for host-only, or one
+    # interface address to publish on just that one. JINN_PORT moves both sides of the
+    # mapping, and the gateway with them.
     ports:
-      - "127.0.0.1:${JINN_PORT:-7777}:${JINN_PORT:-7777}"
+      - "${JINN_BIND_ADDR:-0.0.0.0}:${JINN_PORT:-7777}:${JINN_PORT:-7777}"
 
     environment:
       # The container is UTC. Shells do not normally export TZ, so set it here or in
