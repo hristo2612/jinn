@@ -1,0 +1,28 @@
+# Build the image from this checkout instead of pulling the published one. For working on
+# Jinn itself, or for running a commit that has not been released yet.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+#
+# Everything else — ports, volumes, project mounts, the entrypoint handshake — comes from
+# docker-compose.yml, so edit your mounts there as usual.
+#
+# Not docker-compose.override.yml, which Compose merges automatically: this file has to be
+# opt-in, or every `docker compose up` in a checkout would rebuild instead of pulling.
+name: jinn
+
+services:
+  jinn:
+    # No `args:` for CLAUDE_CODE_VERSION on purpose — a default repeated here would
+    # silently outrank the Dockerfile's ARG the next time that pin moves. Override it per
+    # build instead: `docker compose ... build --build-arg CLAUDE_CODE_VERSION=<version>`.
+    build:
+      context: .
+
+    # Retagged rather than built over the published name: a local build sitting under
+    # ghcr.io/<owner>/jinn would shadow the real image for every other project on this
+    # machine, and `docker compose pull` would then look like a no-op.
+    image: jinn:local
+
+    # The base file says `missing`, which for a tag that exists in no registry would be an
+    # attempted pull. Build it.
+    pull_policy: build
