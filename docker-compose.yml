@@ -2,9 +2,23 @@ name: jinn
 
 services:
   jinn:
-    build:
-      context: .
-    image: jinn:local
+    # The published multi-arch image (linux/amd64, linux/arm64) — no checkout needed to
+    # run Jinn. Both halves are overridable from a .env file beside this one, so neither
+    # needs an edit to a tracked file:
+    #
+    #   JINN_VERSION=0.29.1              pin a release instead of following `latest`
+    #   JINN_IMAGE=ghcr.io/you/jinn      pull from a fork or an internal mirror
+    #
+    # The default owner is the repository publish-image.yml runs in, which builds
+    # ghcr.io/<owner>/jinn from `github.repository` rather than a literal.
+    # Building from a source tree instead is docker-compose.build.yml.
+    image: ${JINN_IMAGE:-ghcr.io/hristo2612/jinn}:${JINN_VERSION:-latest}
+
+    # Pull once, then reuse. Upgrading is an explicit `docker compose pull`, so a
+    # `docker compose up -d` after an unrelated edit cannot swap the image underneath a
+    # running instance — which, with `latest`, would otherwise be a silent major upgrade.
+    pull_policy: missing
+
     # Private image/entrypoint handshake. `docker compose run ... <command>` replaces
     # this value, so one-off commands cannot accidentally enter the service boot path.
     command: ["__jinn_service_start__"]
@@ -13,12 +27,16 @@ services:
     # process those accumulate as zombies.
     init: true
 
-    # Loopback on the HOST, deliberately: the dashboard authenticates with a shared
-    # gateway token, so publishing on 0.0.0.0 would expose agent control — with the
-    # permission gate disabled — to the whole network. Both sides read JINN_PORT, and so
-    # does the gateway; set it in a .env file beside this one to move them together.
+    # Published on every interface, so the dashboard is reachable from another machine on
+    # your network without editing this file. What someone there reaches is the pairing
+    # prompt: the entrypoint's 0.0.0.0 bind counts as network-exposed, so the gateway
+    # requires auth and each browser pairs once — but the agent behind that prompt runs with
+    # the permission gate disabled, so on a network you do not trust, set
+    # JINN_BIND_ADDR=127.0.0.1 in a .env file beside this one for host-only, or one
+    # interface address to publish on just that one. JINN_PORT moves both sides of the
+    # mapping, and the gateway with them.
     ports:
-      - "127.0.0.1:${JINN_PORT:-7777}:${JINN_PORT:-7777}"
+      - "${JINN_BIND_ADDR:-0.0.0.0}:${JINN_PORT:-7777}:${JINN_PORT:-7777}"
 
     environment:
       # The container is UTC. Shells do not normally export TZ, so set it here or in

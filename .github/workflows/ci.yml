@@ -81,101 +81,17 @@ jobs:
     runs-on: ubuntu-latest
     # The failure worth catching is a gateway that builds but cannot spawn a
     # session — a wrong-ABI sqlite binding, or a skipped node-pty build. `docker
-    # build` never loads a native addon or starts the gateway, so the two steps
-    # after it are what actually exercise that. Plain `docker build` because
-    # nothing is published and fork PRs get a read-only token.
+    # build` never loads a native addon or starts the gateway, so the smoke step
+    # after it is what actually exercises that. Plain `docker build` because
+    # this job publishes nothing and fork PRs get a read-only token —
+    # publish-image.yml owns GHCR, on version tags only.
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
       - run: docker build --tag jinn:ci .
 
-      # Formula/jinn.rb asserts the same for the Homebrew install. --workdir is the
-      # jinn package because pnpm links these under packages/jinn/node_modules.
-      # Fails closed: a lost exit event must not drain the loop and exit 0.
-      - name: Native addons load and a PTY spawns
-        run: |
-          docker run --rm --workdir /opt/jinn/packages/jinn --entrypoint node jinn:ci -e '
-            process.exitCode = 1;
-            const Database = require("better-sqlite3");
-            new Database(":memory:").close();
-            const pty = require("node-pty");
-            const timer = setTimeout(() => {
-              console.error("pty exit event never arrived");
-              process.exit(1);
-            }, 30000);
-            const p = pty.spawn("/bin/sh", ["-c", "exit 0"], {});
-            p.onExit(({ exitCode }) => {
-              clearTimeout(timer);
-              if (exitCode !== 0) { console.error("pty exited " + exitCode); return; }
-              process.exitCode = 0;
-              console.log("better-sqlite3 + node-pty OK");
-            });
-          '
-
-      # End-to-end boot: first-run `jinn setup` on an empty volume,
-      # scripts/docker-configure.mjs (which now exits non-zero rather than leaving
-      # the gateway on the container's loopback), and the port publish. /api/status
-      # is deliberately auth-exempt, so this needs no token.
-      - name: Gateway boots and answers
-        run: |
-          set -o pipefail
-          # Both docker calls tolerate a container that is already gone: under `bash -e`
-          # a failure inside the helper aborts the step before it reaches the echo, so
-          # the one message explaining the failure would be lost with it.
-          give_up() {
-            docker logs jinn-smoke || true
-            docker rm -f jinn-smoke >/dev/null 2>&1 || true
-            echo "$1"
-            exit 1
-          }
-          # -m: a gateway that accepts and never answers would otherwise hold the step
-          # until the job timeout instead of reaching give_up.
-          wait_for_status() {
-            for _ in $(seq 1 60); do
-              curl -fsS -m 5 http://127.0.0.1:7777/api/status >/dev/null 2>&1 && return 0
-              sleep 2
-            done
-            return 1
-          }
-
-          docker run -d --name jinn-smoke --init -p 127.0.0.1:7777:7777 jinn:ci
-          wait_for_status || give_up "gateway never answered on /api/status"
-
-          # A healthy public status route does not prove the auth boundary survived the
-          # image/entrypoint wiring. A protected read must reject a request with no token.
-          protected_status=$(curl -sS -m 10 -o /tmp/jinn-protected.json -w '%{http_code}' \
-            http://127.0.0.1:7777/api/sessions) \
-            || give_up "the protected-route auth probe could not reach the gateway"
-          [ "$protected_status" = "401" ] \
-            || give_up "unauthenticated /api/sessions returned HTTP $protected_status instead of 401"
-
-          # The dashboard, not just the API: a build filtered to the jinn package ships a
-          # gateway with no UI, and /api/status answers 200 either way. `id="root"` is the
-          # marker dashboardIsReady() uses in gateway/lifecycle.ts. Not piped into grep —
-          # `grep -q` closes the pipe on the first match and curl then fails under pipefail.
-          curl -fsS -m 10 http://127.0.0.1:7777/ -o /tmp/jinn-index.html \
-            || give_up "the gateway did not serve / at all"
-          grep -q 'id="root"' /tmp/jinn-index.html \
-            || give_up "the gateway served no dashboard at / (image built without dist/web?)"
-
-          # The HEALTHCHECK is the only signal for a gateway that is alive but not serving,
-          # so a broken probe is a silent loss of it. `|| true` because docker inspect exits
-          # non-zero on a container that has gone, which under `bash -e` would kill the step
-          # before give_up() dumps the logs.
-          health=
-          for _ in $(seq 1 45); do
-            health=$(docker inspect --format '{{.State.Health.Status}}' jinn-smoke 2>/dev/null || true)
-            [ "$health" = "healthy" ] && break
-            sleep 2
-          done
-          [ "$health" = "healthy" ] || give_up "HEALTHCHECK never reported healthy (last: ${health:-none})"
-
-          # A leftover gateway.pid names a number the next container has recycled, and it
-          # answers kill(pid, 0) as an unrelated process — `jinn start` then detaches and
-          # exits PID 1 into a restart loop. The boot has to clear it.
-          docker exec jinn-smoke sh -c 'echo 1 > /home/node/.jinn/gateway.pid'
-          docker restart jinn-smoke >/dev/null
-          wait_for_status || give_up "gateway did not come back after a restart with a stale gateway.pid"
-
-          docker logs jinn-smoke
-          docker rm -f jinn-smoke >/dev/null
+      # The checks live in scripts/docker-smoke.sh rather than inline here because the
+      # GHCR publish workflow runs the same ones — it is the only place linux/arm64 is
+      # ever built, and two copies of this would drift apart exactly where nobody looks.
+      - name: Native addons, gateway boot, auth boundary and health
+        run: scripts/docker-smoke.sh jinn:ci
