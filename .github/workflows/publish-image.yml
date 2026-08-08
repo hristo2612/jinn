@@ -1,0 +1,320 @@
+name: Publish container image
+
+# Publishes ghcr.io/<owner>/jinn as one multi-architecture image (linux/amd64,
+# linux/arm64), so Jinn can be run from a tag instead of a checkout.
+#
+# Nothing in this repository pulls it yet — docker-compose.yml still builds from the
+# source tree. The publisher lands first deliberately: a package that does not exist is
+# not something a README can tell people to pull. Pointing the default at it is a
+# follow-up, gated on all three of:
+#
+#   1. A v* tag drives this workflow to completion.
+#   2. The GHCR package is made public. The first push creates it as PRIVATE, and this
+#      workflow gives no hint of that — it pushes successfully either way. Packages →
+#      jinn → Package settings: set the visibility to public, or link it to this
+#      repository so it inherits repository visibility. Until then `docker pull` fails
+#      with "denied" for everyone but the owner.
+#   3. An anonymous `docker pull` of both architectures is verified to work.
+
+on:
+  push:
+    tags:
+      - "v*"
+  # Deliberately not on pushes to main: a double-architecture build is ~20 runner-minutes
+  # per merge, and `latest` tracking releases is what "pin the version" wants. Dispatch
+  # covers rebuilding a tag (the GitHub UI's ref picker accepts tags) and dry runs from a
+  # branch, which publish only `sha-<short>` — no branch name, and never `latest`.
+  workflow_dispatch:
+
+# A version tag moves `latest`, and two runs on the same ref must not race to write the
+# manifest list. Not cancel-in-progress: a half-published multi-arch tag is worse than a
+# duplicated build.
+concurrency:
+  group: image-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # Cheap checks before ~20 minutes of build: a tag that disagrees with the package
+  # version would publish an image whose name lies about what is inside it.
+  verify:
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.identity.outputs.image }}
+    steps:
+      - name: Check out the source
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve the image reference and release identity
+        id: identity
+        env:
+          RELEASE_REF: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # GHCR rejects uppercase path segments, and github.repository preserves the
+          # owner's casing — so a fork under a mixed-case owner needs this to publish.
+          IMAGE="ghcr.io/$(printf '%s' "$REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "Publishing to $IMAGE"
+
+          # Only a tag claims to be a version. A dispatch from a branch has none, and the
+          # tag list in `merge` gives it no `latest`, so there is nothing to agree with.
+          if [[ "$REF_TYPE" != "tag" ]]; then
+            echo "Ref '$RELEASE_REF' is not a tag; publishing an unversioned image."
+            exit 0
+          fi
+
+          PACKAGE_VERSION="$(node -p "require('./packages/jinn/package.json').version")"
+          if [[ "$RELEASE_REF" != "v${PACKAGE_VERSION}" ]]; then
+            echo "Refusing publish: tag '$RELEASE_REF' does not match package version '$PACKAGE_VERSION'." >&2
+            exit 1
+          fi
+
+          if ! git merge-base --is-ancestor "${RELEASE_REF}^{commit}" refs/remotes/origin/main; then
+            echo "Refusing publish: tagged commit is not part of origin/main." >&2
+            exit 1
+          fi
+
+  build:
+    needs: [verify]
+    runs-on: ${{ matrix.runner }}
+    # The build compiles better-sqlite3 and node-pty and builds the dashboard, then the
+    # smoke test boots a gateway on an empty volume.
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      # One architecture failing must not cancel the other's logs — reading the arm64
+      # failure is the point, and no tag moves either way because `merge` fails closed on
+      # a missing digest. The surviving leg does leave its blob in GHCR as an untagged
+      # package version; nothing resolves to it, and GHCR's untagged-version cleanup or a
+      # manual delete reclaims it.
+      fail-fast: false
+      matrix:
+        include:
+          # A native runner per architecture rather than QEMU on one: this image compiles
+          # native addons and runs a full pnpm build, and emulating that for arm64 turns a
+          # ~10 minute build into a job-timeout risk. arm64 matters because Apple Silicon
+          # is where most contributors run Docker Desktop.
+          - platform: linux/amd64
+            slug: linux-amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            slug: linux-arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Check out the source
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Built into the local daemon first so the image can actually be run. No `platforms:`
+      # — the default is the runner's own, which is this leg's architecture, so the push
+      # step below hits this build's cache in the same Buildx builder instead of repeating
+      # it. No `cache-to: type=gha` either: this image would fill a large share of the
+      # repository's 10 GB Actions cache and evict the pnpm caches every PR depends on,
+      # to spare a cold build that happens once per release.
+      - name: Build for the smoke test
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: jinn:smoke
+
+      # CI's docker job already asks this of amd64 on every push to main. What it adds here
+      # is arm64, the architecture nothing else ever builds — and a published `latest` that
+      # cannot spawn a session is worse than a release that failed loudly.
+      - name: Verify the image boots
+        run: scripts/docker-smoke.sh jinn:smoke
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Collect image labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ needs.verify.outputs.image }}
+
+      # Pushed by digest and deliberately untagged: the manifest list carrying the tags is
+      # assembled once, in `merge`, from both architectures. Tagging here would publish a
+      # single-architecture `latest` twice and whichever leg finished last would win.
+      #
+      # provenance: false keeps each push a plain image manifest. Provenance arrives as a
+      # separate manifest hanging off the digest, and `buildx imagetools create` copies
+      # only what the digest itself names — so it would be dropped from the published tag
+      # while the build log claimed it was produced.
+      - name: Build and push by digest
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: false
+          outputs: type=image,name=${{ needs.verify.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export the digest
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/digests
+          # The bare digest is the filename; `merge` reassembles the full reference from it.
+          touch "/tmp/digests/${DIGEST#sha256:}"
+
+      - name: Upload the digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.slug }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: [verify, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download the architecture digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Compute the published tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ needs.verify.outputs.image }}
+          # `latest` comes from the default flavor (latest=auto), which emits it only for a
+          # non-prerelease semver tag — so a v1.0.0-rc.1 does not move it, and neither does
+          # a dispatch from a branch, which reaches neither semver rule and publishes only
+          # `sha-<short>`. A prerelease also collapses {{major}}.{{minor}} into {{version}},
+          # so it cannot take over `0.29` either.
+          #
+          # No `type=ref,event=branch`: on a dispatch from a branch that emits the branch
+          # name as a tag, so a dry run would publish a mutable `main` that reads like a
+          # release channel and that no doc describes. SHA-only is the branch contract.
+          #
+          # Every tag here is an alias, including these two and `sha-<short>`: a rerun or a
+          # re-dispatch of the same ref repoints them, and the Dockerfile's base image
+          # (`node:24-bookworm-slim`) and apt inputs are tag-resolved, so the same source
+          # commit can build to a different digest. A fixed artifact is a digest — the run
+          # summary prints the one to pin.
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=short
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create the multi-architecture manifest list
+        env:
+          IMAGE: ${{ needs.verify.outputs.image }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag_args=()
+          while IFS= read -r tag; do
+            [[ -n "$tag" ]] && tag_args+=(--tag "$tag")
+          done <<< "$TAGS"
+          [[ ${#tag_args[@]} -gt 0 ]] || { echo "no tags resolved for this ref" >&2; exit 1; }
+
+          source_args=()
+          for digest in /tmp/digests/*; do
+            source_args+=("${IMAGE}@sha256:$(basename "$digest")")
+          done
+          # Fails closed. With one leg missing this would otherwise publish a manifest list
+          # that quietly excludes an architecture, and users on it get "no matching
+          # manifest" from a tag that looks published.
+          [[ ${#source_args[@]} -eq 2 ]] \
+            || { echo "expected 2 architecture digests, got ${#source_args[@]}" >&2; exit 1; }
+
+          docker buildx imagetools create "${tag_args[@]}" "${source_args[@]}"
+
+      - name: Verify the published tag resolves for both architectures
+        id: published
+        env:
+          IMAGE: ${{ needs.verify.outputs.image }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Any one of them: `imagetools create` pointed every tag at the same manifest list.
+          probe="$(head -n 1 <<< "$TAGS")"
+          docker buildx imagetools inspect "$probe"
+
+          # Read back from the registry rather than trusting the create: a tag is what users
+          # pull, and an index missing an architecture is the one failure this job can
+          # introduce on its own.
+          manifest="$(docker buildx imagetools inspect --raw "$probe")"
+          for arch in amd64 arm64; do
+            printf '%s' "$manifest" \
+              | jq -e --arg arch "$arch" '.manifests[] | select(.platform.architecture == $arch)' >/dev/null \
+              || { echo "published manifest list is missing linux/$arch" >&2; exit 1; }
+          done
+
+          # Every tag this workflow writes is an alias a rerun can repoint. The manifest
+          # list's digest is not, so it is what a caller pins when the artifact has to stay
+          # byte-for-byte fixed — the summary below hands it over rather than making anyone
+          # go and read it back out of the registry.
+          digest="$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$probe")"
+          [[ "$digest" == sha256:* ]] \
+            || { echo "could not read the manifest list digest (got '$digest')" >&2; exit 1; }
+          echo "pinned=${IMAGE}@${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Summarise
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          PINNED: ${{ steps.published.outputs.pinned }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "### Published"
+            echo
+            while IFS= read -r tag; do
+              [[ -n "$tag" ]] && echo "- \`$tag\` (linux/amd64, linux/arm64)"
+            done <<< "$TAGS"
+            echo
+            echo "Those are aliases, not fixed artifacts: re-running this workflow on the"
+            echo "same ref repoints them, and the image resolves \`node:24-bookworm-slim\`"
+            echo "and its apt inputs by tag, so the same commit can rebuild to a different"
+            echo "digest. Pin this reference where a build must not change underneath you:"
+            echo
+            echo '```'
+            echo "$PINNED"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
