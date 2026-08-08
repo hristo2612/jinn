@@ -103,6 +103,24 @@ async function advance(ms: number): Promise<void> {
   await new Promise<void>((resolve) => realSetImmediate(resolve));
 }
 
+// Virtual time is free; the reads waiting on it are not. transcriptTail() awaits three
+// real fs operations per poll (fsp.stat → fsp.open → fh.read), and each advance() yields
+// exactly one real macrotask turn — so a fixed count of advances can run out with that
+// chain still in flight. The 200ms poll interval then never fires again and the turn hangs
+// until vitest's 30s timeout rather than failing an assertion, which is what a loaded
+// windows-latest runner produced. Step until the turn settles instead of guessing a budget.
+async function settleTurn<T>(turn: Promise<T>, stepMs = 100, maxSteps = 40): Promise<T> {
+  let settled = false;
+  const tracked = turn.then(
+    (value) => { settled = true; return value; },
+    (error: unknown) => { settled = true; throw error; },
+  );
+  tracked.catch(() => { /* re-thrown by the await below */ });
+  for (let step = 0; step < maxSteps && !settled; step++) await advance(stepMs);
+  if (!settled) throw new Error(`turn did not settle within ${maxSteps * stepMs}ms of virtual time`);
+  return tracked;
+}
+
 async function reachFirstSubmit(proc: FakePty): Promise<void> {
   proc.emitData("ready");
   await advance(1_500);
@@ -139,10 +157,8 @@ describe("AntigravityEngine cold-start retry", () => {
     expect(proc.writes).toHaveLength(2);
 
     createAnswer("conversation-a", "ready");
-    for (let i = 0; i < 4; i++) await advance(500);
-    await advance(1_500);
 
-    await expect(resultPromise).resolves.toMatchObject({
+    await expect(settleTurn(resultPromise)).resolves.toMatchObject({
       sessionId: "conversation-a",
       result: "ready",
     });
