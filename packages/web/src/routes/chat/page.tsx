@@ -47,6 +47,7 @@ const FileView = lazy(() =>
 )
 import { FileOpenContext } from '@/components/chat/file-open-context'
 import { ShortcutOverlay } from '@/components/chat/shortcut-overlay'
+import { rememberScrollTop } from '@/hooks/stick-geometry'
 import { useChatTabs, type ChatTab } from '@/hooks/use-chat-tabs'
 import { invalidateLiveSessionSnapshot, prefetchLiveSessionSnapshot } from '@/hooks/use-live-session'
 import { useKeyboardShortcuts, type ShortcutDef } from '@/hooks/use-keyboard-shortcuts'
@@ -166,7 +167,6 @@ function ChatPage() {
   const sidebarOrderRef = useRef<SidebarOrder>({ sessionIds: [], employeeNames: [], employeeSessionMap: {} })
   const handleOrderComputed = useCallback((order: SidebarOrder) => { sidebarOrderRef.current = order }, [])
 
-
   // Close more menu on outside click. The moreMenu JSX is shared between the
   // desktop tab bar and the mobile header (rendered twice in the DOM, one
   // hidden via CSS), so a single ref points to only one copy — mobile taps
@@ -277,7 +277,7 @@ function ChatPage() {
     (id: string, opts?: { navigateMobile?: boolean; replace?: boolean; from?: ThreadOrigin; system?: boolean }) => {
       const currentId = selectedIdRef.current
       const currentScroller = document.querySelector<HTMLElement>('.chat-messages-scroll') // display-toggled away on a phone, where it reports scrollTop 0
-      if (currentId && currentScroller?.clientHeight) sessionScrollRef.current.set(currentId, currentScroller.scrollTop)
+      if (currentId && currentScroller?.clientHeight) rememberScrollTop(sessionScrollRef.current, currentId, currentScroller)
       newChatIntentRef.current = false; setSystemPrimedId(opts?.system ? id : null); releaseMobilePicker()
       // On mobile, opening a session pushes from the list into the thread, and the
       // pane arrives with it (see revealSelection). The one exception is the
@@ -552,7 +552,7 @@ function ChatPage() {
     const scroller = document.querySelector<HTMLElement>(
       `[data-chat-pane-session="${escapedSessionId}"] .chat-messages-scroll`,
     )
-    if (currentId && scroller?.clientHeight) sessionScrollRef.current.set(currentId, scroller.scrollTop)
+    if (currentId && scroller?.clientHeight) rememberScrollTop(sessionScrollRef.current, currentId, scroller)
     previewSourceRef.current = {
       sessionId: currentId,
       messageId: peek.messageId,
