@@ -11,56 +11,50 @@ checkout with nothing outside the repository.
 
 ---
 
-## How to reproduce this, from a clean checkout
+## How to run this, from a clean checkout
 
-Every earlier chat-scroll QA note pointed at a sandbox helper that lives in the operator's
-private `~/.jinn` workspace. That path is unavailable to anyone else, so the run could not be
-repeated. The steps below use only files in this repository.
-
-```sh
-REPO=$(git rev-parse --show-toplevel)
-SBX=/tmp/jinn-sandbox-ici1422        # basename matches `pnpm reap`'s throwaway pattern
-PORT=7793                            # never 7777 (production), never 7788 (operator demo)
-
-cd "$REPO" && pnpm install && pnpm build
-
-# 1. Isolated home. </dev/null keeps setup non-interactive; it only prompts on a TTY.
-JINN_HOME="$SBX" JINN_NO_OPEN=1 node packages/jinn/dist/bin/jinn.js setup </dev/null
-```
-
-**Rewrite the port in the file before starting anything.** A fresh home ships
-`gateway.port: 7777`, and the start/stop lifecycle kills whatever owns the *configured* port —
-passing `-p` alone is not enough to keep production safe. In `$SBX/config.yaml` set
-`gateway.port: 7793` and `gateway.authRequired: false`, then confirm it:
+Every earlier chat-scroll QA note pointed at a sandbox helper in the operator's private
+workspace, and the hand-typed replacement could not be retyped without hitting a wrong Node,
+a foreground `start`, or an inherited `JINN_PORT`. One script now owns the whole sandbox, so
+there is nothing to retype:
 
 ```sh
-grep -nE '^\s+(port|host|authRequired):' "$SBX/config.yaml"   # must show 7793, not 7777
-
-# 2. Seed the long transcript (220 messages ≈ 220 groups, well past VIRTUALIZE_THRESHOLD = 50).
-#    The gateway must NOT be running: the fixture opens the sqlite file directly.
-pnpm exec node scripts/device-scroll-fixture.mjs --home "$SBX"
+pnpm build                      # the script runs the built CLI, not the sources
+scripts/verify-chat-scroll.sh   # or: JINN_VERIFY_PORT=8065 scripts/verify-chat-scroll.sh
 ```
 
-The fixture is built for testing fling physics on a real phone, so it rewrites `gateway.host`
-to `0.0.0.0`, and a non-loopback bind always forces auth on. For a loopback-only review, set
-`gateway.host: "127.0.0.1"` back afterwards.
+It scrubs the caller's `JINN_*` so an inherited instance cannot aim the run at production,
+resolves the Node this checkout's `better-sqlite3` is built for, creates a throwaway home
+under `mktemp`, rewrites `gateway.port` in the sandbox's own `config.yaml` and refuses to
+start if that resolves to 7777 or 7788, seeds a 220-message transcript, starts the daemon in
+the background, waits for it to answer, and prints the URL and a pairing code. It holds the
+sandbox until you press Ctrl-C, then stops the daemon and deletes the home on every exit
+path. `JINN_VERIFY_HOLD_SECONDS=0` tears down as soon as the sandbox is proven up, which is
+the quick way to check the lifecycle itself.
 
-```sh
-# 3. Start, then pair the browser (device trust is a separate gate from authRequired).
-JINN_HOME="$SBX" JINN_NO_OPEN=1 node packages/jinn/dist/bin/jinn.js start -p "$PORT"
-JINN_HOME="$SBX" node packages/jinn/dist/bin/jinn.js pair    # prints a single-use code
+Open the printed `/chat?session=device-scroll-check` URL, enter the pairing code, and set
+localStorage `jinn-onboarded` to `true` to skip the first-run wizard. Drive the page with
+`agent-browser` on a profile of its own and delete that profile at the end. Do not use
+`pnpm dev`: the Vite dev server proxies its API and HMR socket back to the gateway port it is
+given, which reaches straight into production.
 
-# 4. Open http://127.0.0.1:7793/chat?session=device-scroll-check and enter the code.
-#    localStorage `jinn-onboarded = true` skips the first-run wizard on a fresh home.
+## The checks
 
-# 5. Teardown — pass or fail.
-JINN_HOME="$SBX" node packages/jinn/dist/bin/jinn.js stop -p "$PORT"
-rm -rf "$SBX"
-```
+Run each at 1440x900 and 390x844, in light and dark.
 
-Drive the page with `agent-browser` on a profile of its own, and delete that profile at the end.
-Do not use `pnpm dev`: the Vite dev server proxies its API and HMR socket back to the gateway
-port it is given, which reaches straight into production.
+| | Check | Pass |
+| --- | --- | --- |
+| A | Open the URL cold | The transcript is at the bottom, not the top, and the composer is clear. |
+| B | Make the stale-chat notice appear and leave (lower `sessions.staleChat.tokenThreshold` in the sandbox config and age the session) | The transcript stays windowed and stays pinned to the bottom through both transitions. |
+| C | Send a message from the bottom | The view stays at the bottom. It does not jump away and come back. |
+| D | Scroll up a little from the exact bottom | The first drag moves smoothly. Nothing snaps back or stutters at the start. |
+| E | With the reader scrolled up, let new content arrive | The reader stays where they put it, and "Jump to latest" appears; pressing it returns to the bottom. |
+| F | On 390x844, drag the transcript and release | It slides and settles. It does not stick to the finger or freeze on release. |
+
+F is desktop touch emulation: the events are dispatched but the platform fling physics are
+not, so the feel of a real fling stays UNVERIFIED-BY-HAND. What the emulation does cover is
+the write gate — that a touch in progress is never overwritten — and the DOM test for the
+touch phase covers the same rule.
 
 ---
 

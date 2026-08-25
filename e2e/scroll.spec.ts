@@ -5,10 +5,10 @@ import { test, expect, type Page } from '@playwright/test'
 //
 // Never point this at the live gateway: it owns port 7777, and the Vite dev
 // server proxies its API and HMR socket straight back to whatever gateway port
-// it is given. Stand up a throwaway instance instead and drive that — the full
-// recipe, runnable from a bare checkout, is in docs/qa/ICI-1422-chat-scroll-qa.md.
-// In short: JINN_HOME=<tmp> jinn setup, rewrite gateway.port away from its 7777
-// default, seed with scripts/device-scroll-fixture.mjs, then start on that port.
+// it is given. Stand up a throwaway instance instead and drive that:
+// scripts/verify-chat-scroll.sh builds one from this checkout, prints its URL and
+// pairing code, and destroys it on exit. docs/qa/ICI-1422-chat-scroll-qa.md is the
+// browser pass that runs against it.
 // Run:  SCROLL_E2E_URL=http://localhost:<sandbox-port> SCROLL_E2E_SESSION=<id> pnpm test:e2e scroll
 // and stop the gateway and delete the home afterwards, pass or fail.
 // Falls back to the e2e baseURL (:7779) and skips gracefully if no thread is loaded.
