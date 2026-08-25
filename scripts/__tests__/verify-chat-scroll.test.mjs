@@ -11,26 +11,50 @@ const script = fs.readFileSync(SCRIPT_PATH, "utf8")
 const UNSET = /^unset (JINN_(?:[A-Z_]+ )*JINN_[A-Z_]+)$/m
 
 /**
- * A Jinn session exports JINN_HOME, JINN_PORT, JINN_INSTANCE and friends pointing at the
- * operator's live gateway. resolveJinnHome() honours JINN_HOME over HOME and
- * applyGatewayEnvOverrides() honours JINN_PORT over the sandbox's own config.yaml, so an
- * inherited environment aims setup/start/pair/stop at production. A verification run
- * reached the operator's gateway that way once; the script has to scrub for itself.
+ * The gateway's own list of the variables that name an instance, read from source so this
+ * test tracks it. sandbox-env.ts is TypeScript, so the names are lifted from the literal
+ * rather than imported.
  */
-test("the caller's instance is scrubbed out of the environment", () => {
+function instanceIdentityKeys() {
+  const source = fs.readFileSync(path.resolve("packages/jinn/src/shared/sandbox-env.ts"), "utf8")
+  const block = source.match(/JINN_INSTANCE_IDENTITY_ENV_KEYS = \[([^\]]+)\]/)
+  assert.ok(block, "expected JINN_INSTANCE_IDENTITY_ENV_KEYS in sandbox-env.ts")
+  const keys = [...block[1].matchAll(/"(JINN_[A-Z_]+)"/g)].map((match) => match[1])
+  assert.ok(keys.length >= 8, `expected the identity list, got ${keys.length} entries`)
+  return keys
+}
+
+/**
+ * A Jinn session exports the variables that name WHICH instance a process belongs to.
+ * resolveJinnHome() honours JINN_HOME over HOME and applyGatewayEnvOverrides() honours
+ * JINN_PORT over the sandbox's own config.yaml, so an inherited environment aims
+ * setup/start/pair/stop at production; a verification run reached the operator's gateway
+ * that way once. The set is read from sandbox-env.ts rather than copied, because a scrub
+ * that lags behind the gateway's own retargeting list is the same bug with a smaller
+ * blast radius — that is how JINN_HOME_IDENTITY, JINN_SESSION_CAPABILITY and
+ * JINN_TAKE_PORT survived the first version of this script.
+ */
+test("every instance-identity variable the gateway retargets is scrubbed", () => {
   const unset = script.match(UNSET)
   assert.ok(unset, "expected a top-level `unset JINN_...` line")
   const scrubbed = new Set(unset[1].split(" "))
-  for (const key of [
-    "JINN_HOME",
-    "JINN_PORT",
-    "JINN_HOST",
-    "JINN_INSTANCE",
-    "JINN_GATEWAY_URL",
-    "JINN_GATEWAY_TOKEN",
-    "JINN_SESSION_ID",
-  ]) {
+  for (const key of instanceIdentityKeys()) {
     assert.ok(scrubbed.has(key), `expected ${key} to be unset`)
+  }
+})
+
+/** Sourcing the scrub must actually clear them, not merely name them. */
+test("sourcing the scrub clears an inherited instance out of the shell", () => {
+  const keys = instanceIdentityKeys()
+  const prelude = script.slice(0, script.indexOf("\nREPO="))
+  const probe = `${prelude}\nfor key in ${keys.join(" ")}; do echo "$key=\${!key-<unset>}"; done`
+  const run = spawnSync("bash", ["-c", probe], {
+    env: { ...process.env, ...Object.fromEntries(keys.map((key) => [key, "sentinel"])) },
+    encoding: "utf8",
+  })
+  assert.equal(run.status, 0, run.stderr)
+  for (const key of keys) {
+    assert.match(run.stdout, new RegExp(`^${key}=<unset>$`, "m"), `${key} survived the scrub`)
   }
 })
 
@@ -60,15 +84,70 @@ test("the requested port stays out of the operator's range", () => {
 /**
  * The other half of the scrub: the sandbox is bound by its own config.yaml, and a fresh
  * home ships gateway.port 7777. The lifecycle kills whatever owns the CONFIGURED port, so
- * the file is what has to be right — reading it back before the daemon starts is the only
- * proof that it is.
+ * the file is what has to be right.
+ *
+ * The refusal is aimed at a config here rather than inferred from the script, because a
+ * guard that only ever sees a port the same script just wrote is a guard nobody can watch
+ * fail. device-scroll-fixture.mjs refuses a protected home too, but without naming a way
+ * out — so the ordering below matters as much as the refusal.
  */
-test("the sandbox's own configured port is asserted before the daemon starts", () => {
-  const assertion = script.indexOf("CONFIGURED_PORT")
-  assert.ok(assertion >= 0, "expected the config.yaml port to be read back")
-  assert.match(script, /if \[\[ "\$CONFIGURED_PORT" == "7777" \|\| "\$CONFIGURED_PORT" == "7788" \]\]/)
-  assert.match(script, /if \[\[ "\$CONFIGURED_PORT" != "\$PORT" \]\]/)
-  assert.ok(assertion < script.indexOf('"$JINN_CLI" start'), "must precede start")
+function writeConfig(dir, port) {
+  const file = path.join(dir, "config.yaml")
+  fs.writeFileSync(file, `gateway:\n  port: ${port}\n  host: "127.0.0.1"\n`)
+  return file
+}
+
+for (const port of [7777, 7788]) {
+  test(`a sandbox config on ${port} is refused with a message naming the fix`, () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), `sandbox-port-${port}.`))
+    try {
+      const run = spawnSync("node", ["scripts/assert-sandbox-port.mjs", writeConfig(dir, port), "8062"], {
+        cwd: path.resolve("."),
+        encoding: "utf8",
+      })
+      assert.notEqual(run.status, 0, "expected a non-zero exit")
+      assert.match(run.stderr, new RegExp(`gateway\\.port ${port}`))
+      assert.match(run.stderr, /Fix: set gateway\.port .* to a free port at or above 8060/)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+}
+
+test("a sandbox config on the port the run reserved is accepted", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sandbox-port-ok."))
+  try {
+    const run = spawnSync("node", ["scripts/assert-sandbox-port.mjs", writeConfig(dir, 8062), "8062"], {
+      cwd: path.resolve("."),
+      encoding: "utf8",
+    })
+    assert.equal(run.status, 0, run.stderr)
+    assert.match(run.stdout, /declares gateway port 8062/)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("a config that drifted off the reserved port is refused too", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sandbox-port-drift."))
+  try {
+    const run = spawnSync("node", ["scripts/assert-sandbox-port.mjs", writeConfig(dir, 8099), "8062"], {
+      cwd: path.resolve("."),
+      encoding: "utf8",
+    })
+    assert.notEqual(run.status, 0, "expected a non-zero exit")
+    assert.match(run.stderr, /expected 8062/)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("the configured port is asserted before the fixture and before the daemon", () => {
+  const guard = script.indexOf('"$REPO/scripts/assert-sandbox-port.mjs"')
+  assert.ok(guard >= 0, "expected the config guard to be invoked")
+  assert.ok(guard < script.indexOf('"$REPO/scripts/device-scroll-fixture.mjs"'), "must precede the fixture")
+  const lastGuard = script.lastIndexOf('"$REPO/scripts/assert-sandbox-port.mjs"')
+  assert.ok(lastGuard < script.indexOf('"$JINN_CLI" start'), "must precede start")
 })
 
 /**

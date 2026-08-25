@@ -5,16 +5,22 @@ set -euo pipefail
 # drive the chat-scroll QA against. Everything it needs is in this repository, and
 # everything it creates is removed on exit, pass or fail.
 #
-# The caller's shell usually carries its own live instance: a Jinn session exports
-# JINN_HOME, JINN_PORT, JINN_HOST, JINN_INSTANCE and the gateway URL/token/session id.
-# Those are not inert here. resolveJinnHome() (packages/jinn/src/shared/home.ts) returns
-# $JINN_HOME outright, and applyGatewayEnvOverrides() (packages/jinn/src/shared/config.ts)
-# then replaces whatever port the sandbox's own config.yaml declares with $JINN_PORT.
-# Inherited, they aim this script's setup/start/pair/stop cycle at the operator's gateway
-# instead of the throwaway sandbox — which is how a verification run reached production
-# once already. Scrub them before anything reads them. The script's own inputs, the
+# The caller's shell usually carries its own live instance: a Jinn session exports the
+# variables that name WHICH instance a process belongs to. Those are not inert here.
+# resolveJinnHome() (packages/jinn/src/shared/home.ts) returns $JINN_HOME outright, and
+# applyGatewayEnvOverrides() (packages/jinn/src/shared/config.ts) then replaces whatever
+# port the sandbox's own config.yaml declares with $JINN_PORT. Inherited, they aim this
+# script's setup/start/pair/stop cycle at the operator's gateway instead of the throwaway
+# sandbox — which is how a verification run reached production once already.
+#
+# The list below is JINN_INSTANCE_IDENTITY_ENV_KEYS from
+# packages/jinn/src/shared/sandbox-env.ts, which is what the gateway itself strips when it
+# retargets a process at another instance. Scrubbing a subset is the same bug with a
+# smaller blast radius: JINN_HOME_IDENTITY still names the caller's home to the lifecycle,
+# JINN_SESSION_CAPABILITY still carries its session's grant, and JINN_TAKE_PORT still
+# authorises taking a port away from whoever owns it. The script's own inputs, the
 # JINN_VERIFY_* knobs, are deliberately kept.
-unset JINN_HOME JINN_PORT JINN_HOST JINN_INSTANCE JINN_GATEWAY_URL JINN_GATEWAY_TOKEN JINN_SESSION_ID
+unset JINN_HOME JINN_HOME_IDENTITY JINN_INSTANCE JINN_HOST JINN_PORT JINN_GATEWAY_URL JINN_GATEWAY_TOKEN JINN_SESSION_ID JINN_SESSION_CAPABILITY JINN_TAKE_PORT
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 PORT="${JINN_VERIFY_PORT:-8062}"
@@ -191,6 +197,10 @@ env HOME="$HOST_HOME" JINN_HOME="$SANDBOX_HOME" JINN_NO_OPEN=1 "$NODE_BIN" "$JIN
 # the CONFIGURED port — so the file has to be rewritten before anything reads it, not
 # merely overridden with -p at start.
 patch_gateway_config "{\"port\": $PORT, \"authRequired\": false}"
+# Before the fixture, not after: device-scroll-fixture.mjs refuses a protected home too,
+# but it refuses without naming a way out, and whichever check runs first is the one the
+# reader is left holding.
+"$NODE_BIN" "$REPO/scripts/assert-sandbox-port.mjs" "$CONFIG_FILE" "$PORT"
 
 # Seeds the long transcript. The gateway must not be running: the fixture opens the
 # home's sqlite registry directly.
@@ -201,22 +211,9 @@ patch_gateway_config "{\"port\": $PORT, \"authRequired\": false}"
 # back on.
 patch_gateway_config '{"host": "127.0.0.1"}'
 
-CONFIGURED_PORT="$(SANDBOX_CONFIG="$CONFIG_FILE" JINN_VERIFY_REPO="$REPO" "$NODE_BIN" -e '
-const fs = require("node:fs")
-const { createRequire } = require("node:module")
-const YAML = createRequire(process.env.JINN_VERIFY_REPO + "/packages/jinn/package.json")("yaml")
-const port = YAML.parse(fs.readFileSync(process.env.SANDBOX_CONFIG, "utf8"))?.gateway?.port
-process.stdout.write(port === undefined || port === null ? "" : String(port))')"
-if [[ "$CONFIGURED_PORT" == "7777" || "$CONFIGURED_PORT" == "7788" ]]; then
-  echo "Sandbox config.yaml declares gateway port $CONFIGURED_PORT — 7777 is the production gateway and 7788 the operator's demo instance, and the lifecycle kills whatever owns the configured port." >&2
-  echo "Fix: set gateway.port in $CONFIG_FILE to a free port at or above 8060, or re-run with JINN_VERIFY_PORT set to one." >&2
-  exit 2
-fi
-if [[ "$CONFIGURED_PORT" != "$PORT" ]]; then
-  echo "Sandbox config.yaml declares gateway port ${CONFIGURED_PORT:-<none>}, expected $PORT" >&2
-  exit 2
-fi
-echo "Sandbox config.yaml declares gateway port $CONFIGURED_PORT before start"
+# Again on the state that actually binds: the host rewrite above round-tripped the file,
+# and this is the last moment before a daemon reads it.
+"$NODE_BIN" "$REPO/scripts/assert-sandbox-port.mjs" "$CONFIG_FILE" "$PORT"
 
 env HOME="$HOST_HOME" JINN_HOME="$SANDBOX_HOME" JINN_NO_OPEN=1 "$NODE_BIN" "$JINN_CLI" start --daemon -p "$PORT"
 GATEWAY_PID="$(cat "$SANDBOX_HOME/gateway.pid" 2>/dev/null || true)"
