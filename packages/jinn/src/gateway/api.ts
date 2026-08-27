@@ -219,6 +219,7 @@ import {
   type AttachmentActor,
 } from "../work-items/attachments.js";
 import { readWriteOrigin, writeDetail, WRITE_ORIGIN_HEADER } from "../work-items/origin.js";
+import { setWorkItemKept } from "../work-items/kept.js";
 import { authorizeActingAsOperator, resolveArmingDelegate, workItemActor, type WorkItemCaller } from "./work-item-arming.js";
 import { authorizeAgentWorkItemStatus, authorizeWorkItemOwnerManagerOrRoot, ownsWorkItem } from "./work-item-authority.js";
 import { fullWorkItemPayload, openWorkItemPayload, workItemPagePayload } from "./work-item-payload.js";
@@ -239,6 +240,7 @@ import { resolveApprovalDecisionAuthority, resolveRootApprovalTarget, type Appro
 import { approvalGateClass } from "./workflow-todo-binding.js";
 import { orgRegistry } from "./org-registry.js";
 import { TODO_DISPATCHER_NAME } from "./system-employees.js";
+import { isTodoCaptureSession } from "./todo-capture-contract.js";
 import { claimTodoForDelegation, claimTodoForDispatch } from "./todo-claim.js";
 import {
   hasSupportedTodoEditContentEncoding,
@@ -2365,15 +2367,28 @@ export async function handleApiRequest(
         const create = () => idempotencyKey
           ? createWorkItemIdempotent(input, idempotencyKey, labelRefs)
           : { item: createWorkItem(input), replayed: false };
-        const created = labelRefs === undefined
+        const captureDefault = caller.kind === "session" && isTodoCaptureSession(caller.session);
+        const writeCompanions = () => {
+          const result = create();
+          // A replay's labels and pin were written by the create it replays.
+          // Reapplying either could overwrite a later operator choice.
+          if (!result.replayed && labelRefs !== undefined) {
+            labels = setWorkItemLabels(result.item.id, labelRefs, workItemActor(caller), caller.origin);
+          }
+          if (!result.replayed && captureDefault && setWorkItemKept(initDb(), result.item.id, true)) {
+            appendWorkItemEvent({
+              workItemId: result.item.id,
+              kind: "kept_changed",
+              actor: workItemActor(caller),
+              detail: { kept: true, default: "quick-capture" },
+              versionEffect: "audit",
+            });
+          }
+          return result;
+        };
+        const created = labelRefs === undefined && !captureDefault
           ? create()
-          : initDb().transaction(() => {
-            const result = create();
-            // A replay's labels were written by the create it replays. Setting
-            // them again would rewrite a set the Todo may have had edited since.
-            if (!result.replayed) labels = setWorkItemLabels(result.item.id, labelRefs, workItemActor(caller), caller.origin);
-            return result;
-          })();
+          : initDb().transaction(writeCompanions)();
         if (created.replayed) return json(res, { workItem: created.item, replayed: true }, 200);
         const activityReceiptId = persistTodoMutationActivity(req, context, created.item, "created");
         return json(res, withActivityReceipt({ workItem: created.item, ...(labels ? { labels } : {}) }, activityReceiptId), 201);

@@ -13,6 +13,11 @@ import { json, matchRoute, serverError, type ParsedRoute } from "./route-helpers
 import { resolveMessageAudiences } from "./speech-context.js";
 import { preflightSystemEmployee } from "./system-employee-spawn.js";
 import { TODO_SHAPER_NAME } from "./system-employees.js";
+import {
+  TODO_CAPTURE_ACTIONS,
+  TODO_CAPTURE_SESSION_KEY_PREFIX,
+  type TodoCaptureAction,
+} from "./todo-capture-contract.js";
 import { refreshTodoCapture } from "./todo-capture-facts.js";
 import { type TodoCaptureState } from "./todo-capture-stage.js";
 import { dispatchWebSessionRun } from "./web-session-dispatch.js";
@@ -22,12 +27,11 @@ import type { ApiContext } from "./api.js";
 /**
  * Quick capture: one rough sentence in, one shaping session out.
  *
- * The POST is the whole autonomous half of the feature — it spawns the Todo
- * Shaper on the operator's raw text and returns immediately. The GET answers
- * how far that capture has got, and answers it by DERIVING the stage from real
- * state (todo-capture-facts.ts reads it, todo-capture-stage.ts rules on it)
- * rather than reading a stage anyone wrote down. That is what makes a reload recover, and what makes it impossible for
- * the strip to show progress the system has not made.
+ * The POST is the whole compact-composer contract — it spawns the Todo Shaper
+ * on the operator's raw text and returns immediately. The optional GET answers
+ * how far an accepted capture later got by DERIVING the stage from real state
+ * (todo-capture-facts.ts reads it, todo-capture-stage.ts rules on it), rather
+ * than reading a stage anyone wrote down.
  *
  * The spawn deliberately follows the Todo Dispatcher route's recipe step for
  * step — org lookup, attachment check, engine check, createSession /
@@ -42,18 +46,23 @@ const CAPTURE_TEXT_MAX = 4_000;
  *  capture survives a restart exactly as long as its session does. */
 export interface TodoCaptureWire extends TodoCaptureState {}
 
-function capturePrompt(text: string): string {
+function capturePrompt(text: string, action: TodoCaptureAction): string {
+  const handoff = action === "shape"
+    ? "Shape only. Create or land the Todo, then stop without dispatching it."
+    : "Shape & Dispatch. Create or land the Todo, then dispatch a newly created Todo.";
   return [
-    "A capture was thrown at the Todos board. Shape it into one well-formed Todo, then hand it off.",
+    "A capture was thrown at the Todos board. Shape it into one well-formed Todo.",
+    handoff,
     "",
     "Capture:",
     text,
   ].join("\n");
 }
 
-/** Both halves of the honesty contract at once: the operator sees the reason in
- *  the strip, and the same sentence lands in the gateway log. A refusal that
- *  only ever existed in one HTTP response is not diagnosable after the fact. */
+/** Both halves of the honesty contract at once: the operator sees the POST
+ *  refusal beside the retryable composer, and the same sentence lands in the
+ *  gateway log. A refusal that only ever existed in one HTTP response is not
+ *  diagnosable after the fact. */
 function refuse(res: ServerResponse, status: number, error: string): void {
   logger.warn(`Quick capture refused (${status}): ${error}`);
   json(res, { error }, status);
@@ -63,10 +72,10 @@ function refuse(res: ServerResponse, status: number, error: string): void {
 async function readCapture(
   req: HttpRequest,
   res: ServerResponse,
-): Promise<{ text: string; speechDerived: boolean } | undefined> {
+): Promise<{ text: string; speechDerived: boolean; action: TodoCaptureAction } | undefined> {
   const parsed = await readJsonBody(req, res);
   if (!parsed.ok) return undefined;
-  const body = (parsed.body ?? {}) as { text?: unknown; speechDerived?: unknown };
+  const body = (parsed.body ?? {}) as { text?: unknown; speechDerived?: unknown; action?: unknown };
   const text = typeof body.text === "string" ? body.text.trim() : "";
   if (!text) {
     refuse(res, 400, "text is required — a capture with nothing in it has nothing to shape");
@@ -76,7 +85,12 @@ async function readCapture(
     refuse(res, 400, `text is ${text.length} characters; the cap is ${CAPTURE_TEXT_MAX}. Use the full Todo form for something this long.`);
     return undefined;
   }
-  return { text, speechDerived: body.speechDerived === true };
+  const action = body.action === undefined ? "shape-and-dispatch" : body.action;
+  if (!TODO_CAPTURE_ACTIONS.some((candidate) => candidate === action)) {
+    refuse(res, 400, "action must be either shape or shape-and-dispatch");
+    return undefined;
+  }
+  return { text, speechDerived: body.speechDerived === true, action: action as TodoCaptureAction };
 }
 
 /** The Shaper and a live engine for it, or a refusal already written. */
@@ -110,18 +124,18 @@ function readyShaper(
 async function startCapture(req: HttpRequest, res: ServerResponse, context: ApiContext): Promise<void> {
   const capture = await readCapture(req, res);
   if (!capture) return;
-  const { text, speechDerived } = capture;
+  const { text, speechDerived, action } = capture;
 
   const config = context.getConfig();
   const ready = readyShaper(res, context, config);
   if (!ready) return;
   const { shaper, engine } = ready;
 
-  const prompt = capturePrompt(text);
+  const prompt = capturePrompt(text, action);
   // A voice capture is a transcription and may be misheard. The Shaper is told
   // so on the engine side only; the operator's own words are what gets stored.
   const { visible, engine: enginePrompt } = resolveMessageAudiences(prompt, speechDerived);
-  const sessionKey = `todo-shaper:${crypto.randomUUID()}`;
+  const sessionKey = `${TODO_CAPTURE_SESSION_KEY_PREFIX}${crypto.randomUUID()}`;
   const session = createSession({
     engine: shaper.engine,
     source: "web",
