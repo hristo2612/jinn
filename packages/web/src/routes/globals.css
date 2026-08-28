@@ -310,6 +310,9 @@
      written out twice before this token existed and the two copies disagreed;
      one of them parked a third of the status bar's controls behind the bar. */
   --tab-bar-height: 56px;
+  /* The FAB's disc. Declared once so the button's box and the scrollport
+     reserve that keeps content out from under it cannot drift apart. */
+  --fab-size: 56px;
   /* Height the on-screen keyboard obscures, published by the platform viewport
      adapter. Declared here so the variable resolves before
      that runs and in browsers without visualViewport; compose it the same way,

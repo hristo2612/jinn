@@ -87,11 +87,17 @@ describe("PageScaffold", () => {
     }
   })
 
-  it("below-lg bottom padding derives from --tab-bar-height with no 55/56px literal", () => {
+  // With the tab bar up the column already clears it, so the pad reserves only
+  // what actually floats over the scrollport: the disc and its gutter. The
+  // safe area comes back only on a pushed page, where the column owns the edge.
+  it("below-lg bottom padding reserves the FAB, not the tab bar, with no 55/56px literal", () => {
     const pad = scaffoldBottomPadding({ hasPrimaryAction: true, hideMobileTabBar: false })
-    expect(pad).toContain("--tab-bar-height")
+    expect(pad).not.toContain("--tab-bar-height")
+    expect(pad).toContain("var(--fab-size)")
     expect(pad).not.toMatch(/\b5[56]px\b/)
-    expect(scaffoldBottomPadding({ hasPrimaryAction: false, hideMobileTabBar: false })).toContain("--tab-bar-height")
+    expect(pad).not.toContain("--safe-bottom")
+    expect(scaffoldBottomPadding({ hasPrimaryAction: false, hideMobileTabBar: false })).not.toContain("var(--fab-size)")
+    expect(scaffoldBottomPadding({ hasPrimaryAction: true, hideMobileTabBar: true })).toContain("--safe-bottom")
     expect(scaffoldBottomPadding({ hasPrimaryAction: false, hideMobileTabBar: true })).not.toContain("--tab-bar-height")
 
     const { container } = render(
