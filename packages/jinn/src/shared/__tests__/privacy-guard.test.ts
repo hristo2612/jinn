@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import {
+  mkdtempSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, extname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -7,12 +16,12 @@ const PKG = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const REPO = join(PKG, "..", "..");
 
 const SCAN_PATHS = [
-  join(REPO, "CHANGELOG.md"),
-  join(REPO, "LICENSE"),
-  join(REPO, "docs"),
-  join(PKG, "template"),
-  join(PKG, "src"),
-  join(REPO, "packages", "web", "src"),
+  "CHANGELOG.md",
+  "LICENSE",
+  "docs",
+  "packages/jinn/template",
+  "packages/jinn/src",
+  "packages/web/src",
 ];
 
 const TEXT_EXTENSIONS = new Set([
@@ -27,8 +36,6 @@ const TEXT_EXTENSIONS = new Set([
   ".yaml",
   ".yml",
 ]);
-
-const SKIP_DIRS = new Set(["coverage", "dist", "node_modules"]);
 
 const BLOCKED_TERMS = [
   ["hris", "to"].join(""),
@@ -46,23 +53,33 @@ const BLOCKED_TERMS = [
   ["/", "Users", "/", "jim", "my", "english"].join(""),
 ];
 
-function listTextFiles(path: string): string[] {
-  if (!existsSync(path)) return [];
-  const rootStat = statSync(path);
-  if (rootStat.isFile()) return TEXT_EXTENSIONS.has(extname(path)) ? [path] : [];
+function listTrackedTextFiles(repo: string, scanPaths: string[]): string[] {
+  const tracked = execFileSync("git", ["ls-files", "-z", "--", ...scanPaths], {
+    cwd: repo,
+    encoding: "utf-8",
+  });
 
-  const out: string[] = [];
-  for (const entry of readdirSync(path)) {
-    if (SKIP_DIRS.has(entry)) continue;
-    const full = join(path, entry);
-    const stat = statSync(full);
-    if (stat.isDirectory()) {
-      out.push(...listTextFiles(full));
-    } else if (stat.isFile() && TEXT_EXTENSIONS.has(extname(entry))) {
-      out.push(full);
+  return tracked
+    .split("\0")
+    .filter((path) => path.length > 0 && TEXT_EXTENSIONS.has(extname(path)))
+    .map((path) => join(repo, path));
+}
+
+function findBlockedTerms(files: string[], root: string): string[] {
+  const findings: string[] = [];
+
+  for (const file of files) {
+    const text = readFileSync(file, "utf-8");
+    const lower = text.toLowerCase();
+    for (const term of BLOCKED_TERMS) {
+      const index = lower.indexOf(term.toLowerCase());
+      if (index === -1) continue;
+      const line = text.slice(0, index).split(/\r?\n/).length;
+      findings.push(`${relative(root, file)}:${line} contains "${term}"`);
     }
   }
-  return out;
+
+  return findings;
 }
 
 describe("privacy guard", () => {
@@ -76,19 +93,27 @@ describe("privacy guard", () => {
   });
 
   it("keeps shipped templates and public source fixtures generic", () => {
-    const findings: string[] = [];
+    expect(findBlockedTerms(listTrackedTextFiles(REPO, SCAN_PATHS), REPO)).toEqual([]);
+  });
 
-    for (const file of SCAN_PATHS.flatMap(listTextFiles)) {
-      const text = readFileSync(file, "utf-8");
-      const lower = text.toLowerCase();
-      for (const term of BLOCKED_TERMS) {
-        const index = lower.indexOf(term.toLowerCase());
-        if (index === -1) continue;
-        const line = text.slice(0, index).split(/\r?\n/).length;
-        findings.push(`${relative(REPO, file)}:${line} contains "${term}"`);
-      }
+  it("ignores an untracked personal path but catches it once tracked", () => {
+    const repo = mkdtempSync(join(tmpdir(), "jinn-privacy-guard-"));
+    try {
+      execFileSync("git", ["init", "--quiet"], { cwd: repo });
+      mkdirSync(join(repo, "docs"));
+      const scratch = join(repo, "docs", "scratch.md");
+      writeFileSync(scratch, `local path: ${BLOCKED_TERMS.at(-1)}/scratch\n`);
+
+      expect(findBlockedTerms(listTrackedTextFiles(repo, ["docs"]), repo)).toEqual([]);
+
+      execFileSync("git", ["add", "--", "docs/scratch.md"], { cwd: repo });
+      const findings = findBlockedTerms(listTrackedTextFiles(repo, ["docs"]), repo);
+      expect(findings).not.toEqual([]);
+      expect(findings).toEqual(
+        expect.arrayContaining([expect.stringContaining("docs/scratch.md:1 contains")]),
+      );
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
     }
-
-    expect(findings).toEqual([]);
   });
 });
