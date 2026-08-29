@@ -1,15 +1,8 @@
 
 import { useMemo, useState, useRef, useEffect, useCallback } from "react"
-import { weeklyScheduleSlots, describeCron } from "@/lib/cron-utils"
-
-interface CronJob {
-  id: string
-  name: string
-  schedule: string
-  enabled: boolean
-  employee?: string | null
-  [key: string]: unknown
-}
+import { describeCron } from "@/lib/cron-utils"
+import { weekDatesFor, weeklyScheduleSlots } from "@/lib/cron-week"
+import { PillTooltip, type CronJob, type SlotInfo } from "./pill-tooltip"
 
 interface WeeklyScheduleProps {
   crons: CronJob[]
@@ -32,71 +25,9 @@ function formatHour(h: number): string {
   return h < 12 ? `${h} AM` : `${h - 12} PM`
 }
 
-interface SlotInfo {
-  cron: CronJob
-  hour: number
-  minute: number
-  col: number
-  /** True per-day fire count when the schedule is too dense for one pill per
-   *  fire — the pill renders once with this count instead. */
-  aggregatedCount?: number
-}
-
 interface TooltipData {
   slot: SlotInfo
   rect: DOMRect
-}
-
-function PillTooltip({ slot, rect, containerRect }: { slot: SlotInfo; rect: DOMRect; containerRect: DOMRect }) {
-  const top = rect.top - containerRect.top - 8
-  const left = rect.left - containerRect.left + rect.width / 2
-
-  return (
-    <div
-      className="absolute pointer-events-none z-[100] min-w-[200px] max-w-[300px] rounded-[var(--radius-lg)] bg-[var(--bg-tertiary)] px-[var(--space-4)] py-[var(--space-3)] text-[length:var(--text-caption1)] text-[var(--text-primary)]"
-      style={{
-        top,
-        left,
-        transform: "translate(-50%, -100%)",
-        boxShadow: "var(--shadow-overlay)",
-      }}
-    >
-      {/* Name */}
-      <div className="mb-[var(--space-1)] text-[length:var(--text-footnote)] font-semibold">
-        {slot.cron.name}
-      </div>
-      {/* Schedule */}
-      <div className="text-[var(--text-secondary)] text-[length:var(--text-caption1)] mb-[var(--space-2)]">
-        {describeCron(slot.cron.schedule)}
-      </div>
-      {/* Raw cron */}
-      <div className="font-[family-name:var(--font-mono)] text-[length:var(--text-caption2)] text-[var(--text-tertiary)] mb-[var(--space-2)]">
-        {slot.cron.schedule}
-      </div>
-      {/* Status */}
-      <div className="flex items-center gap-[var(--space-2)] text-[length:var(--text-caption1)]">
-        <span
-          className="w-[7px] h-[7px] rounded-full shrink-0"
-          style={{
-            background: slot.cron.enabled ? "var(--system-green)" : "var(--text-tertiary)",
-          }}
-        />
-        <span
-          className="font-medium"
-          style={{
-            color: slot.cron.enabled ? "var(--system-green)" : "var(--text-tertiary)",
-          }}
-        >
-          {slot.cron.enabled ? "Enabled" : "Disabled"}
-        </span>
-        {slot.cron.employee && (
-          <span className="text-[var(--text-tertiary)] ml-[var(--space-1)]">
-            {slot.cron.employee}
-          </span>
-        )}
-      </div>
-    </div>
-  )
 }
 
 export function WeeklySchedule({ crons }: WeeklyScheduleProps) {
@@ -121,6 +52,14 @@ export function WeeklySchedule({ crons }: WeeklyScheduleProps) {
     }
   }, [updateContainerRect])
 
+  // Current day/time
+  const now = new Date()
+  // The columns are one real week, not a generic one, so a day-of-month or
+  // month restriction can be resolved against the dates actually on screen.
+  // Anchored to midnight so the memo below survives a re-render mid-day.
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+  const weekDates = useMemo(() => weekDatesFor(new Date(todayStart)), [todayStart])
+
   // Parse all crons into schedule slots, grouped by (col, hour)
   const { slotsByDayHour, activeHours } = useMemo(() => {
     const map = new Map<string, SlotInfo[]>()
@@ -128,7 +67,7 @@ export function WeeklySchedule({ crons }: WeeklyScheduleProps) {
 
     for (const cron of crons) {
       if (!cron.enabled) continue
-      const parsed = weeklyScheduleSlots(cron.schedule)
+      const parsed = weeklyScheduleSlots(cron.schedule, weekDates)
       if (!parsed) continue
 
       for (const dow of parsed.days) {
@@ -151,10 +90,8 @@ export function WeeklySchedule({ crons }: WeeklyScheduleProps) {
 
     const activeHours = Array.from(hourSet).sort((a, b) => a - b)
     return { slotsByDayHour: map, activeHours }
-  }, [crons])
+  }, [crons, weekDates])
 
-  // Current day/time
-  const now = new Date()
   const nowDow = now.getDay()
   const nowCol = DOW_TO_COL[nowDow]
   const nowHour = now.getHours()
@@ -190,14 +127,19 @@ export function WeeklySchedule({ crons }: WeeklyScheduleProps) {
   }, [tooltip])
 
   if (activeHours.length === 0) {
+    // An enabled monthly job is now absent from the weeks it does not fire in,
+    // so "enable a cron job" would be wrong advice for a populated instance.
+    const hasEnabled = crons.some((cron) => cron.enabled)
     return (
       <div className="rounded-[var(--radius-xl)] bg-[var(--bg-secondary)] shadow-[var(--shadow-card)]">
         <div className="px-6 py-12 text-center">
           <h3 className="text-[length:var(--text-title3)] font-bold tracking-[var(--tracking-tight)] text-[var(--text-primary)]">
-            Nothing on the calendar
+            {hasEnabled ? "Nothing this week" : "Nothing on the calendar"}
           </h3>
           <p className="mx-auto mt-2 max-w-[320px] text-[length:var(--text-subheadline)] leading-relaxed text-[var(--text-tertiary)]">
-            Enable a cron job to see when the week fires.
+            {hasEnabled
+              ? "No enabled job fires between Monday and Sunday of this week."
+              : "Enable a cron job to see when the week fires."}
           </p>
         </div>
       </div>
