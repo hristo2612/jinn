@@ -718,3 +718,68 @@ describe("wakeCommand timeout", () => {
     await expect(runLocalWakeCommand("definitely-not-a-real-binary-xyz", 5_000)).resolves.toBeUndefined();
   }, 20_000);
 });
+/**
+ * The company's operating rules, where a remote session will actually look.
+ *
+ * A local employee gets CLAUDE.md free — its cwd IS the gateway home. A remote
+ * session's cwd is the workspace, so without this the rules are simply absent
+ * and the employee works with no knowledge of how the company operates.
+ *
+ * Run through a real shell against real directories: the value here is entirely
+ * in the two guards, and a guard asserted only in the abstract is not a guard.
+ */
+describe.skipIf(process.platform === "win32")("FARM_SCRIPT — workspace CLAUDE.md", () => {
+  let base: string;
+  const run = (cwd: string): string => execFileSync("sh", ["-s", `${base}/mount`, `${base}/root`, `${base}/home`, "7", cwd], {
+    input: FARM_SCRIPT,
+    encoding: "utf8",
+  });
+
+  beforeEach(() => {
+    base = fs.mkdtempSync(path.join(os.tmpdir(), "jinn-farm-"));
+    fs.mkdirSync(`${base}/mount`, { recursive: true });
+    fs.writeFileSync(`${base}/mount/CLAUDE.md`, "COMPANY RULES\n");
+  });
+  afterEach(() => fs.rmSync(base, { recursive: true, force: true }));
+
+  it("links the rules into an empty workspace root", () => {
+    const ws = `${base}/workspace`;
+    expect(run(ws)).toContain("claudemd=linked");
+    expect(fs.readFileSync(`${ws}/CLAUDE.md`, "utf8")).toBe("COMPANY RULES\n");
+    expect(fs.lstatSync(`${ws}/CLAUDE.md`).isSymbolicLink()).toBe(true);
+  });
+
+  it("refuses to write into a git working tree", () => {
+    // Repos live in SUBFOLDERS of the workspace. Dropping an untracked file into
+    // a checkout would show up in git status and die to `git clean -fdx`.
+    const repo = `${base}/repo`;
+    fs.mkdirSync(`${repo}/.git`, { recursive: true });
+    expect(run(repo)).toContain("claudemd=skipped");
+    expect(fs.existsSync(`${repo}/CLAUDE.md`)).toBe(false);
+  });
+
+  it("never overwrites a real CLAUDE.md that is already there", () => {
+    const dir = `${base}/own`;
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(`${dir}/CLAUDE.md`, "THEIR OWN RULES\n");
+    expect(run(dir)).toContain("claudemd=skipped");
+    expect(fs.readFileSync(`${dir}/CLAUDE.md`, "utf8")).toBe("THEIR OWN RULES\n");
+  });
+
+  it("restores the link if it is deleted, and is idempotent", () => {
+    const ws = `${base}/workspace`;
+    run(ws);
+    run(ws);
+    expect(fs.readFileSync(`${ws}/CLAUDE.md`, "utf8")).toBe("COMPANY RULES\n");
+    fs.unlinkSync(`${ws}/CLAUDE.md`);
+    run(ws);
+    expect(fs.existsSync(`${ws}/CLAUDE.md`)).toBe(true);
+  });
+
+  it("does nothing when the gateway home has no CLAUDE.md", () => {
+    fs.unlinkSync(`${base}/mount/CLAUDE.md`);
+    const ws = `${base}/workspace`;
+    expect(run(ws)).not.toContain("claudemd=");
+    expect(fs.existsSync(`${ws}/CLAUDE.md`)).toBe(false);
+  });
+});

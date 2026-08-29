@@ -174,6 +174,36 @@ credentials and trust state a session runs with.
 
 `jinn remote status` prints the resolved profile per employee.
 
+## Where the company's rules come from
+
+A local employee reads `CLAUDE.md` for free: its working directory *is* the
+gateway's instance home, so Claude Code finds it there. A remote session's
+working directory is the workspace instead, so the rules would simply be absent.
+
+Jinn links them in: on every spawn, `<remoteCwd>/CLAUDE.md` becomes a symlink to
+the mounted `CLAUDE.md`. Two guards, because this writes into a directory the
+operator owns:
+
+- **Never over a real file.** An existing `CLAUDE.md` — a repo's own, or one you
+  wrote — is left exactly as it is.
+- **Never inside a git working tree.** A directory containing `.git` is skipped
+  entirely. An untracked file dropped into a checkout would show up in
+  `git status` and be deleted by `git clean -fdx`.
+
+Both cases are logged rather than passed over silently.
+
+This is why **`remoteCwd` should be a workspace root, not a checkout**: point it
+at a directory that holds repositories in subfolders. The rules then sit beside
+them at the workspace root, where every repo can see them and none of them owns
+the file.
+
+```
+/srv/jinn-work/main/          <- remoteCwd
+  CLAUDE.md                   <- linked to the gateway's, never in a repo
+  some-service/               <- cloned here
+  another-repo/               <- and here
+```
+
 ## The sandbox root
 
 `remoteCwd` must resolve under `remote.root`, checked when the org loads and

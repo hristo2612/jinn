@@ -797,6 +797,7 @@ mount=$1
 root=$2
 home=$3
 ttl=$4
+cwd=\${5:-}
 mkdir -p "$root" "$root/sessions" "$home" "$home/tmp"
 chmod 700 "$root" "$root/sessions" "$home"
 # Reap dead session stages. Every spawn rewrites its own session's gateway.json,
@@ -814,6 +815,25 @@ for entry in "$mount"/* "$mount"/.[!.]*; do
   esac
   ln -sfn "$entry" "$home/$name"
 done
+# The company's operating rules, where the SESSION will actually look for them.
+# A local employee gets these free: its cwd IS the gateway home, so Claude Code
+# reads CLAUDE.md from it. A remote session's cwd is the workspace instead, so
+# without this the rules are simply absent.
+#
+# Two guards, because this writes into a directory the operator owns:
+#   - never replace an existing CLAUDE.md — it may be a repo's own, or theirs;
+#   - never touch a git working tree. A workspace root holds repos in
+#     subfolders and has no .git; a checkout does. Dropping an untracked file
+#     into someone's repo would show up in git status and die to git clean -fdx.
+if [ -n "$cwd" ] && [ -d "$mount" ] && [ -f "$mount/CLAUDE.md" ]; then
+  mkdir -p "$cwd"
+  if [ ! -e "$cwd/.git" ] && { [ ! -e "$cwd/CLAUDE.md" ] || [ -L "$cwd/CLAUDE.md" ]; }; then
+    ln -sfn "$mount/CLAUDE.md" "$cwd/CLAUDE.md"
+    printf 'claudemd=linked\n'
+  else
+    printf 'claudemd=skipped\n'
+  fi
+fi
 # Report which per-host assets are really there. Free — this round trip is
 # already happening — and it is what lets a wiped stage restage itself instead
 # of relying on a cache that outlives the directory it describes.
@@ -842,13 +862,21 @@ export async function rebuildHomeFarm(
   facts: RemoteFacts,
   mount: string,
   sessionHome: string,
+  /** The session's working directory. Given so the company's CLAUDE.md can be
+   *  linked where the session will look for it — guarded so it never lands
+   *  inside a git working tree or over a real file. */
+  remoteCwd?: string,
 ): Promise<Set<string>> {
   const res = await sshScript(destination, FARM_SCRIPT, [
     mount,
     facts.stageDir,
     sessionHome,
     String(SESSION_STAGE_TTL_DAYS),
+    remoteCwd ?? "",
   ]);
+  if (res.stdout.includes("claudemd=skipped")) {
+    logger.info(`remote: left ${remoteCwd}/CLAUDE.md alone on ${destination} (a real file, or a git working tree)`);
+  }
   if (res.code !== 0) {
     throw new Error(`could not build the remote JINN_HOME farm on ${destination}: ${res.stderr.trim() || `exit ${res.code}`}`);
   }
@@ -919,7 +947,7 @@ export async function prepareRemoteSession(opts: PrepareRemoteSessionOpts): Prom
   // Only the two steps that touch per-HOST state are serialized; everything
   // below writes inside this session's own directory and cannot collide.
   await serializePerHost(destination, async () => {
-    const present = await rebuildHomeFarm(destination, facts, remote.mount, sessionHome);
+    const present = await rebuildHomeFarm(destination, facts, remote.mount, sessionHome, target.remoteCwd);
     await ensureAssets(destination, facts, present);
     await seedRemoteTrust(destination, facts, target.remoteCwd, resolveRemoteClaudeConfigDir(target, remote));
   });
