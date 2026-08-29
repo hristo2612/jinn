@@ -39,7 +39,7 @@ vi.mock("node:dgram", () => {
   return { default: { createSocket }, createSocket };
 });
 
-import { shq, buildSshSpawnArgs, sendWakeOnLan, FACTS_SCRIPT, FARM_SCRIPT, buildTrustSeedCommand, trustSeedKey, ensureRemoteReady } from "../remote-stage.js";
+import { shq, buildSshSpawnArgs, sendWakeOnLan, FACTS_SCRIPT, FARM_SCRIPT, buildTrustSeedCommand, trustSeedKey, runLocalWakeCommand } from "../remote-stage.js";
 
 const isWindows = process.platform === "win32";
 
@@ -103,9 +103,15 @@ function build(over: Partial<Parameters<typeof buildSshSpawnArgs>[0]> = {}): str
   });
 }
 
-/** The remote command is the last argv element, after the `--` separator. */
+/** The remote command is the last argv element, directly after the destination.
+ *
+ *  This helper used to assert a `--` immediately before it — and that assertion
+ *  is the bug it should have caught. ssh consumes only the FIRST `--` it sees,
+ *  so with the guard already placed before the destination, a second one reached
+ *  the remote shell as `-- cd …` and every spawn died with
+ *  `/bin/bash: --: invalid option`. See the argv invariant in
+ *  claude-interactive-remote.test.ts, which now pins the shape properly. */
 function remoteCommandOf(args: string[]): string {
-  expect(args[args.length - 2]).toBe("--");
   return args[args.length - 1];
 }
 
@@ -143,8 +149,15 @@ describe("buildSshSpawnArgs — ssh flags", () => {
     expect(args[i + 1]).toBe("44321:127.0.0.1:8722");
   });
 
-  it("names the destination immediately before the `--` separator", () => {
-    expect(args[args.length - 3]).toBe("builder@build-box");
+  // ssh consumes only the FIRST `--` it sees and passes any later one into the
+  // remote command, so the terminator goes BEFORE the destination and the
+  // command follows it directly. A second `--` here was what made every spawn
+  // die with `/bin/bash: --: invalid option`.
+  it("puts the one `--` before the destination, with the command straight after", () => {
+    expect(args.filter((a) => a === "--")).toHaveLength(1);
+    expect(args.indexOf("--")).toBeLessThan(args.indexOf("builder@build-box"));
+    expect(args[args.length - 2]).toBe("builder@build-box");
+    expect(args[args.length - 1]).toMatch(/^cd '/);
   });
 
   it("carries keepalives so a dead link is noticed rather than hung on", () => {
@@ -679,33 +692,29 @@ describe("trust seed — profile agreement", () => {
  * the host never wakes and the turn just times out with nothing to show.
  */
 describe("wakeCommand timeout", () => {
-  const REMOTE = { root: "/srv/jinn-work", mount: "/mnt/jinn-home" };
+  // Driven directly rather than through ensureRemoteReady: that path spawns real
+  // ssh probes, which are slow and can outlive the test as unhandled child
+  // errors — a test that reddens CI at random is worse than no test.
 
-  it("defaults to five minutes, not the old thirty seconds", async () => {
+  it("lets a command run well past the old thirty-second limit", async () => {
     const started = Date.now();
-    // A command that outlives 30s but finishes well inside the new default.
-    const res = await ensureRemoteReady(
-      { remoteHost: "203.0.113.1", remoteCwd: "/srv/jinn-work/p" },
-      { ...REMOTE, wakeCommand: "sleep 0.2", waitMs: 1, probeIntervalMs: 1 },
-      { allowWake: true, sleep: async () => {} },
-    );
-    // Unreachable host, so it still reports not ready — the point is that the
-    // wake command ran to completion rather than being cut short.
-    expect(res.ready).toBe(false);
-    expect(Date.now() - started).toBeGreaterThanOrEqual(180);
+    await runLocalWakeCommand("sleep 0.3", 300_000);
+    const elapsed = Date.now() - started;
+    // Ran to completion rather than being cut short.
+    expect(elapsed).toBeGreaterThanOrEqual(280);
+    expect(elapsed).toBeLessThan(10_000);
   }, 20_000);
 
-  it("honours an explicit wakeTimeoutMs", async () => {
+  it("still kills a command that overruns its budget", async () => {
     const started = Date.now();
-    const res = await ensureRemoteReady(
-      { remoteHost: "203.0.113.1", remoteCwd: "/srv/jinn-work/p" },
-      { ...REMOTE, wakeCommand: "sleep 30", wakeTimeoutMs: 300, waitMs: 1, probeIntervalMs: 1 },
-      { allowWake: true, sleep: async () => {} },
-    );
-    expect(res.ready).toBe(false);
-    // The elapsed total is dominated by two unroutable ssh probes (~5s each),
-    // so the property under test is that the 30s sleep was CUT SHORT: without
-    // the kill this could not finish inside 25s.
-    expect(Date.now() - started).toBeLessThan(25_000);
+    await runLocalWakeCommand("sleep 30", 300);
+    // Without the kill this would take 30s.
+    expect(Date.now() - started).toBeLessThan(5_000);
   }, 40_000);
+
+  it("returns rather than throwing when the command cannot start", async () => {
+    // A wake is best-effort: reachability is the real verdict, so a broken
+    // command must not take the turn down with it.
+    await expect(runLocalWakeCommand("definitely-not-a-real-binary-xyz", 5_000)).resolves.toBeUndefined();
+  }, 20_000);
 });

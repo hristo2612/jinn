@@ -381,7 +381,11 @@ export async function sendWakeOnLan(mac: string): Promise<void> {
   });
 }
 
-async function runLocalWakeCommand(command: string, timeoutMs: number): Promise<void> {
+/** Run the operator's wake command, bounded by `timeoutMs`.
+ *  Exported so the budget is testable directly: driving it through
+ *  `ensureRemoteReady` means spawning real ssh probes, which are slow and can
+ *  outlive the test as unhandled child errors. */
+export async function runLocalWakeCommand(command: string, timeoutMs: number): Promise<void> {
   await new Promise<void>((resolve) => {
     const child = spawn(command, { shell: true, stdio: ["ignore", "pipe", "pipe"] });
     let stderr = "";
