@@ -1,7 +1,8 @@
 import { loadConfig } from "../shared/config.js";
 import { scanOrg } from "../gateway/org.js";
-import { employeeRemoteTarget, sshDestination, validateRemoteTarget } from "../shared/remote-target.js";
+import { employeeRemoteTarget, resolveRemoteClaudeConfigDir, sshDestination, validateRemoteTarget } from "../shared/remote-target.js";
 import { ensureRemoteReady, sendWakeOnLan, clearRemoteFactsCache } from "../engines/remote-stage.js";
+import type { RemoteTarget } from "../shared/types.js";
 
 const GREEN = "\x1b[32m";
 const YELLOW = "\x1b[33m";
@@ -37,6 +38,12 @@ interface RemoteEmployee {
   name: string;
   displayName: string;
   destination: string;
+  /** The whole target, kept intact. Rebuilding one from `destination` by
+   *  splitting on "@" silently drops `remoteUser`, so every probe would run as
+   *  the GATEWAY's username and report an employee as unreachable that is
+   *  perfectly fine — a debugging command that lies about the thing it exists
+   *  to diagnose. */
+  target: RemoteTarget;
   remoteCwd: string;
 }
 
@@ -49,6 +56,7 @@ function remoteEmployees(config: ReturnType<typeof loadConfig>): RemoteEmployee[
       name: employee.name,
       displayName: employee.displayName,
       destination: sshDestination(target as typeof target & { remoteHost: string }),
+      target,
       remoteCwd: target.remoteCwd ?? "",
     });
   }
@@ -77,6 +85,39 @@ function reportNoTarget(config: ReturnType<typeof loadConfig>, name: string | un
   for (const e of all) console.log(`  ${e.name} ${DIM}(${e.destination}:${e.remoteCwd})${RESET}`);
 }
 
+/** The instance-wide half of the status report. */
+function printRemoteConfig(remote: NonNullable<ReturnType<typeof loadConfig>["remote"]>): void {
+  console.log(`${DIM}root:  ${remote.root}${RESET}`);
+  console.log(`${DIM}mount: ${remote.mount}${RESET}`);
+  console.log(`${DIM}wake:  ${remote.wakeCommand ? "command" : remote.wakeMac ? `WoL ${remote.wakeMac}` : "not configured"}${RESET}`);
+  console.log(`${DIM}claude profile: ${remote.claudeConfigDir ?? "(remote user's default)"}${RESET}`);
+  console.log("");
+}
+
+/** One employee's line, probed but never woken. */
+async function printEmployeeStatus(
+  employee: RemoteEmployee,
+  remote: NonNullable<ReturnType<typeof loadConfig>["remote"]>,
+): Promise<void> {
+  const problem = validateRemoteTarget(employee.target, remote);
+  if (problem) {
+    console.log(`${RED}✗ ${employee.name}${RESET} — ${problem.error}`);
+    return;
+  }
+  // Never wake from a status check: "is it up" must not have the side effect
+  // of turning it on.
+  clearRemoteFactsCache();
+  const readiness = await ensureRemoteReady(employee.target, remote, { allowWake: false });
+  if (!readiness.ready) {
+    console.log(`${YELLOW}✗ ${employee.name}${RESET} ${DIM}${employee.destination}${RESET} — ${readiness.reason}`);
+    return;
+  }
+  const profile = resolveRemoteClaudeConfigDir(employee.target, remote);
+  console.log(`${GREEN}✓ ${employee.name}${RESET} ${DIM}${employee.destination}:${employee.remoteCwd}${RESET}`);
+  console.log(`  ${DIM}jinn ${readiness.facts.jinnVersion}, node ${readiness.facts.nodeBin}, home ${readiness.facts.stageDir}${RESET}`);
+  console.log(`  ${DIM}profile ${profile ?? "(default)"}, claude ${readiness.facts.claudeBin}${RESET}`);
+}
+
 /** `jinn remote status [employee]` — what the turn path would find right now. */
 export async function remoteStatus(name?: string): Promise<void> {
   const config = readConfig();
@@ -88,10 +129,7 @@ export async function remoteStatus(name?: string): Promise<void> {
     console.log(`and remote.mount (where this instance's home is sshfs-mounted on the remote host).${RESET}`);
     return;
   }
-  console.log(`${DIM}root:  ${remote.root}${RESET}`);
-  console.log(`${DIM}mount: ${remote.mount}${RESET}`);
-  console.log(`${DIM}wake:  ${remote.wakeCommand ? "command" : remote.wakeMac ? `WoL ${remote.wakeMac}` : "not configured"}${RESET}`);
-  console.log("");
+  printRemoteConfig(remote);
 
   const targets = name ? [resolveOne(config, name)].filter(Boolean) as RemoteEmployee[] : remoteEmployees(config);
   if (targets.length === 0) {
@@ -99,30 +137,7 @@ export async function remoteStatus(name?: string): Promise<void> {
     return;
   }
 
-  for (const employee of targets) {
-    const problem = validateRemoteTarget(
-      { remoteHost: employee.destination.split("@").pop(), remoteCwd: employee.remoteCwd },
-      remote,
-    );
-    if (problem) {
-      console.log(`${RED}✗ ${employee.name}${RESET} — ${problem.error}`);
-      continue;
-    }
-    // Never wake from a status check: "is it up" must not have the side effect
-    // of turning it on.
-    clearRemoteFactsCache();
-    const readiness = await ensureRemoteReady(
-      { remoteHost: employee.destination.split("@").pop(), remoteCwd: employee.remoteCwd },
-      remote,
-      { allowWake: false },
-    );
-    if (readiness.ready) {
-      console.log(`${GREEN}✓ ${employee.name}${RESET} ${DIM}${employee.destination}:${employee.remoteCwd}${RESET}`);
-      console.log(`  ${DIM}jinn ${readiness.facts.jinnVersion}, node ${readiness.facts.nodeBin}, home ${readiness.facts.stageDir}${RESET}`);
-    } else {
-      console.log(`${YELLOW}✗ ${employee.name}${RESET} ${DIM}${employee.destination}${RESET} — ${readiness.reason}`);
-    }
-  }
+  for (const employee of targets) await printEmployeeStatus(employee, remote);
 }
 
 /** `jinn remote wake <employee>` — bring a host up without queueing work. */
@@ -153,11 +168,7 @@ export async function remoteWake(name?: string): Promise<void> {
     console.log(`${DIM}Wake-on-LAN sent to ${remote.wakeMac}.${RESET}`);
   }
   console.log(`Waiting for ${employee.destination}…`);
-  const readiness = await ensureRemoteReady(
-    { remoteHost: employee.destination.split("@").pop(), remoteCwd: employee.remoteCwd },
-    remote,
-    { allowWake: true },
-  );
+  const readiness = await ensureRemoteReady(employee.target, remote, { allowWake: true });
   if (readiness.ready) {
     console.log(`${GREEN}✓ ${employee.destination} is ready.${RESET}`);
   } else {

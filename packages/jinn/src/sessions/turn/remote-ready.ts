@@ -23,9 +23,59 @@ import type { TurnInput } from "./types.js";
  * recording "claude is unavailable" because one desktop is asleep would hold
  * back every local employee's turn too.
  */
-export async function ensureRemoteHostReady(input: TurnInput): Promise<{ ok: true } | { ok: false; error: string }> {
+/**
+ * Only the interactive claude engine knows how to relocate a session over SSH.
+ * Every other engine ignores `remoteHost` entirely and would run the turn on
+ * the GATEWAY — with `--dangerously-skip-permissions`, against a checkout that
+ * is not there — while the UI showed a remote employee working normally.
+ */
+function refuseNonRemoteEngine(
+  input: TurnInput,
+  remoteHost: string,
+  engineName: string,
+): { ok: false; error: string } | undefined {
+  if (engineName === "claude") return undefined;
+  return {
+    ok: false,
+    error: `Employee "${input.employee?.name ?? "?"}" is configured for remote execution on ${remoteHost}, `
+      + `but the "${engineName}" engine has no remote support — the turn would run on the gateway instead. `
+      + `Use the claude engine for remote employees.`,
+  };
+}
+
+/** Hand the session back to the running path, or report that it is gone. */
+function restoreAfterWait(
+  input: TurnInput,
+  announced: string,
+): { ok: true } | { ok: false; error: string } {
+  const sessionId = input.session.id;
+  const restored = updateSessionForAttempt(sessionId, input.attemptToken, {
+    status: "running",
+    lastActivity: new Date().toISOString(),
+    lastError: null,
+  }, ["waiting"]);
+  if (!restored) {
+    // The fence refused: a stop (or a newer turn) took the session between the
+    // last successful probe and here — a window `shouldAbort` cannot cover.
+    // Ignoring the failed write would leave the caller believing the session is
+    // `running` and spawn a remote PTY for a turn nobody wants.
+    logger.info(`Session ${sessionId}: remote host became ready but the session is no longer waiting — not starting`);
+    return { ok: false, error: "Session was stopped while waiting for the remote host" };
+  }
+  notifyOperatorChannel(`✅ ${announced} is up — ${input.employee?.displayName ?? "the employee"} is starting.`);
+  logger.info(`Session ${sessionId}: ${announced} became ready`);
+  return { ok: true };
+}
+
+export async function ensureRemoteHostReady(
+  input: TurnInput,
+  engineName: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
   const target = employeeRemoteTarget(input.employee);
   if (!target) return { ok: true };
+
+  const wrongEngine = refuseNonRemoteEngine(input, target.remoteHost!, engineName);
+  if (wrongEngine) return wrongEngine;
 
   const sessionId = input.session.id;
   let announced: string | undefined;
@@ -57,15 +107,5 @@ export async function ensureRemoteHostReady(input: TurnInput): Promise<{ ok: tru
     return { ok: false, error };
   }
 
-  if (announced) {
-    // Hand the session back to the normal running path the caller expects.
-    updateSessionForAttempt(sessionId, input.attemptToken, {
-      status: "running",
-      lastActivity: new Date().toISOString(),
-      lastError: null,
-    }, ["waiting"]);
-    notifyOperatorChannel(`✅ ${announced} is up — ${input.employee?.displayName ?? "the employee"} is starting.`);
-    logger.info(`Session ${sessionId}: ${announced} became ready`);
-  }
-  return { ok: true };
+  return announced ? restoreAfterWait(input, announced) : { ok: true };
 }

@@ -239,7 +239,8 @@ import {
 import { resolveApprovalDecisionAuthority, resolveRootApprovalTarget, type ApprovalDecisionAuthorityOptions } from "./approval-authority.js";
 import { approvalGateClass } from "./workflow-todo-binding.js";
 import { orgRegistry } from "./org-registry.js";
-import { isRemoteTarget } from "../shared/remote-target.js";
+import { isRemoteTarget, sshDestination } from "../shared/remote-target.js";
+import { cachedRemoteFacts } from "../engines/remote-stage.js";
 import { TODO_DISPATCHER_NAME } from "./system-employees.js";
 import { claimTodoForDelegation, claimTodoForDispatch } from "./todo-claim.js";
 import {
@@ -4941,12 +4942,20 @@ export async function handleApiRequest(
         ? orgRegistry(hookConfig).get(hookSession.employee)
         : undefined;
       const remoteMountRoot = isRemoteTarget(hookEmployee) ? hookConfig.remote?.mount : undefined;
+      // The remote user's $HOME, so the policy can judge a `$HOME/.jinn/...`
+      // token instead of skipping it. Read from the spawn-time cache only —
+      // never probed here, because this runs on every PreToolUse.
+      const remoteHome = isRemoteTarget(hookEmployee)
+        ? cachedRemoteFacts(sshDestination(hookEmployee))?.home
+        : undefined;
       const rejected = validateHookPost(
         {
           reg: context.hookRegistry,
           secret: context.hookSecret,
           remoteAddress: remote,
-          ...(remoteMountRoot ? { remoteMountRoot, gatewayHome: context.jinnHome ?? JINN_HOME } : {}),
+          ...(remoteMountRoot
+            ? { remoteMountRoot, gatewayHome: context.jinnHome ?? JINN_HOME, ...(remoteHome ? { remoteHome } : {}) }
+            : {}),
         },
         req.headers["x-jinn-hook-secret"] as string | undefined,
         hookBody,

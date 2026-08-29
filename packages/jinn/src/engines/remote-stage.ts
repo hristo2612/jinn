@@ -10,7 +10,7 @@ import { getPackageVersion } from "../shared/version.js";
 import { buildSessionSettings } from "../shared/claude-settings.js";
 import { readGatewayInfo } from "../gateway/gateway-info.js";
 import { GATEWAY_INFO_FILE } from "../shared/paths.js";
-import { assertRemoteTarget, sshDestination, REMOTE_STAGE_DIR_NAME } from "../shared/remote-target.js";
+import { assertRemoteTarget, resolveRemoteClaudeConfigDir, sshDestination, REMOTE_STAGE_DIR_NAME } from "../shared/remote-target.js";
 import type { RemoteTarget, ResolvedMcpConfig } from "../shared/types.js";
 import type { RemoteExecutionConfig } from "../shared/config-types.js";
 import { remapMcpConfigForRemote } from "../mcp/remote-config.js";
@@ -37,6 +37,14 @@ const REMOTE_STAGE_DIR = REMOTE_STAGE_DIR_NAME;
 
 /** Name of the file whose content proves the mount is live, on both ends. */
 const MOUNT_SENTINEL = ".jinn-mount-sentinel";
+
+/** Subdirectory of the per-host stage holding one `$JINN_HOME` per session. */
+const SESSIONS_DIR = "sessions";
+
+/** How long an untouched session stage survives before the next spawn reaps it.
+ *  Every spawn rewrites its own session's gateway.json, so a live session is
+ *  never older than its last turn; this only ever collects the dead. */
+const SESSION_STAGE_TTL_DAYS = 7;
 
 const DEFAULT_WAIT_MS = 240_000;
 const DEFAULT_PROBE_INTERVAL_MS = 10_000;
@@ -163,7 +171,8 @@ export interface RemoteFacts {
   /** `$HOME` on the remote host. Everything else is resolved against it, because
    *  the gateway cannot expand `~` for another machine's user. */
   home: string;
-  /** The remote session's JINN_HOME — the symlink farm. */
+  /** Per-HOST stage root. Holds the real hook-relay/trust-seed copies and the
+   *  `sessions/` tree; it is NOT itself a session's JINN_HOME. */
   stageDir: string;
   nodeBin: string;
   claudeBin: string;
@@ -236,6 +245,14 @@ const factsCache = new Map<string, RemoteFacts>();
 /** Exported for tests: drop cached host facts. */
 export function clearRemoteFactsCache(): void {
   factsCache.clear();
+}
+
+/** Facts already learned about a host this gateway boot, without asking again.
+ *  For callers on a hot path that must never make an ssh round trip — the hook
+ *  endpoint, which fires many times a turn. Undefined before the first spawn,
+ *  which is fine: nothing can have hooked before it has spawned. */
+export function cachedRemoteFacts(destination: string): RemoteFacts | undefined {
+  return factsCache.get(destination);
 }
 
 /**
@@ -452,10 +469,55 @@ export async function ensureRemoteReady(
     const facts = await gatherFacts(destination);
     const mountProblem = await verifyMount(destination, remote);
     if (mountProblem) return { ready: false, reason: mountProblem };
+    const profileProblem = await verifyClaudeProfile(destination, resolveRemoteClaudeConfigDir(target, remote));
+    if (profileProblem) return { ready: false, reason: profileProblem };
     return { ready: true, facts };
   } catch (err) {
     return { ready: false, reason: err instanceof Error ? err.message : String(err) };
   }
+}
+
+/** Hosts+profiles already seen signed in. Only SUCCESS is cached: a profile that
+ *  failed may have been signed in since, and re-checking a failure costs one ssh
+ *  round trip against a turn that was going to fail anyway. */
+const authedProfiles = new Set<string>();
+
+/** Exported for tests: forget cached profile auth results. */
+export function clearRemoteProfileCache(): void {
+  authedProfiles.clear();
+}
+
+/**
+ * Refuse a profile that is not signed in.
+ *
+ * Claude Code answers an unauthenticated start with an interactive login
+ * prompt. In a gateway PTY there is nobody to answer it, so the turn would hang
+ * with no hook, no notification and no error — the same silent-hang class as the
+ * folder-trust dialog, and worth the same explicit guard rather than a mystery.
+ *
+ * Only checked when a profile is named: the remote user's default profile is
+ * whatever `claude` would use interactively, and second-guessing it here would
+ * reject working setups that keep credentials somewhere we do not know about.
+ */
+async function verifyClaudeProfile(
+  destination: string,
+  claudeConfigDir: string | undefined,
+): Promise<string | undefined> {
+  if (!claudeConfigDir) return undefined;
+  const key = `${destination}:${claudeConfigDir}`;
+  if (authedProfiles.has(key)) return undefined;
+  const creds = path.posix.join(claudeConfigDir, ".credentials.json");
+  const res = await sshRun(destination, [`test -d ${shq(claudeConfigDir)} && echo dir; test -s ${shq(creds)} && echo creds; true`]);
+  const out = res.stdout;
+  if (!out.includes("dir")) {
+    return `the Claude profile directory ${claudeConfigDir} does not exist on ${destination}`;
+  }
+  if (!out.includes("creds")) {
+    return `the Claude profile at ${claudeConfigDir} on ${destination} is not signed in `
+      + `(no .credentials.json) — claude would open a login prompt in front of a PTY with nobody at the keyboard`;
+  }
+  authedProfiles.add(key);
+  return undefined;
 }
 
 /** Fire whichever wake mechanism is configured. `wakeCommand` wins over
@@ -549,16 +611,35 @@ async function verifyMount(
 
 // ── Per-host staging ─────────────────────────────────────────────────────────
 
-/** hook-relay.mjs and the trust seed are copied REAL, not symlinked through the
- *  mount: hooks fire many times a turn, and a relay that cannot run because the
- *  mount blipped would take the turn's completion signal with it. */
-const stagedAssets = new Set<string>();
 const seededTrust = new Set<string>();
 
 /** Exported for tests: forget per-host staging so it runs again. */
 export function clearRemoteStagingCache(): void {
-  stagedAssets.clear();
   seededTrust.clear();
+  stagingQueues.clear();
+}
+
+/**
+ * Serialize control work per remote host.
+ *
+ * Two sessions preparing against the same box at the same moment would
+ * otherwise interleave the two operations that mutate per-HOST state: staging
+ * the shared assets, and the trust seed's read-modify-write of the remote
+ * user's `~/.claude.json`. A lost update there is not cosmetic — the project
+ * whose key was dropped is remembered as seeded and never retried, so its next
+ * turn hangs forever on the folder-trust dialog.
+ *
+ * Per-SESSION staging needs no such lock: each session owns its own directory.
+ */
+const stagingQueues = new Map<string, Promise<unknown>>();
+
+function serializePerHost<T>(destination: string, work: () => Promise<T>): Promise<T> {
+  const prior = stagingQueues.get(destination) ?? Promise.resolve();
+  // `catch` before chaining so one failed prepare does not poison the queue for
+  // every later session on that host.
+  const next = prior.catch(() => undefined).then(work);
+  stagingQueues.set(destination, next.catch(() => undefined));
+  return next;
 }
 
 /** Locate a shipped asset. Same three-candidate probe `server.ts` uses for
@@ -577,17 +658,50 @@ function assetPath(name: string): string {
   return found;
 }
 
+/** The two files staged as REAL copies at the per-host stage root, never
+ *  symlinked through the mount: hooks fire many times a turn, and a relay that
+ *  cannot run because the mount blipped would take the turn's completion signal
+ *  with it. Living at the stage ROOT — outside any session's symlink farm — is
+ *  what keeps the farm rebuild from converting them back into mount symlinks. */
+const HOST_ASSETS = ["hook-relay.mjs", "remote-trust-seed.mjs"] as const;
+
 export function remoteRelayScript(facts: RemoteFacts): string {
   return path.posix.join(facts.stageDir, "hook-relay.mjs");
 }
 
-async function ensureAssets(destination: string, facts: RemoteFacts): Promise<void> {
-  if (stagedAssets.has(destination)) return;
-  for (const name of ["hook-relay.mjs", "remote-trust-seed.mjs"]) {
+/** A remote session's own `$JINN_HOME`.
+ *
+ *  Per SESSION, not per host, and that is load-bearing. `gateway.json` names
+ *  the reverse-tunnel port, which is allocated per spawn — so a single shared
+ *  copy means any second prepare rewrites the port another LIVE session's hook
+ *  relay is about to read. The relay would then POST into a port with no tunnel
+ *  behind it and, by design, swallow the failure: no Stop, no policy
+ *  enforcement, and a turn that runs to completion while the gateway hears
+ *  nothing. Giving each session its own home makes that collision impossible
+ *  rather than unlikely. */
+export function remoteSessionHome(facts: RemoteFacts, jinnSessionId: string): string {
+  return path.posix.join(facts.stageDir, SESSIONS_DIR, safeSessionSegment(jinnSessionId));
+}
+
+/** Session ids are gateway-generated and already path-safe; this is here so a
+ *  hand-crafted one can never walk out of the sessions directory. */
+function safeSessionSegment(jinnSessionId: string): string {
+  const clean = String(jinnSessionId).replace(/[^A-Za-z0-9._-]/g, "_");
+  if (!clean || clean === "." || clean === "..") throw new Error(`unusable session id for remote staging: "${jinnSessionId}"`);
+  return clean;
+}
+
+/** Stage the per-host assets. Driven by what the farm script actually observed
+ *  on this spawn rather than by a process-lifetime cache: a stage directory
+ *  wiped while the gateway keeps running would otherwise leave the relay
+ *  missing and never restage it, which is a silent hang until the next
+ *  restart. */
+async function ensureAssets(destination: string, facts: RemoteFacts, present: Set<string>): Promise<void> {
+  for (const name of HOST_ASSETS) {
+    if (present.has(name)) continue;
     const content = fs.readFileSync(assetPath(name), "utf-8");
     await stageRemoteFile(destination, path.posix.join(facts.stageDir, name), content);
   }
-  stagedAssets.add(destination);
 }
 
 /**
@@ -599,47 +713,104 @@ async function ensureAssets(destination: string, facts: RemoteFacts): Promise<vo
  * this the first turn against a directory the remote Claude has not seen hangs
  * forever with nothing reported anywhere.
  */
-async function seedRemoteTrust(destination: string, facts: RemoteFacts, remoteCwd: string): Promise<void> {
-  const key = `${destination}:${remoteCwd}`;
-  if (seededTrust.has(key)) return;
+/**
+ * Cache key for a completed trust seed.
+ *
+ * The PROFILE is part of it, not just the directory. Trust is recorded in
+ * `<profile>/.claude.json`, so a session that switches profiles faces a config
+ * file that has never seen this directory — and a key blind to the profile
+ * would report the seed already done and hand that session the hanging dialog.
+ */
+export function trustSeedKey(
+  destination: string,
+  remoteCwd: string,
+  claudeConfigDir: string | undefined,
+): string {
+  return `${destination}:${claudeConfigDir ?? "-"}:${remoteCwd}`;
+}
+
+/**
+ * The remote command that pre-trusts `remoteCwd`.
+ *
+ * `CLAUDE_CONFIG_DIR` must match what the SESSION runs with: the seeder resolves
+ * `.claude.json` inside the config dir when the variable is set and beside
+ * `$HOME` when it is not, so seeding under the wrong one is indistinguishable
+ * from not seeding at all — the dialog still appears, and the turn still hangs.
+ *
+ * Pure and exported so that agreement is testable without a second machine.
+ */
+export function buildTrustSeedCommand(
+  facts: RemoteFacts,
+  remoteCwd: string,
+  claudeConfigDir: string | undefined,
+): string {
   const script = path.posix.join(facts.stageDir, "remote-trust-seed.mjs");
-  const res = await sshRun(destination, [
-    `mkdir -p ${shq(remoteCwd)} && ${shq(facts.nodeBin)} ${shq(script)} ${shq(remoteCwd)}`,
-  ]);
+  const env = claudeConfigDir ? `CLAUDE_CONFIG_DIR=${shq(claudeConfigDir)} ` : "";
+  return `mkdir -p ${shq(remoteCwd)} && ${env}${shq(facts.nodeBin)} ${shq(script)} ${shq(remoteCwd)}`;
+}
+
+async function seedRemoteTrust(
+  destination: string,
+  facts: RemoteFacts,
+  remoteCwd: string,
+  claudeConfigDir: string | undefined,
+): Promise<void> {
+  // The profile is part of the key, not just the directory. Trust is recorded
+  // in `<profile>/.claude.json`, so a session that switches profiles is facing
+  // a config file that has never seen this directory — and a cache keyed on the
+  // directory alone would skip the seed and hand it the hanging trust dialog.
+  const key = trustSeedKey(destination, remoteCwd, claudeConfigDir);
+  if (seededTrust.has(key)) return;
+  const res = await sshRun(destination, [buildTrustSeedCommand(facts, remoteCwd, claudeConfigDir)]);
   if (res.code !== 0) {
     throw new Error(
       `could not pre-trust ${remoteCwd} on ${destination}: ${res.stderr.trim() || `exit ${res.code}`} `
       + `— the first turn would hang on Claude Code's folder-trust dialog`,
     );
   }
-  logger.info(`remote: trust seeded for ${remoteCwd} on ${destination} (${res.stdout.trim()})`);
+  logger.info(
+    `remote: trust seeded for ${remoteCwd} on ${destination}`
+    + `${claudeConfigDir ? ` (profile ${claudeConfigDir})` : ""} (${res.stdout.trim()})`,
+  );
   seededTrust.add(key);
 }
 
-const FARM_SCRIPT = `
+export const FARM_SCRIPT = `
 set -eu
 mount=$1
-stage=$2
-mkdir -p "$stage" "$stage/tmp"
-chmod 700 "$stage"
+root=$2
+home=$3
+ttl=$4
+mkdir -p "$root" "$root/sessions" "$home" "$home/tmp"
+chmod 700 "$root" "$root/sessions" "$home"
+# Reap dead session stages. Every spawn rewrites its own session's gateway.json,
+# so a live session's directory is never older than its last turn.
+find "$root/sessions" -mindepth 1 -maxdepth 1 -type d -mtime +"$ttl" -exec rm -rf {} + 2>/dev/null || true
 # Drop every symlink first so an entry removed from the gateway's home does not
 # linger here as a dangling one. gateway.json and tmp/ are real, not symlinks,
 # so they are untouched by this.
-find "$stage" -maxdepth 1 -type l -exec rm -f {} + 2>/dev/null || true
+find "$home" -maxdepth 1 -type l -exec rm -f {} + 2>/dev/null || true
 for entry in "$mount"/* "$mount"/.[!.]*; do
   [ -e "$entry" ] || continue
   name=$(basename "$entry")
   case "$name" in
     gateway.json|tmp) continue ;;
   esac
-  ln -sfn "$entry" "$stage/$name"
+  ln -sfn "$entry" "$home/$name"
+done
+# Report which per-host assets are really there. Free — this round trip is
+# already happening — and it is what lets a wiped stage restage itself instead
+# of relying on a cache that outlives the directory it describes.
+for a in hook-relay.mjs remote-trust-seed.mjs; do
+  if [ -f "$root/$a" ] && [ ! -L "$root/$a" ]; then printf 'asset=%s\\n' "$a"; fi
 done
 `;
 
 /**
- * Rebuild the remote `$JINN_HOME` as a symlink farm over the mounted gateway
+ * Rebuild ONE session's `$JINN_HOME` as a symlink farm over the mounted gateway
  * home, so the session reads and writes the org's REAL knowledge, docs, org and
- * skills rather than copies.
+ * skills rather than copies. Also reaps dead session stages and reports which
+ * per-host assets are genuinely present.
  *
  * Two entries are deliberately excluded and staged for real instead:
  *  - `gateway.json`, because the mounted one names the gateway's own port,
@@ -654,11 +825,23 @@ export async function rebuildHomeFarm(
   destination: string,
   facts: RemoteFacts,
   mount: string,
-): Promise<void> {
-  const res = await sshScript(destination, FARM_SCRIPT, [mount, facts.stageDir]);
+  sessionHome: string,
+): Promise<Set<string>> {
+  const res = await sshScript(destination, FARM_SCRIPT, [
+    mount,
+    facts.stageDir,
+    sessionHome,
+    String(SESSION_STAGE_TTL_DAYS),
+  ]);
   if (res.code !== 0) {
     throw new Error(`could not build the remote JINN_HOME farm on ${destination}: ${res.stderr.trim() || `exit ${res.code}`}`);
   }
+  const present = new Set<string>();
+  for (const line of res.stdout.split("\n")) {
+    const value = line.trim();
+    if (value.startsWith("asset=")) present.add(value.slice("asset=".length));
+  }
+  return present;
 }
 
 /** Ask the remote host for a free TCP port on its loopback.
@@ -692,10 +875,16 @@ export interface PrepareRemoteSessionOpts {
 export interface RemoteSessionStaging {
   destination: string;
   tunnelPort: number;
+  /** This session's own `$JINN_HOME` on the remote host. */
+  sessionHome: string;
   /** Remote path for `--settings`. */
   settingsPath: string;
   /** Remote path for `--mcp-config`, when this session has MCP servers. */
   mcpConfigPath?: string;
+  /** 0600 shell fragment the remote command sources for the session's secrets.
+   *  A file rather than argv: everything on a remote command line is world-
+   *  readable in that host's process table. */
+  envFilePath: string;
 }
 
 /**
@@ -709,18 +898,31 @@ export async function prepareRemoteSession(opts: PrepareRemoteSessionOpts): Prom
   const { target, remote, facts, jinnSessionId } = opts;
   assertRemoteTarget(target, remote);
   const destination = sshDestination(target);
+  const sessionHome = remoteSessionHome(facts, jinnSessionId);
 
-  await rebuildHomeFarm(destination, facts, remote.mount);
-  await ensureAssets(destination, facts);
-  await seedRemoteTrust(destination, facts, target.remoteCwd);
+  // Only the two steps that touch per-HOST state are serialized; everything
+  // below writes inside this session's own directory and cannot collide.
+  await serializePerHost(destination, async () => {
+    const present = await rebuildHomeFarm(destination, facts, remote.mount, sessionHome);
+    await ensureAssets(destination, facts, present);
+    await seedRemoteTrust(destination, facts, target.remoteCwd, resolveRemoteClaudeConfigDir(target, remote));
+  });
 
   const tunnelPort = await probeFreePort(destination, facts);
 
-  await stageGatewayJson(destination, facts, tunnelPort);
-  const settingsPath = await stageSettings(destination, facts, jinnSessionId);
-  const mcpConfigPath = await stageMcpConfig(destination, facts, jinnSessionId, tunnelPort, opts.resolvedMcp);
+  await stageGatewayJson(destination, sessionHome, tunnelPort);
+  const settingsPath = await stageSettings(destination, facts, sessionHome, jinnSessionId);
+  const envFilePath = await stageSessionEnvFile(destination, sessionHome, tunnelPort);
+  const mcpConfigPath = await stageMcpConfig(destination, facts, sessionHome, tunnelPort, opts.resolvedMcp);
 
-  return { destination, tunnelPort, settingsPath, ...(mcpConfigPath ? { mcpConfigPath } : {}) };
+  return {
+    destination,
+    tunnelPort,
+    sessionHome,
+    settingsPath,
+    envFilePath,
+    ...(mcpConfigPath ? { mcpConfigPath } : {}),
+  };
 }
 
 /**
@@ -734,21 +936,51 @@ export async function prepareRemoteSession(opts: PrepareRemoteSessionOpts): Prom
  * Nothing else from the real file travels: `pid`, `ptyPids`, `host` and `url`
  * all describe the gateway's own process and would only mislead a reader here.
  */
-async function stageGatewayJson(destination: string, facts: RemoteFacts, tunnelPort: number): Promise<void> {
+async function stageGatewayJson(destination: string, sessionHome: string, tunnelPort: number): Promise<void> {
   const info = readGatewayInfo(GATEWAY_INFO_FILE);
   if (!info?.secret) throw new Error("the gateway has no hook secret yet — is the daemon fully started?");
   await stageRemoteFile(
     destination,
-    path.posix.join(facts.stageDir, "gateway.json"),
+    path.posix.join(sessionHome, "gateway.json"),
     `${JSON.stringify({ port: tunnelPort, secret: info.secret, ...(info.token ? { token: info.token } : {}) }, null, 2)}\n`,
   );
+}
+
+/**
+ * The session's `JINN_GATEWAY_URL` / `JINN_GATEWAY_TOKEN`, as a sourceable
+ * shell fragment.
+ *
+ * The gateway exports both onto its own process env at boot, so a LOCAL session
+ * inherits them and the system prompt can promise they are "already exported in
+ * your environment" — which every documented curl in that prompt then uses:
+ * delegation, following up on a child, reading a child's replies, pushing an
+ * attachment, sending on a connector. A remote session inherits nothing from
+ * the gateway process, so without this the whole set is dead there, and the URL
+ * would in any case have to name the tunnel rather than the gateway's own port.
+ *
+ * A 0600 file rather than argv or `env K=V`: a remote command line is visible
+ * to every process on that host, and the bearer token is not something to put
+ * in a process table.
+ */
+async function stageSessionEnvFile(destination: string, sessionHome: string, tunnelPort: number): Promise<string> {
+  const info = readGatewayInfo(GATEWAY_INFO_FILE);
+  const lines = [`export JINN_GATEWAY_URL=${shq(`http://127.0.0.1:${tunnelPort}`)}`];
+  if (info?.token) lines.push(`export JINN_GATEWAY_TOKEN=${shq(info.token)}`);
+  const envFilePath = path.posix.join(sessionHome, "tmp", "session-env.sh");
+  await stageRemoteFile(destination, envFilePath, `${lines.join("\n")}\n`);
+  return envFilePath;
 }
 
 /** Reuse the real settings builder rather than reimplementing the hook set — it
  *  is the single source of truth for WHICH hooks a session registers, and a
  *  remote session must register exactly the same seven. */
-async function stageSettings(destination: string, facts: RemoteFacts, jinnSessionId: string): Promise<string> {
-  const settingsPath = path.posix.join(facts.stageDir, "tmp", "settings", `${jinnSessionId}.json`);
+async function stageSettings(
+  destination: string,
+  facts: RemoteFacts,
+  sessionHome: string,
+  jinnSessionId: string,
+): Promise<string> {
+  const settingsPath = path.posix.join(sessionHome, "tmp", "settings.json");
   const settings = buildSessionSettings({
     sessionId: jinnSessionId,
     relayScript: remoteRelayScript(facts),
@@ -767,7 +999,7 @@ async function stageSettings(destination: string, facts: RemoteFacts, jinnSessio
 async function stageMcpConfig(
   destination: string,
   facts: RemoteFacts,
-  jinnSessionId: string,
+  sessionHome: string,
   tunnelPort: number,
   resolvedMcp: ResolvedMcpConfig | undefined,
 ): Promise<string | undefined> {
@@ -775,10 +1007,10 @@ async function stageMcpConfig(
   const remapped = remapMcpConfigForRemote(resolvedMcp, {
     remoteNode: facts.nodeBin,
     remoteEntryDir: facts.entryDir,
-    remoteHome: facts.stageDir,
+    remoteHome: sessionHome,
     gatewayUrl: `http://127.0.0.1:${tunnelPort}`,
   });
-  const mcpConfigPath = path.posix.join(facts.stageDir, "tmp", "mcp", jinnSessionId, "config.json");
+  const mcpConfigPath = path.posix.join(sessionHome, "tmp", "mcp.json");
   await stageRemoteFile(destination, mcpConfigPath, `${JSON.stringify(remapped, null, 2)}\n`);
   return mcpConfigPath;
 }
@@ -810,6 +1042,10 @@ export interface SshSpawnOpts {
    *  forever with nothing reported. Putting the resolved node directory here is
    *  what makes the relay runnable. */
   pathPrepend?: string[];
+  /** 0600 shell fragment sourced before exec, carrying the session's secrets.
+   *  Sourced rather than inlined because a remote command line is readable by
+   *  every process on that host. */
+  envFile?: string;
   claudeBin: string;
   claudeArgs: string[];
 }
@@ -845,9 +1081,12 @@ export function buildSshSpawnArgs(opts: SshSpawnOpts): string[] {
     .map(([key, value]) => `${key}=${shq(value)}`)
     .join(" ");
   const claude = [opts.claudeBin, ...opts.claudeArgs].map(shq).join(" ");
+  // Sourced BEFORE `env`, so the exported values are inherited through it while
+  // `env -u` still strips the billing-critical names from the login profile.
+  const source = opts.envFile ? `. ${shq(opts.envFile)} && ` : "";
   // `exec` so the remote shell is replaced by claude: one fewer process between
   // sshd and the TUI, so a dropped connection reaches claude directly.
-  const remoteCommand = `cd ${shq(opts.remoteCwd)} && exec env ${unset ? `${unset} ` : ""}${pathEntry}${env} ${claude}`;
+  const remoteCommand = `cd ${shq(opts.remoteCwd)} && ${source}exec env ${unset ? `${unset} ` : ""}${pathEntry}${env} ${claude}`;
   return [
     "-tt",
     "-o", "BatchMode=yes",
@@ -856,6 +1095,11 @@ export function buildSshSpawnArgs(opts: SshSpawnOpts): string[] {
     "-o", "ServerAliveInterval=30",
     "-o", "ServerAliveCountMax=3",
     "-R", `${opts.tunnelPort}:127.0.0.1:${opts.gatewayPort}`,
+    // `--` first: without it a destination beginning with `-` is read by the
+    // LOCAL ssh as an option (`-oProxyCommand=…` then runs ON THE GATEWAY —
+    // verified against the real ssh). The host is charset-validated at config
+    // load too; this is the belt to that's braces.
+    "--",
     opts.destination,
     "--",
     remoteCommand,

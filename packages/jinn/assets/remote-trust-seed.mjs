@@ -44,6 +44,50 @@ function applyTrustSeed(data, realProjectDir) {
   return { data, changed: true };
 }
 
+// Whole-file lock around the read-modify-write below.
+//
+// This is a read-modify-write of a file the remote user owns and Claude Code
+// itself writes. Two runs racing lose one project's key — and the caller
+// remembers that project as seeded, so it is never retried and its next turn
+// hangs forever on the folder-trust dialog this script exists to answer. An
+// O_EXCL lock file is the portable way to make that impossible.
+//
+// The gateway also serializes its own seeds per host (`serializePerHost` in
+// src/engines/remote-stage.ts), which is what covers the ordinary case; this
+// lock covers a second gateway or instance pointing at the same box. Measured:
+// a bare read-modify-write of one JSON file across 24 writers that do NOT
+// stagger loses about a third of them. There is deliberately no unit test
+// asserting the loss — 24 node processes stagger themselves on startup, so
+// such a test passes with the lock removed and would only give false
+// confidence. `withLock`'s own contract is tested instead.
+function withLock(lockPath, fn) {
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    let fd;
+    try {
+      fd = fs.openSync(lockPath, "wx");
+    } catch (err) {
+      if (err?.code !== "EEXIST") throw err;
+      // A lock left behind by a killed process must not wedge every later run.
+      try {
+        if (Date.now() - fs.statSync(lockPath).mtimeMs > 30_000) fs.unlinkSync(lockPath);
+      } catch { /* it went away on its own */ }
+      if (Date.now() > deadline) throw new Error(`timed out waiting for ${lockPath}`);
+      // Atomics.wait is the only synchronous sleep Node offers, and this whole
+      // path must stay synchronous — the lock has to span the read AND the
+      // write with nothing interleaved between them.
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+      continue;
+    }
+    try {
+      return fn();
+    } finally {
+      try { fs.closeSync(fd); } catch { /* already closed */ }
+      try { fs.unlinkSync(lockPath); } catch { /* already gone */ }
+    }
+  }
+}
+
 function main() {
   const projectDir = process.argv[2];
   if (!projectDir) throw new Error("usage: node remote-trust-seed.mjs <remoteProjectDir>");
@@ -52,6 +96,11 @@ function main() {
   const realDir = fs.realpathSync(projectDir);
 
   const claudeJsonFile = claudeJsonPath();
+  fs.mkdirSync(path.dirname(claudeJsonFile), { recursive: true, mode: 0o700 });
+  return withLock(`${claudeJsonFile}.jinn-lock`, () => seedLocked(claudeJsonFile, realDir));
+}
+
+function seedLocked(claudeJsonFile, realDir) {
   let data = {};
   try { data = JSON.parse(fs.readFileSync(claudeJsonFile, "utf-8")); } catch { /* new file */ }
   const seeded = applyTrustSeed(data, realDir);
@@ -69,7 +118,9 @@ function main() {
   // Under CLAUDE_CONFIG_DIR the target directory may not exist yet. 0700 because
   // credentials and transcripts land there.
   fs.mkdirSync(path.dirname(claudeJsonFile), { recursive: true, mode: 0o700 });
-  const tmp = `${claudeJsonFile}.tmp`;
+  // A unique temp name. A fixed one lets two concurrent runs write the same
+  // file and rename each other's half-written JSON over the real config.
+  const tmp = `${claudeJsonFile}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(seeded.data, null, 2), { mode: 0o600 });
   fs.renameSync(tmp, claudeJsonFile);
   // Defensive: rename does not reliably carry the source mode onto a pre-existing

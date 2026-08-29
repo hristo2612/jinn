@@ -103,3 +103,37 @@ describe("remote JINN_HOME containment", () => {
     });
   });
 });
+
+describe("remote containment — $HOME-rooted paths", () => {
+  const REMOTE_HOME = "/home/builder";
+  const WITH_HOME = { ...REMOTE, remoteHome: REMOTE_HOME };
+
+  it("judges `$HOME/.jinn/knowledge/...` as the instance-home write it is", () => {
+    // Without expansion this token is invisible to the tokenizer — it does not
+    // start with `/` or `~` — so the most natural way a model writes knowledge
+    // on the remote box walked straight past the rule.
+    for (const cmd of [
+      `cp note.md $HOME/.jinn/knowledge/x.md`,
+      `cp note.md \${HOME}/.jinn/knowledge/x.md`,
+      `echo hi > $HOME/.jinn/docs/x.md`,
+      `cp note.md ~/.jinn/org/x.yaml`,
+    ]) {
+      expect(evaluateCommandPolicy(cmd, WITH_HOME).action, cmd).toBe("block");
+    }
+  });
+
+  it("still allows the same write through the mounted home", () => {
+    expect(evaluateCommandPolicy(`cp note.md ${MOUNT}/knowledge/x.md`, WITH_HOME).action).toBe("allow");
+  });
+
+  it("allows the remote host's own non-shared state under $HOME", () => {
+    // `~/.jinn/logs` on that box is its own local state and none of this rule's
+    // business; blocking it would wedge a real turn for nothing.
+    expect(evaluateCommandPolicy(`touch $HOME/.jinn/logs/run.log`, WITH_HOME).action).toBe("allow");
+    expect(evaluateCommandPolicy(`touch $HOME/scratch/x`, WITH_HOME).action).toBe("allow");
+  });
+
+  it("changes nothing for a local (non-remote) session", () => {
+    expect(evaluateCommandPolicy(`cp note.md $HOME/.jinn/knowledge/x.md`).action).toBe("allow");
+  });
+});

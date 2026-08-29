@@ -1,12 +1,5 @@
 import { describe, it, expect } from "vitest";
-import {
-  isRemoteTarget,
-  isUnderRoot,
-  validateRemoteTarget,
-  assertRemoteTarget,
-  sshDestination,
-  employeeRemoteTarget,
-} from "../remote-target.js";
+import { assertRemoteTarget, employeeRemoteTarget, isRemoteTarget, isUnderRoot, resolveRemoteClaudeConfigDir, sshDestination, validateRemoteTarget } from "../remote-target.js";
 import type { Employee, RemoteTarget } from "../types.js";
 import type { RemoteExecutionConfig } from "../config-types.js";
 
@@ -254,5 +247,129 @@ describe("employeeRemoteTarget", () => {
       remoteCwd: "/srv/jinn-work-evil/proj",
     })!;
     expect(validateRemoteTarget(t, remote())?.error).toMatch(/does not resolve under/);
+  });
+});
+
+describe("validateRemoteTarget — the destination cannot become an ssh option", () => {
+  /**
+   * The destination is passed into ssh's OWN argv. A host beginning with `-` is
+   * read by the local ssh as an option, and `-oProxyCommand=<cmd>` runs that
+   * command ON THE GATEWAY — verified against the real ssh binary. Employees
+   * are explicitly told they may hand-edit YAML under the org directory, so
+   * this is a reachable escalation from "can edit a roster file" to code
+   * execution on the orchestrator, not a theoretical one.
+   */
+  it.each([
+    "-oProxyCommand=touch /tmp/pwned",
+    "-obatchmode=no",
+    "--",
+    "-",
+    "host;touch /tmp/pwned",
+    "host name",
+    "$(id)",
+    "`id`",
+    "host|nc attacker 1",
+  ])("refuses remoteHost %j", (remoteHost) => {
+    const problem = validateRemoteTarget({ remoteHost, remoteCwd: `${ROOT}/proj` }, remote());
+    expect(problem?.error).toMatch(/not a plain hostname/);
+  });
+
+  it.each([
+    "-oProxyCommand=id",
+    "user;id",
+    "user name",
+  ])("refuses remoteUser %j", (remoteUser) => {
+    const problem = validateRemoteTarget(
+      { remoteHost: "build-box", remoteUser, remoteCwd: `${ROOT}/proj` },
+      remote(),
+    );
+    expect(problem?.error).toMatch(/not a plain username/);
+  });
+
+  it.each([
+    "build-box",
+    "build-box.local",
+    "harry-box.example.com",
+    "192.168.1.40",
+    "fe80::1",
+    "buildbox",
+  ])("still accepts the real thing: %j", (remoteHost) => {
+    expect(validateRemoteTarget({ remoteHost, remoteCwd: `${ROOT}/proj` }, remote())).toBeUndefined();
+  });
+
+  it("accepts ordinary usernames", () => {
+    for (const remoteUser of ["builder", "harry", "build.user", "_svc", "user-1"]) {
+      expect(validateRemoteTarget(
+        { remoteHost: "build-box", remoteUser, remoteCwd: `${ROOT}/proj` },
+        remote(),
+      )).toBeUndefined();
+    }
+  });
+});
+
+/**
+ * Which Claude Code profile a remote session runs as.
+ *
+ * The stakes are higher than "wrong settings": Claude Code keeps `.claude.json`
+ * INSIDE `CLAUDE_CONFIG_DIR`, so the session's profile and the folder-trust
+ * seed's profile disagreeing means the seed writes a file the session never
+ * reads — and the first turn hangs on the trust dialog with nothing reported.
+ */
+describe("resolveRemoteClaudeConfigDir", () => {
+  const REMOTE = { root: "/srv/jinn-work", mount: "/mnt/jinn-home" };
+  const HOST = { remoteHost: "build-box", remoteCwd: "/srv/jinn-work/proj" };
+
+  it("is undefined when neither side names a profile", () => {
+    expect(resolveRemoteClaudeConfigDir(HOST, REMOTE)).toBeUndefined();
+  });
+
+  it("falls back to the instance-wide default", () => {
+    expect(resolveRemoteClaudeConfigDir(HOST, { ...REMOTE, claudeConfigDir: "/home/u/.claude-profiles/personal" }))
+      .toBe("/home/u/.claude-profiles/personal");
+  });
+
+  it("lets an employee override the instance default", () => {
+    // One box commonly holds several profiles; which one an employee uses is a
+    // property of the employee, not the machine.
+    expect(resolveRemoteClaudeConfigDir(
+      { ...HOST, remoteClaudeConfigDir: "/home/u/.claude-profiles/work" },
+      { ...REMOTE, claudeConfigDir: "/home/u/.claude-profiles/personal" },
+    )).toBe("/home/u/.claude-profiles/work");
+  });
+
+  it("treats blank as unset rather than as an empty path", () => {
+    expect(resolveRemoteClaudeConfigDir({ ...HOST, remoteClaudeConfigDir: "   " }, REMOTE)).toBeUndefined();
+  });
+
+  it("tolerates a missing remote config block", () => {
+    expect(resolveRemoteClaudeConfigDir(HOST, undefined)).toBeUndefined();
+  });
+});
+
+describe("validateRemoteTarget — claude profile directory", () => {
+  const REMOTE = { root: "/srv/jinn-work", mount: "/mnt/jinn-home" };
+  const HOST = { remoteHost: "build-box", remoteCwd: "/srv/jinn-work/proj" };
+
+  it("accepts an absolute profile directory", () => {
+    expect(validateRemoteTarget({ ...HOST, remoteClaudeConfigDir: "/home/u/.claude-profiles/personal" }, REMOTE))
+      .toBeUndefined();
+  });
+
+  it("refuses a home-relative profile directory", () => {
+    // The gateway cannot expand `~` for another machine's user, and letting the
+    // remote shell do it would resolve the variable that decides which
+    // credentials the session runs with, outside anything we checked.
+    expect(validateRemoteTarget({ ...HOST, remoteClaudeConfigDir: "~/.claude-profiles/personal" }, REMOTE)?.error)
+      .toMatch(/absolute path, not home-relative/);
+  });
+
+  it("refuses a relative profile directory", () => {
+    expect(validateRemoteTarget({ ...HOST, remoteClaudeConfigDir: ".claude-profiles/personal" }, REMOTE)?.error)
+      .toMatch(/must be an absolute path/);
+  });
+
+  it("refuses a bad instance-wide default too", () => {
+    expect(validateRemoteTarget(HOST, { ...REMOTE, claudeConfigDir: "relative/profile" })?.error)
+      .toMatch(/remote\.claudeConfigDir/);
   });
 });

@@ -209,6 +209,19 @@ export interface RemoteExecutionConfig {
    *  remote session's `$JINN_HOME` is a symlink farm over this, so knowledge,
    *  docs, org and skills are the gateway's real files rather than copies. */
   mount: string;
+  /**
+   * Default `CLAUDE_CONFIG_DIR` for remote sessions on these hosts — i.e. which
+   * Claude Code profile they run as. An employee's own
+   * `remoteClaudeConfigDir` overrides it; unset on both means the remote
+   * user's default profile.
+   *
+   * Set this rather than pointing `claude` at a profile-manager wrapper. Those
+   * wrappers typically unset every `CLAUDE_*` variable before exec, which would
+   * strip the three the session depends on — including
+   * `CLAUDE_CODE_RESUME_TOKEN_THRESHOLD`, whose absence lets the "resume from
+   * summary?" picker appear in front of a PTY with nobody at the keyboard.
+   */
+  claudeConfigDir?: string;
   /** Run ON THE GATEWAY to wake a sleeping host (smart plug, jump box, …).
    *  Takes precedence over {@link wakeMac}. */
   wakeCommand?: string;

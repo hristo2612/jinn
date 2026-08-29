@@ -32,6 +32,8 @@ blocked-on-a-question notifications are unaffected.
 ## Prerequisites on the remote host
 
 1. **Claude Code**, installed and signed in on the same plan the gateway uses.
+   If the host uses a profile manager, see *Choosing a Claude Code profile*
+   below — do not point Jinn at the wrapper script.
 2. **Node.js**. Note the PATH caveat below — this is the single most likely
    thing to bite you.
 3. **`jinn-cli` at the gateway's exact version**, installed globally:
@@ -98,6 +100,9 @@ remote:
   # wakeCommand: "smartplug on workstation"
   # Run on the remote once it is reachable, to bring the mount back after a boot.
   remountCommand: "systemctl --user start jinn-home.mount"
+  # Which Claude Code profile remote sessions run as. Omit for the remote
+  # user's default. An employee's remoteClaudeConfigDir overrides it.
+  claudeConfigDir: /home/<user>/.claude-profiles/personal
   # Bound on waiting for an unreachable host. Default 240000 (4 minutes).
   waitMs: 300000
 ```
@@ -123,6 +128,49 @@ These three fields are YAML-only on purpose — they are **not** editable throug
 the employee-edit API. Being able to repoint where an unattended
 `--dangerously-skip-permissions` session executes is not a dashboard-sized
 decision.
+
+## Choosing a Claude Code profile
+
+If the remote host keeps several Claude Code profiles (a personal one and a work
+one, say), name the one a session should use:
+
+```yaml
+remote:
+  claudeConfigDir: /home/<user>/.claude-profiles/personal
+```
+
+An employee can override it, because which profile to use is a property of the
+employee rather than the machine:
+
+```yaml
+remoteClaudeConfigDir: /home/<user>/.claude-profiles/work
+```
+
+**Do not point Jinn at a profile-manager wrapper instead.** Those wrappers set
+`CLAUDE_CONFIG_DIR` and then `unset` every `CLAUDE_*` and `ANTHROPIC_*` variable
+before exec. That strips the three a session depends on — and losing
+`CLAUDE_CODE_RESUME_TOKEN_THRESHOLD` lets the "resume from summary?" picker
+appear in front of a PTY with nobody at the keyboard, which hangs the turn. Jinn
+sets the variable itself and runs the plain binary, getting the profile without
+the collateral damage.
+
+Two consequences follow, both handled for you:
+
+- **The folder-trust seed runs under the same profile.** Claude Code keeps
+  `.claude.json` *inside* `CLAUDE_CONFIG_DIR`, so seeding without it writes
+  `~/.claude.json` while the session reads `<profile>/.claude.json` — the trust
+  dialog would still appear and the first turn would hang. The seed cache is
+  keyed on the profile too, so switching profiles re-seeds rather than assuming
+  the old seed still counts.
+- **An unsigned-in profile is refused up front.** A profile directory with no
+  `.credentials.json` makes `claude` open a login prompt nothing can answer, so
+  the spawn is refused with that reason instead of hanging.
+
+When no profile is configured, `CLAUDE_CONFIG_DIR` is actively *unset* for the
+session, so a stray value in the remote environment cannot silently choose the
+credentials and trust state a session runs with.
+
+`jinn remote status` prints the resolved profile per employee.
 
 ## The sandbox root
 
@@ -151,11 +199,35 @@ is started with `ExitOnForwardFailure=yes`. If something claimed the port in
 between, `ssh` exits at once instead of running a session whose hooks could
 never arrive — a fast, visible failure rather than a turn that hangs forever.
 
-The remote session's `$JINN_HOME` is a directory of symlinks into the mount,
-rebuilt on every spawn, with two exceptions: `gateway.json` (staged for real,
-naming the forwarded port) and `tmp/` (a real local directory, because
-per-session files churn there and a network filesystem is the wrong place for
-it).
+Each session gets its **own** `$JINN_HOME` on the remote host, at
+`~/.jinn-remote-stage/sessions/<session id>`: a directory of symlinks into the
+mount, rebuilt on every spawn, with two exceptions — `gateway.json` (staged for
+real, naming that session's forwarded port) and `tmp/` (a real local directory,
+because per-session files churn there and a network filesystem is the wrong
+place for it).
+
+Per session rather than per host, because `gateway.json` names a port that is
+allocated per spawn. With one shared copy, any second prepare — another employee
+on the same box — rewrites the port a live session's hook relay is about to
+read. The relay swallows a failed POST by design, so that turn would run to
+completion with no `Stop`, no `PreToolUse` policy, and nothing reported
+anywhere. Stale session directories are reaped after seven days by the same
+script that rebuilds the farm.
+
+`hook-relay.mjs` and `remote-trust-seed.mjs` are staged as real copies at
+`~/.jinn-remote-stage/` itself — deliberately outside every session's farm, so
+the farm rebuild cannot turn them back into symlinks into the mount. Hooks fire
+many times a turn, and a relay that cannot run because the mount blipped would
+take the turn's completion signal with it. Their presence is re-checked on every
+spawn (the farm script reports it, at no extra cost), so a wiped stage restages
+itself rather than staying broken until the gateway restarts.
+
+`JINN_GATEWAY_URL` (pointing at the tunnel) and `JINN_GATEWAY_TOKEN` are written
+into a 0600 shell fragment under the session's `tmp/` and sourced by the remote
+command. The system prompt tells every session both are already exported, and
+every documented `curl` in it — delegation included — depends on that being
+true. They are sourced from a file rather than inlined into the remote command
+because a command line is readable by every process on that host.
 
 ## When the host is off
 
@@ -194,6 +266,19 @@ because making that depend on somebody remembering to run a command would put
   the gateway cannot read.
 - **Attachments are refused** on remote turns: the paths are local to the
   gateway and would name nothing on the other machine.
+- **The write guardrail is defence in depth, not a sandbox.** The `PreToolUse`
+  policy refuses writes to an instance-home-shaped path outside the verified
+  mount, and understands `/`, `~/` and `$HOME/` targets. It cannot see a path
+  assembled at runtime, one built inside `python -c`, or one reached through a
+  relative `cd`. The **mount sentinel** is the primary guard precisely because
+  it does not read the command at all: it is verified before every spawn and
+  refuses to start the session when the mount is not live. The policy also errs
+  towards over-blocking — it refuses when a write-shaped command mentions an
+  offending path anywhere, not only as its target — which is the safe direction
+  for a rule of this kind.
+- **Only the `claude` engine can go remote.** Every other engine ignores
+  `remoteHost`, so a remote employee configured with one has its turns refused
+  rather than silently run on the gateway.
 - **Secrets reach a second machine.** The gateway's API bearer token and any MCP
   server API keys are staged into 0600 files on the remote host, and the mount
   makes the instance home — including `secrets/` — readable there. This is

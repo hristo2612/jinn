@@ -39,7 +39,7 @@ vi.mock("node:dgram", () => {
   return { default: { createSocket }, createSocket };
 });
 
-import { shq, buildSshSpawnArgs, sendWakeOnLan, FACTS_SCRIPT } from "../remote-stage.js";
+import { shq, buildSshSpawnArgs, sendWakeOnLan, FACTS_SCRIPT, FARM_SCRIPT, buildTrustSeedCommand, trustSeedKey } from "../remote-stage.js";
 
 const isWindows = process.platform === "win32";
 
@@ -430,5 +430,241 @@ describe("buildSshSpawnArgs — remote PATH", () => {
       env: { PATH: "/usr/bin:/bin" },
     });
     expect(shown).toBe("/opt/node/bin:/usr/bin:/bin");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe.skipIf(isWindows)("FARM_SCRIPT — run for real against a fixture mount", () => {
+  let dir: string;
+  let mount: string;
+  let root: string;
+
+  /** Run the farm exactly as `sshScript` would: script on stdin to `sh -s`. */
+  function runFarm(sessionId: string, ttlDays = 7): string {
+    const home = path.join(root, "sessions", sessionId);
+    return execFileSync("sh", ["-s", mount, root, home, String(ttlDays)], {
+      input: FARM_SCRIPT,
+      encoding: "utf8",
+    });
+  }
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "jinn-farm-"));
+    mount = path.join(dir, "mount");
+    root = path.join(dir, "stage");
+    // A gateway instance home as the remote host sees it through sshfs.
+    fs.mkdirSync(path.join(mount, "knowledge"), { recursive: true });
+    fs.mkdirSync(path.join(mount, "org"), { recursive: true });
+    fs.mkdirSync(path.join(mount, "tmp"), { recursive: true });
+    fs.writeFileSync(path.join(mount, "knowledge", "a.md"), "real knowledge\n");
+    fs.writeFileSync(path.join(mount, "gateway.json"), '{"port":7777}\n');
+    // The gateway copies the relay INTO its own home, so the mount exposes it.
+    fs.writeFileSync(path.join(mount, "hook-relay.mjs"), "// the gateway's copy\n");
+  });
+  afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+
+  it("gives each session its own JINN_HOME, so one spawn cannot repoint another", () => {
+    runFarm("sess-a");
+    runFarm("sess-b");
+    const a = path.join(root, "sessions", "sess-a");
+    const b = path.join(root, "sessions", "sess-b");
+    // The whole point: gateway.json names a PER-SPAWN tunnel port, so a shared
+    // home would let one session's prepare rewrite the port another live turn's
+    // hook relay is about to read — and the relay swallows a failed POST, so
+    // that turn completes with no Stop and nothing reported anywhere.
+    expect(fs.existsSync(path.join(a, "knowledge"))).toBe(true);
+    expect(fs.existsSync(path.join(b, "knowledge"))).toBe(true);
+    fs.writeFileSync(path.join(a, "gateway.json"), '{"port":1111}\n');
+    fs.writeFileSync(path.join(b, "gateway.json"), '{"port":2222}\n');
+    expect(fs.readFileSync(path.join(a, "gateway.json"), "utf8")).toContain("1111");
+    expect(fs.readFileSync(path.join(b, "gateway.json"), "utf8")).toContain("2222");
+  });
+
+  it("writes through the farm to the real gateway home", () => {
+    runFarm("sess-a");
+    fs.writeFileSync(path.join(root, "sessions", "sess-a", "knowledge", "b.md"), "written from the remote\n");
+    // The single operation the whole mount exists to permit.
+    expect(fs.readFileSync(path.join(mount, "knowledge", "b.md"), "utf8")).toBe("written from the remote\n");
+  });
+
+  it("never symlinks gateway.json or tmp/ — both are real, host-local", () => {
+    runFarm("sess-a");
+    const home = path.join(root, "sessions", "sess-a");
+    expect(fs.existsSync(path.join(home, "gateway.json"))).toBe(false);
+    expect(fs.lstatSync(path.join(home, "tmp")).isSymbolicLink()).toBe(false);
+  });
+
+  it("leaves the REAL hook-relay.mjs alone across repeated spawns", () => {
+    // The regression: the relay lives at the stage ROOT, outside every
+    // session's farm. When it sat inside the farm, `ln -sfn` on the second
+    // spawn replaced the real copy with a symlink into the mount — so a mount
+    // blip would take the relay, and with it every Stop hook, hanging the turn.
+    fs.mkdirSync(root, { recursive: true });
+    fs.writeFileSync(path.join(root, "hook-relay.mjs"), "// the staged real copy\n");
+    for (let i = 0; i < 3; i += 1) runFarm("sess-a");
+    const relay = path.join(root, "hook-relay.mjs");
+    expect(fs.lstatSync(relay).isSymbolicLink()).toBe(false);
+    expect(fs.readFileSync(relay, "utf8")).toBe("// the staged real copy\n");
+  });
+
+  it("reports which per-host assets are really present, so a wiped stage restages", () => {
+    fs.mkdirSync(root, { recursive: true });
+    expect(runFarm("sess-a")).not.toContain("asset=hook-relay.mjs");
+
+    fs.writeFileSync(path.join(root, "hook-relay.mjs"), "// real\n");
+    fs.writeFileSync(path.join(root, "remote-trust-seed.mjs"), "// real\n");
+    const out = runFarm("sess-a");
+    expect(out).toContain("asset=hook-relay.mjs");
+    expect(out).toContain("asset=remote-trust-seed.mjs");
+
+    // A symlink is NOT a real copy — reporting one as present is exactly what
+    // would put the relay back on the mount for the hook hot path.
+    fs.unlinkSync(path.join(root, "hook-relay.mjs"));
+    fs.symlinkSync(path.join(mount, "hook-relay.mjs"), path.join(root, "hook-relay.mjs"));
+    expect(runFarm("sess-a")).not.toContain("asset=hook-relay.mjs");
+  });
+
+  it("prunes stale symlinks when the gateway home loses a directory", () => {
+    runFarm("sess-a");
+    const home = path.join(root, "sessions", "sess-a");
+    expect(fs.existsSync(path.join(home, "org"))).toBe(true);
+    fs.rmSync(path.join(mount, "org"), { recursive: true });
+    runFarm("sess-a");
+    expect(fs.existsSync(path.join(home, "org"))).toBe(false);
+    expect(fs.lstatSync(path.join(home, "knowledge")).isSymbolicLink()).toBe(true);
+  });
+
+  it("reaps dead session stages but never the one being prepared", () => {
+    runFarm("old-sess");
+    runFarm("live-sess");
+    const old = path.join(root, "sessions", "old-sess");
+    const ago = new Date(Date.now() - 30 * 24 * 3600 * 1000);
+    fs.utimesSync(old, ago, ago);
+    runFarm("live-sess");
+    expect(fs.existsSync(old)).toBe(false);
+    expect(fs.existsSync(path.join(root, "sessions", "live-sess"))).toBe(true);
+  });
+
+  it("is idempotent and keeps the stage private", () => {
+    runFarm("sess-a");
+    const before = fs.readdirSync(path.join(root, "sessions", "sess-a")).sort();
+    runFarm("sess-a");
+    expect(fs.readdirSync(path.join(root, "sessions", "sess-a")).sort()).toEqual(before);
+    expect(fs.statSync(root).mode & 0o777).toBe(0o700);
+    expect(fs.statSync(path.join(root, "sessions", "sess-a")).mode & 0o777).toBe(0o700);
+  });
+});
+
+describe("buildSshSpawnArgs — the destination is never read as an option", () => {
+  it("puts `--` before the destination", () => {
+    // Verified against the real ssh: WITHOUT this, `-oProxyCommand=…` as a host
+    // is interpreted by the LOCAL ssh and the command runs ON THE GATEWAY.
+    // Employees are explicitly told they may hand-edit org YAML, so this is a
+    // reachable jump from "can edit a roster file" to gateway code execution.
+    const args = build({ destination: "builder@build-box" });
+    const at = args.indexOf("builder@build-box");
+    expect(at).toBeGreaterThan(-1);
+    expect(args[at - 1]).toBe("--");
+  });
+
+  it("keeps the remote command as the final argument after its own `--`", () => {
+    expect(remoteCommandOf(build())).toContain("exec env");
+  });
+});
+
+describe.skipIf(isWindows)("buildSshSpawnArgs — the session secret file", () => {
+  let dir: string;
+  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), "jinn-envfile-")); });
+  afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+
+  it("sources the env file, and keeps the token OUT of the command line", () => {
+    const envFile = path.join(dir, "session-env.sh");
+    const cmd = remoteCommandOf(build({ envFile }));
+    expect(cmd).toContain(`. '${envFile}'`);
+    // A remote command line is readable by every process on that host through
+    // the process table, so the bearer must never be inlined into it.
+    expect(cmd).not.toContain("secret-bearer-token");
+  });
+
+  it("the sourced values actually reach the exec'd process", () => {
+    const envFile = path.join(dir, "session-env.sh");
+    fs.writeFileSync(envFile, [
+      `export JINN_GATEWAY_URL='http://127.0.0.1:44321'`,
+      `export JINN_GATEWAY_TOKEN='secret-bearer-token'`,
+      "",
+    ].join("\n"));
+    // A real executable, not a shell function: `env` execs a binary, so a
+    // function would be invisible to it.
+    const fakeClaude = path.join(dir, "fake-claude");
+    fs.writeFileSync(fakeClaude, '#!/bin/sh\nprintf "%s|%s" "$JINN_GATEWAY_URL" "$JINN_GATEWAY_TOKEN"\n', { mode: 0o755 });
+    const cmd = remoteCommandOf(build({ envFile, remoteCwd: dir, claudeBin: fakeClaude, claudeArgs: [] }));
+    // Run it for real. This is the claim that matters: the system prompt tells
+    // every session both vars are already exported, and every documented curl —
+    // delegation included — is dead if that is not true.
+    const out = execFileSync("sh", ["-c", cmd.replace("exec env", "env")], { cwd: dir, encoding: "utf8" });
+    expect(out).toBe("http://127.0.0.1:44321|secret-bearer-token");
+  });
+});
+
+/**
+ * The folder-trust seed and the session must agree on which Claude Code profile
+ * they are talking about.
+ *
+ * Claude Code keeps `.claude.json` INSIDE `CLAUDE_CONFIG_DIR`, so a seed run
+ * without the variable writes `~/.claude.json` while a session with it reads
+ * `<profile>/.claude.json`. The dialog then appears in front of a PTY with
+ * nobody at the keyboard and the first turn hangs forever, reporting nothing —
+ * indistinguishable from never having seeded at all.
+ */
+describe("trust seed — profile agreement", () => {
+  const FACTS = {
+    home: "/home/u",
+    stageDir: "/home/u/.jinn-remote-stage",
+    nodeBin: "/usr/bin/node",
+    claudeBin: "/usr/local/bin/claude",
+    jinnVersion: "0.32.0",
+    entryDir: "/usr/lib/jinn/src/mcp",
+  };
+  const PROFILE = "/home/u/.claude-profiles/personal";
+
+  it("runs the seeder under the session's CLAUDE_CONFIG_DIR", () => {
+    const cmd = buildTrustSeedCommand(FACTS, "/srv/jinn-work/proj", PROFILE);
+    expect(cmd).toContain(`CLAUDE_CONFIG_DIR='${PROFILE}'`);
+    // …and before the interpreter, so it is that process's environment.
+    expect(cmd.indexOf("CLAUDE_CONFIG_DIR=")).toBeLessThan(cmd.indexOf("/usr/bin/node"));
+  });
+
+  it("sets no profile when none is configured, matching a default-profile session", () => {
+    expect(buildTrustSeedCommand(FACTS, "/srv/jinn-work/proj", undefined)).not.toContain("CLAUDE_CONFIG_DIR");
+  });
+
+  // Run the real command through a real shell, with `node` shadowed by a
+  // function that prints the variable. This proves the value reaches the
+  // interpreter's ENVIRONMENT intact — not merely that it appears in the string.
+  it.skipIf(process.platform === "win32")("delivers a profile path with quotes and spaces intact", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jinn-seed-"));
+    try {
+      const profile = "/home/u/profiles/it's here";
+      const cmd = buildTrustSeedCommand({ ...FACTS, nodeBin: "node" }, dir, profile);
+      const shown = execFileSync("sh", ["-c", `node() { printf %s "$CLAUDE_CONFIG_DIR"; }\n${cmd}`], {
+        encoding: "utf8",
+      });
+      expect(shown).toBe(profile);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("re-seeds when the profile changes, because trust lives in the profile", () => {
+    const a = trustSeedKey("box", "/srv/jinn-work/proj", PROFILE);
+    const b = trustSeedKey("box", "/srv/jinn-work/proj", "/home/u/.claude-profiles/work");
+    const none = trustSeedKey("box", "/srv/jinn-work/proj", undefined);
+    expect(new Set([a, b, none]).size).toBe(3);
+  });
+
+  it("does not re-seed the same profile and directory twice", () => {
+    expect(trustSeedKey("box", "/srv/jinn-work/proj", PROFILE))
+      .toBe(trustSeedKey("box", "/srv/jinn-work/proj", PROFILE));
   });
 });

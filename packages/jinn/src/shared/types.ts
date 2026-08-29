@@ -173,6 +173,16 @@ export interface RemoteTarget {
   remoteUser?: string;
   /** Working directory ON the remote host. Must resolve under `config.remote.root`. */
   remoteCwd?: string;
+  /**
+   * `CLAUDE_CONFIG_DIR` for this employee's sessions on the remote host —
+   * which Claude Code profile they run as. Overrides `remote.claudeConfigDir`;
+   * unset on both means the remote user's default profile.
+   *
+   * Per-employee rather than per-host because one machine commonly holds
+   * several profiles (a personal one and a work one), and which an employee
+   * should use is a property of the employee, not the box.
+   */
+  remoteClaudeConfigDir?: string;
 }
 
 export interface EngineRunOpts extends RemoteTarget {

@@ -1056,7 +1056,7 @@ export async function startGateway(
       ptyWss.handleUpgrade(req, socket, head, (ws) => {
         trackHeartbeat(ws);
         try {
-          attachPtyWebSocket(ws, sessionId, ptyEngine);
+          attachPtyWebSocket(ws, sessionId, ptyEngine, { getConfig: () => currentConfig });
         } catch (err) {
           logger.warn(`PTY websocket attach failed for ${sessionId}: ${err instanceof Error ? err.message : err}`);
           ws.close();

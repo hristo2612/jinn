@@ -22,6 +22,10 @@ export interface CommandPolicyOptions {
    *  addressing a directory that does not exist on the remote host, so the
    *  write would silently create a local one. */
   gatewayHome?: string;
+  /** `$HOME` on the remote host, when known. Only used to expand `$HOME`/`~`
+   *  in a command's path tokens, so that `$HOME/.jinn/knowledge/x.md` is judged
+   *  as the instance-home write it is rather than skipped as un-parseable. */
+  remoteHome?: string;
 }
 
 const DESTRUCTIVE: Array<{ re: RegExp; reason: string }> = [
@@ -54,21 +58,31 @@ const STAGE_FARM_SEGMENT = new RegExp(
 
 /** Commands that create or overwrite a file named in their arguments. */
 const WRITE_COMMAND = /(?:^|[;&|(]\s*|\s)(?:tee|cp|mv|install|mkdir|rmdir|touch|rsync|ln|dd|truncate|unlink|rm)\b/i;
-/** `> path` / `>> path`, where the target is absolute or home-relative. */
-const WRITE_REDIRECT = />>?\s*['"]?[~/]/;
+/** `> path` / `>> path`, where the target is absolute or home-relative.
+ *  `$HOME`/`${HOME}` count as home-relative: without them a plain
+ *  `echo x > $HOME/.jinn/knowledge/y.md` never even reached the containment
+ *  check, because nothing in the line looked like a write to a path. */
+const WRITE_REDIRECT = />>?\s*['"]?(?:[~/]|\$\{?HOME\}?\/)/;
 /** In-place edit: the file is both the input and the output. */
 const SED_IN_PLACE = /\bsed\b[^|;&]*\s-i\b/i;
 
 /**
- * Absolute (`/…`) and home-relative (`~/…`) tokens in a shell command, taken as
- * plain strings. This is a lexer's job done with a regex on purpose: the policy
- * has to stay pure and total, and a token it mis-splits can only ever cause it
- * to look at a path that is not there — the destructive and exfil rules above
- * do not depend on it.
+ * Absolute (`/…`), home-relative (`~/…`) and `$HOME`-rooted tokens in a shell
+ * command, taken as plain strings. This is a lexer's job done with a regex on
+ * purpose: the policy has to stay pure and total, and a token it mis-splits can
+ * only ever cause it to look at a path that is not there — the destructive and
+ * exfil rules above do not depend on it.
+ *
+ * What this DOESN'T reach is stated plainly because it bounds the whole rule:
+ * a path assembled at runtime, one built inside `python -c`, or one reached
+ * through a relative `cd` is invisible here. That is why this layer is
+ * explicitly defence in depth and the MOUNT SENTINEL is the primary guard —
+ * the sentinel is checked before every spawn and cannot be talked around,
+ * because it does not read the command at all.
  */
 function absolutePathTokens(text: string): string[] {
   const out: string[] = [];
-  const re = /(?:^|[\s='":><(])((?:~)?\/[^\s'"();|&]*)/g;
+  const re = /(?:^|[\s='":><(])((?:~|\$HOME|\$\{HOME\})?\/[^\s'"();|&]*)/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
     if (m[1]) out.push(m[1]);
@@ -79,9 +93,16 @@ function absolutePathTokens(text: string): string[] {
 /** Strip quoting and a leading `~`, then normalize traversal away. POSIX
  *  explicitly: the paths judged here live on the remote (Linux) host, so a
  *  Windows gateway must not apply Windows path semantics to them. */
-function normalizeRemotePath(raw: string): string {
+function normalizeRemotePath(raw: string, remoteHome?: string): string {
   let s = raw.trim().replace(/^['"]/, "").replace(/['"]$/, "");
-  if (s.startsWith("~")) s = s.slice(1) || "/";
+  // `~` and `$HOME` both mean the remote user's home. Expanding to it when we
+  // know it keeps `$HOME/.jinn/knowledge/x.md` inside the rule; falling back to
+  // stripping the prefix keeps the old behaviour when we don't.
+  const homePrefix = s.startsWith("$HOME") ? "$HOME" : s.startsWith("${HOME}") ? "${HOME}" : s.startsWith("~") ? "~" : "";
+  if (homePrefix) {
+    const rest = s.slice(homePrefix.length);
+    s = remoteHome && path.posix.isAbsolute(remoteHome) ? path.posix.join(remoteHome, rest) : rest || "/";
+  }
   if (!s) return "";
   return path.posix.normalize(s);
 }
@@ -92,8 +113,8 @@ function normalizeRemotePath(raw: string): string {
  * Returns the normalized path when it still needs judging, or `undefined` when
  * it is fine as it stands.
  */
-function reachesGatewayHome(raw: string, mount: string): string | undefined {
-  const candidate = normalizeRemotePath(raw);
+function reachesGatewayHome(raw: string, mount: string, remoteHome?: string): string | undefined {
+  const candidate = normalizeRemotePath(raw, remoteHome);
   // A relative path is resolved against the session's remoteCwd, which
   // validateRemoteTarget already bounds to remote.root. Nothing to add here.
   if (!candidate || !path.posix.isAbsolute(candidate)) return undefined;
@@ -116,8 +137,8 @@ function reachesGatewayHome(raw: string, mount: string): string | undefined {
  * points: does `raw` name an instance home that is NOT the verified mount?
  * Returns the operator-facing reason, or undefined when the path is fine.
  */
-function offendingHomePath(raw: string, mount: string, gatewayHome: string | undefined): string | undefined {
-  const candidate = reachesGatewayHome(raw, mount);
+function offendingHomePath(raw: string, mount: string, opts: CommandPolicyOptions): string | undefined {
+  const candidate = reachesGatewayHome(raw, mount, opts.remoteHome);
   if (candidate === undefined) return undefined;
   const root = normalizeRemotePath(mount);
   // The remote session's own $JINN_HOME is a symlink farm whose entries resolve
@@ -129,7 +150,7 @@ function offendingHomePath(raw: string, mount: string, gatewayHome: string | und
   // its one reserved name instead.
   if (STAGE_FARM_SEGMENT.test(candidate)) return undefined;
 
-  const home = gatewayHome ? normalizeRemotePath(gatewayHome) : "";
+  const home = opts.gatewayHome ? normalizeRemotePath(opts.gatewayHome) : "";
   if (home && path.posix.isAbsolute(home) && isUnderRoot(candidate, home)) {
     return `Refusing a remote write to "${candidate}": that is the gateway's own JINN_HOME path, which on this host is not the verified mount "${root}"`;
   }
@@ -149,7 +170,7 @@ export function evaluateWritePathPolicy(filePath: string, opts?: CommandPolicyOp
   if (!mount) return { action: "allow" };
   const raw = String(filePath ?? "").trim();
   if (!raw) return { action: "allow" };
-  const reason = offendingHomePath(raw, mount, opts?.gatewayHome);
+  const reason = offendingHomePath(raw, mount, opts ?? {});
   return reason ? { action: "block", reason } : { action: "allow" };
 }
 
@@ -177,7 +198,7 @@ function remoteContainmentReason(text: string, opts: CommandPolicyOptions | unde
   // path before it is refused, so `npm install` (which trips WRITE_COMMAND)
   // never blocks on its own.
   for (const token of absolutePathTokens(text)) {
-    const reason = offendingHomePath(token, mount, opts?.gatewayHome);
+    const reason = offendingHomePath(token, mount, opts ?? {});
     if (reason) return reason;
   }
   return undefined;

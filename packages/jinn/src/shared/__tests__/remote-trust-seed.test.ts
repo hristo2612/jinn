@@ -108,4 +108,18 @@ describe("remote-trust-seed asset", () => {
     expect(status).not.toBe(0);
     expect(stderr).toContain("jinn-trust-seed: failed");
   });
+
+  it("cleans its lock up, and breaks one left behind by a killed run", () => {
+    const configDir = tmpDir("cfg-lock-");
+    const lock = path.join(configDir, ".claude.json.jinn-lock");
+    // A lock whose owner died must not wedge the host forever — that would turn
+    // one crashed seed into a permanent hang for every project on the box.
+    fs.writeFileSync(lock, "");
+    const stale = new Date(Date.now() - 5 * 60_000);
+    fs.utimesSync(lock, stale, stale);
+
+    expect(runSeed(configDir, tmpDir("proj-lock-"))).toContain("changed=true");
+    expect(fs.existsSync(lock)).toBe(false);
+    expect(fs.readdirSync(configDir).filter((f) => f.includes(".tmp"))).toEqual([]);
+  });
 });

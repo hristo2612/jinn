@@ -41,7 +41,7 @@ export async function runTurn(input: TurnInput, surface: TurnSurface): Promise<v
   // A remote employee's host may be asleep. Wake it and wait for it BEFORE the
   // turn is announced as started, so the session reads as `waiting` rather than
   // `running` against a machine that is still booting. No-op for local employees.
-  const remoteReady = await ensureRemoteHostReady(input);
+  const remoteReady = await ensureRemoteHostReady(input, plan.engineName);
   if (!remoteReady.ok) {
     await settleRefusedTurn(input, surface, remoteReady.error, terminalFields);
     return;

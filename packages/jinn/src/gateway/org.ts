@@ -103,6 +103,7 @@ export function scanOrg(config?: JinnConfig): Map<string, Employee> {
           remoteHost: typeof data.remoteHost === "string" ? data.remoteHost.trim() : undefined,
           remoteUser: typeof data.remoteUser === "string" ? data.remoteUser.trim() : undefined,
           remoteCwd: typeof data.remoteCwd === "string" ? data.remoteCwd.trim() : undefined,
+          remoteClaudeConfigDir: typeof data.remoteClaudeConfigDir === "string" ? data.remoteClaudeConfigDir.trim() : undefined,
           provides: Array.isArray(data.provides)
             ? data.provides.filter((s: unknown) => s && typeof s === "object" && typeof (s as any).name === "string" && typeof (s as any).description === "string")
               .map((s: any) => ({ name: s.name as string, description: s.description as string }))

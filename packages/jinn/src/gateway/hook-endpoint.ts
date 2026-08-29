@@ -14,6 +14,8 @@ export interface HookEndpointCtx {
   remoteMountRoot?: string;
   /** The gateway's own JINN_HOME, for the same rule. */
   gatewayHome?: string;
+  /** `$HOME` on the remote host, so the policy can expand `$HOME`-rooted paths. */
+  remoteHome?: string;
 }
 
 /**
@@ -68,7 +70,7 @@ export function validateHookPost(
     return { status: 400, body: "bad request" };
   }
   if (body.hook.hook_event_name === "PreToolUse") {
-    const opts = { remoteMountRoot: ctx.remoteMountRoot, gatewayHome: ctx.gatewayHome };
+    const opts = { remoteMountRoot: ctx.remoteMountRoot, gatewayHome: ctx.gatewayHome, remoteHome: ctx.remoteHome };
     const input = body.hook.tool_input;
     const field = (name: string): string =>
       input && typeof input === "object" && name in input

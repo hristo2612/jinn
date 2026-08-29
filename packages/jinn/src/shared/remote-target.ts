@@ -50,6 +50,19 @@ export function isUnderRoot(candidate: string, root: string): boolean {
   return normalized.startsWith(normalizedRoot === "/" ? "/" : `${normalizedRoot}/`);
 }
 
+/**
+ * Hostnames, IPv4/IPv6 literals and `~/.ssh/config` aliases, and nothing else.
+ *
+ * The character set is the guard, and a leading `-` is the reason for it: the
+ * destination sits in ssh's own argv, so a host of `-oProxyCommand=…` is read
+ * by the LOCAL ssh as an option and runs a command ON THE GATEWAY. That is a
+ * jump from "can edit an org YAML" — which employees are explicitly told they
+ * may do — to code execution on the orchestrator, so it is refused at load.
+ */
+const SSH_HOST_RE = /^[A-Za-z0-9]([A-Za-z0-9._:-]*[A-Za-z0-9])?$/;
+/** POSIX-portable usernames. Same argv reasoning as the host. */
+const SSH_USER_RE = /^[A-Za-z0-9._][A-Za-z0-9._-]*$/;
+
 export interface RemoteTargetProblem {
   /** Operator-facing reason, already phrased for a log line or an API error. */
   error: string;
@@ -80,7 +93,48 @@ export function validateRemoteTarget(
     }
     return undefined;
   }
-  return validateRemoteConfig(host, remote) ?? validateRemoteCwd(host, cwd, remote!);
+  return validateDestination(host, user)
+    ?? validateRemoteConfig(host, remote)
+    ?? validateRemoteCwd(host, cwd, remote!)
+    ?? validateClaudeConfigDir(target, remote!);
+}
+
+/**
+ * The profile directory, if one is named. Absolute only, for the same reason
+ * `remoteCwd` is: the gateway cannot expand `~` for another machine's user, and
+ * passing it through unexpanded would have the remote shell resolve it outside
+ * anything we checked — against a variable that decides which credentials and
+ * which trust state the session runs with.
+ */
+function validateClaudeConfigDir(
+  target: RemoteTarget,
+  remote: RemoteExecutionConfig,
+): RemoteTargetProblem | undefined {
+  for (const [label, value] of [
+    ["remoteClaudeConfigDir", target.remoteClaudeConfigDir],
+    ["remote.claudeConfigDir", remote.claudeConfigDir],
+  ] as const) {
+    const dir = typeof value === "string" ? value.trim() : "";
+    if (!dir) continue;
+    if (dir.startsWith("~")) {
+      return { error: `${label} "${dir}" must be an absolute path, not home-relative` };
+    }
+    if (!path.posix.isAbsolute(dir)) {
+      return { error: `${label} "${dir}" must be an absolute path on the remote host` };
+    }
+  }
+  return undefined;
+}
+
+/** The half that keeps the target out of ssh's option namespace. */
+function validateDestination(host: string, user: string): RemoteTargetProblem | undefined {
+  if (!SSH_HOST_RE.test(host)) {
+    return { error: `remoteHost "${host}" is not a plain hostname, address or ssh alias — it would be passed into ssh's own arguments` };
+  }
+  if (user && !SSH_USER_RE.test(user)) {
+    return { error: `remoteUser "${user}" is not a plain username — it would be passed into ssh's own arguments` };
+  }
+  return undefined;
 }
 
 /** The instance-wide half: is remote execution configured coherently at all? */
@@ -151,5 +205,29 @@ export function employeeRemoteTarget(employee: Employee | undefined): RemoteTarg
     remoteHost: employee.remoteHost,
     ...(employee.remoteUser === undefined ? {} : { remoteUser: employee.remoteUser }),
     ...(employee.remoteCwd === undefined ? {} : { remoteCwd: employee.remoteCwd }),
+    ...(employee.remoteClaudeConfigDir === undefined ? {} : { remoteClaudeConfigDir: employee.remoteClaudeConfigDir }),
   };
+}
+
+/**
+ * Which Claude Code profile a remote session runs as: the employee's own
+ * `remoteClaudeConfigDir`, else the instance-wide `remote.claudeConfigDir`,
+ * else undefined for the remote user's default profile.
+ *
+ * The value reaches TWO places and they must agree, or the feature fails
+ * silently: the session's `CLAUDE_CONFIG_DIR`, and the environment the
+ * folder-trust seed runs under. Claude Code keeps `.claude.json` INSIDE the
+ * config dir once that variable is set (`home.ts` `claudeJsonPath`), so a seed
+ * run without it writes `~/.claude.json` while the session reads
+ * `<profile>/.claude.json` — the trust dialog then appears in front of a PTY
+ * with nobody at the keyboard and the first turn hangs forever.
+ */
+export function resolveRemoteClaudeConfigDir(
+  target: RemoteTarget,
+  remote: RemoteExecutionConfig | undefined,
+): string | undefined {
+  const own = typeof target.remoteClaudeConfigDir === "string" ? target.remoteClaudeConfigDir.trim() : "";
+  if (own) return own;
+  const shared = typeof remote?.claudeConfigDir === "string" ? remote.claudeConfigDir.trim() : "";
+  return shared || undefined;
 }

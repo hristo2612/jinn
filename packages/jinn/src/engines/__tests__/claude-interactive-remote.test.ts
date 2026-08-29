@@ -12,8 +12,13 @@ import path from "node:path";
  */
 
 const REMOTE_STAGE = "/mnt/jinn-home/.jinn-remote-stage";
-const REMOTE_SETTINGS = `${REMOTE_STAGE}/tmp/settings/remote-sess.json`;
-const REMOTE_MCP = `${REMOTE_STAGE}/tmp/mcp/remote-sess/config.json`;
+/** Per SESSION, not per host: gateway.json carries this spawn's tunnel port, so
+ *  a home shared between sessions would let one prepare repoint another's live
+ *  hook relay at a port with no tunnel behind it. */
+const REMOTE_HOME = `${REMOTE_STAGE}/sessions/remote-sess`;
+const REMOTE_SETTINGS = `${REMOTE_HOME}/tmp/settings.json`;
+const REMOTE_MCP = `${REMOTE_HOME}/tmp/mcp.json`;
+const REMOTE_ENV_FILE = `${REMOTE_HOME}/tmp/session-env.sh`;
 
 const hoisted = vi.hoisted(() => ({
   spawns: [] as { bin: string; args: string[]; opts: any }[],
@@ -83,7 +88,9 @@ vi.mock("../remote-stage.js", async (importOriginal) => {
       return {
         destination: "builder@build-box",
         tunnelPort: 44321,
+        sessionHome: REMOTE_HOME,
         settingsPath: REMOTE_SETTINGS,
+        envFilePath: REMOTE_ENV_FILE,
         ...(opts.resolvedMcp ? { mcpConfigPath: REMOTE_MCP } : {}),
       };
     }),
@@ -216,7 +223,7 @@ describe("InteractiveClaudeEngine — remote branch", () => {
       for (const key of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"]) {
         expect(cmd, key).toContain(`'-u' '${key}'`);
       }
-      expect(cmd).toContain(`JINN_HOME='${REMOTE_STAGE}'`);
+      expect(cmd).toContain(`JINN_HOME='${REMOTE_HOME}'`);
       expect(cmd).toContain(`JINN_SESSION_ID='${SID}'`);
     });
 
@@ -329,6 +336,33 @@ describe("InteractiveClaudeEngine — remote branch", () => {
       expect(lifecycle.getWarm(SID)).toBeDefined();
     });
 
+    it("stages NOTHING when a turn claims the session mid-preparation", async () => {
+      // The guards at the top of ensureIdleSpawn are synchronous; this covers
+      // the multi-second staging window they cannot see into. Staging probes a
+      // fresh tunnel port and writes it into the session's gateway.json, which
+      // the hook relay re-reads on EVERY hook — so staging and only then
+      // discovering a turn owns the session repoints that turn's relay at a
+      // port this (abandoned) spawn was never going to open a tunnel on. The
+      // relay swallows a failed POST by design, so the turn would run to
+      // completion with no Stop, no PreToolUse policy, and nothing reported.
+      const { ensureRemoteReady } = await import("../remote-stage.js");
+      (ensureRemoteReady as any).mockImplementationOnce(async () => {
+        // A real turn wins the session while readiness is still being checked.
+        lifecycle.adopt(SID, { kill: () => {}, write: () => {}, resize: () => {} } as any);
+        return {
+          ready: true,
+          facts: {
+            home: "/home/builder", stageDir: REMOTE_STAGE, nodeBin: "/usr/bin/node",
+            claudeBin: "/usr/local/bin/claude", jinnVersion: "0.32.0", entryDir: "/usr/lib/jinn/src/mcp",
+          },
+        };
+      });
+      engine.ensureIdleSpawn(SID, { ...TARGET } as any);
+      await flush();
+      expect(hoisted.prepareCalls).toHaveLength(0);
+      expect(hoisted.spawns).toHaveLength(0);
+    });
+
     it("spawns nothing at all when the remote host is not ready", async () => {
       hoisted.ready = false;
       engine.ensureIdleSpawn(SID, { ...TARGET } as any);
@@ -345,5 +379,81 @@ describe("InteractiveClaudeEngine — remote branch", () => {
       expect(hoisted.prepareCalls).toHaveLength(0);
       cleanupSessionSettings(CLAUDE_SETTINGS_DIR, "local-idle");
     });
+  });
+});
+
+/**
+ * Which Claude Code profile a remote session runs as.
+ *
+ * A profile-manager wrapper (`cpm`, and friends) would also set
+ * CLAUDE_CONFIG_DIR — but it unsets every CLAUDE_* variable first, stripping
+ * the three the session depends on. So the variable is set here instead, and
+ * the plain binary is used.
+ */
+describe("InteractiveClaudeEngine — claude profile", () => {
+  let lifecycle: PtyLifecycleManager;
+
+  function engineWith(remote: Record<string, unknown>): InteractiveClaudeEngine {
+    lifecycle = new PtyLifecycleManager({ maxLivePtys: 10 });
+    const hookRegistry = { register: () => {}, unregister: () => {} } as any;
+    return new InteractiveClaudeEngine(lifecycle, hookRegistry, {
+      remote: () => remote as any,
+      gatewayPort: () => 8722,
+    });
+  }
+
+  async function remoteCommandFor(
+    remote: Record<string, unknown>,
+    target: Record<string, unknown> = {},
+  ): Promise<string> {
+    const engine = engineWith(remote);
+    void engine.run({ sessionId: SID, prompt: "go", cwd: "/tmp", ...TARGET, ...target } as any)
+      .catch(() => { /* abandoned by design */ });
+    await flush();
+    return remoteCommandOf(hoisted.spawns[0].args);
+  }
+
+  beforeEach(() => {
+    hoisted.spawns.length = 0;
+    hoisted.prepareCalls.length = 0;
+    hoisted.ensureCalls.length = 0;
+    hoisted.ready = true;
+  });
+  afterEach(() => {
+    lifecycle?.killAll();
+    cleanupSessionSettings(CLAUDE_SETTINGS_DIR, SID);
+  });
+
+  it("sets CLAUDE_CONFIG_DIR from the instance-wide default", async () => {
+    const cmd = await remoteCommandFor({ ...REMOTE_CONFIG, claudeConfigDir: "/home/u/.claude-profiles/personal" });
+    expect(cmd).toContain("CLAUDE_CONFIG_DIR='/home/u/.claude-profiles/personal'");
+    // The variables a wrapper would have stripped must survive.
+    expect(cmd).toContain("CLAUDE_CODE_RESUME_TOKEN_THRESHOLD=");
+    expect(cmd).toContain("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=");
+  });
+
+  it("lets the employee's own profile win", async () => {
+    const cmd = await remoteCommandFor(
+      { ...REMOTE_CONFIG, claudeConfigDir: "/home/u/.claude-profiles/personal" },
+      { remoteClaudeConfigDir: "/home/u/.claude-profiles/work" },
+    );
+    expect(cmd).toContain("CLAUDE_CONFIG_DIR='/home/u/.claude-profiles/work'");
+    expect(cmd).not.toContain("personal");
+  });
+
+  it("UNSETS an inherited CLAUDE_CONFIG_DIR when no profile is configured", async () => {
+    // Otherwise a value in the remote login environment would silently pick the
+    // profile — and so the credentials and trust state — that a session runs
+    // with. Which profile is used is always explicit or the user's default.
+    const cmd = await remoteCommandFor(REMOTE_CONFIG);
+    expect(cmd).toContain("'-u' 'CLAUDE_CONFIG_DIR'");
+    expect(cmd).not.toContain("CLAUDE_CONFIG_DIR=");
+  });
+
+  it("passes the resolved profile to the staging step, so the trust seed matches", async () => {
+    // The seed and the session must agree; if they don't, the seed writes a
+    // .claude.json the session never opens and the first turn hangs.
+    await remoteCommandFor({ ...REMOTE_CONFIG, claudeConfigDir: "/home/u/.claude-profiles/personal" });
+    expect(hoisted.ensureCalls[0].remote.claudeConfigDir).toBe("/home/u/.claude-profiles/personal");
   });
 });

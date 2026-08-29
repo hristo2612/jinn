@@ -20,7 +20,7 @@ import { claudeResetsAtSeconds } from "../shared/engine-reset-times.js";
 import { writeMcpConfigFile } from "../mcp/resolver.js";
 import { parsePermissionPrompt, chooseApproval, keystrokesToSelect } from "./claude-permission-prompt.js";
 import { resolveClaudeConfigDir } from "../shared/home.js";
-import { assertRemoteTarget, isRemoteTarget } from "../shared/remote-target.js";
+import { assertRemoteTarget, isRemoteTarget, resolveRemoteClaudeConfigDir } from "../shared/remote-target.js";
 import type { RemoteTarget, ResolvedMcpConfig } from "../shared/types.js";
 import type { RemoteExecutionConfig } from "../shared/config-types.js";
 import {
@@ -1646,6 +1646,17 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
     "CLAUDE_CODE_ENTRYPOINT",
   ];
 
+  /** The deny list for one spawn. When no profile is configured,
+   *  `CLAUDE_CONFIG_DIR` joins it: an inherited value would otherwise pick a
+   *  profile — and so a set of credentials and a trust state — that nothing in
+   *  the config asked for, silently. Which profile a session runs as is always
+   *  either explicit or the remote user's default, never accidental. */
+  private static remoteEnvDeny(claudeConfigDir: string | undefined): string[] {
+    return claudeConfigDir
+      ? InteractiveClaudeEngine.REMOTE_ENV_DENY
+      : [...InteractiveClaudeEngine.REMOTE_ENV_DENY, "CLAUDE_CONFIG_DIR"];
+  }
+
   /** Environment for the REMOTE claude process.
    *
    *  `env` handed to `pty.spawn` reaches only the local ssh client — it never
@@ -1654,11 +1665,24 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
    *  {@link buildPtyEnv} builds, minus the SSE proxy pair (no proxy runs for a
    *  remote session) and minus the inherited process env (the remote user's
    *  login environment plays that role). */
-  private buildRemoteEnv(jinnSessionId: string, facts: RemoteFacts): Record<string, string> {
+  private buildRemoteEnv(
+    jinnSessionId: string,
+    staging: RemoteSessionStaging,
+    claudeConfigDir: string | undefined,
+  ): Record<string, string> {
     return {
-      // Points hook-relay.mjs and the built-in MCP server at the staged home —
-      // the symlink farm — rather than at a `~/.jinn` that may not exist there.
-      JINN_HOME: facts.stageDir,
+      // Which Claude Code profile the session runs as. Set here rather than by
+      // calling a profile-manager wrapper: those unset every CLAUDE_* variable
+      // before exec, which would strip the three below — and losing
+      // RESUME_TOKEN_THRESHOLD lets the "resume from summary?" picker appear in
+      // front of a PTY with nobody at the keyboard. The folder-trust seed is run
+      // with this same value; the two disagreeing is a guaranteed first-turn hang.
+      ...(claudeConfigDir ? { CLAUDE_CONFIG_DIR: claudeConfigDir } : {}),
+      // Points hook-relay.mjs and the built-in MCP server at THIS SESSION's
+      // staged home — its own symlink farm and its own gateway.json — rather
+      // than at a `~/.jinn` that may not exist there, or at a home shared with
+      // another session whose tunnel port is not this one's.
+      JINN_HOME: staging.sessionHome,
       JINN_SESSION_ID: jinnSessionId,
       CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: "1",
       CLAUDE_CODE_RESUME_TOKEN_THRESHOLD: "999999999",
@@ -1682,7 +1706,8 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
     jinnSessionId: string,
     target: RemoteTarget,
     resolvedMcp: ResolvedMcpConfig | undefined,
-  ): Promise<{ facts: RemoteFacts; staging: RemoteSessionStaging; remote: RemoteExecutionConfig }> {
+    beforeStage?: () => boolean,
+  ): Promise<{ facts: RemoteFacts; staging: RemoteSessionStaging; remote: RemoteExecutionConfig } | undefined> {
     const remote = this.readRemoteConfig();
     assertRemoteTarget(target, remote);
     // Without a real gateway port the reverse forward would be built as
@@ -1694,6 +1719,14 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
     }
     const readiness = await ensureRemoteReady(target, remote, { allowWake: false });
     if (!readiness.ready) throw new Error(`remote host not ready: ${readiness.reason}`);
+    // Last chance to stand down without having written anything. Staging
+    // rewrites this session's gateway.json with a freshly probed tunnel port,
+    // and the hook relay reads that file on every hook — so a caller that
+    // stages and THEN discovers a turn owns the session has already repointed
+    // that turn's relay at a port it will never open a tunnel on. The relay
+    // swallows a failed POST by design, so that turn would run to completion
+    // with no Stop, no PreToolUse policy, and nothing reported anywhere.
+    if (beforeStage?.()) return undefined;
     const staging = await prepareRemoteSession({
       target,
       remote: remote!,
@@ -1716,7 +1749,10 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
       // files the model cannot open is worse than one that refuses.
       throw new Error("attachments are not supported for remote employees — the file paths are local to the gateway");
     }
-    const { facts, staging } = await this.prepareRemote(jinnSessionId, opts, opts.resolvedMcp);
+    // No `beforeStage`: a turn owns the session by the time it reaches here and
+    // never stands down, so this is always defined.
+    const { facts, staging, remote } = (await this.prepareRemote(jinnSessionId, opts, opts.resolvedMcp))!;
+    const claudeConfigDir = resolveRemoteClaudeConfigDir(opts, remote);
 
     const args = buildInteractiveArgs({
       prompt: buildPromptWithPlatformContext(opts),
@@ -1737,8 +1773,9 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
       tunnelPort: staging.tunnelPort,
       gatewayPort: this.readGatewayPort(),
       remoteCwd: opts.remoteCwd!,
-      remoteEnv: this.buildRemoteEnv(jinnSessionId, facts),
-      unsetRemoteEnv: InteractiveClaudeEngine.REMOTE_ENV_DENY,
+      remoteEnv: this.buildRemoteEnv(jinnSessionId, staging, claudeConfigDir),
+      envFile: staging.envFilePath,
+      unsetRemoteEnv: InteractiveClaudeEngine.remoteEnvDeny(claudeConfigDir),
       // Claude Code runs every hook as bare `node`; without the resolved node
       // directory on PATH the relay cannot start, no Stop ever arrives, and the
       // turn hangs forever with nothing reported anywhere.
@@ -1857,15 +1894,26 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
           // ~/.claude has never seen, AND get adopted as the warm PTY, so the
           // next real turn would paste its prompt into a local process and the
           // employee would quietly be running on the gateway after all.
-          const { facts, staging } = await this.prepareRemote(jinnSessionId, remoteTarget, undefined);
-          if (this.lifecycle.getWarm(jinnSessionId) || this.active.has(jinnSessionId)) return;
+          // The claim is re-checked INSIDE prepareRemote, after the host is
+          // known good but before anything is written — see `beforeStage`. The
+          // guards at the top of this method are synchronous and cannot cover
+          // the multi-second staging window, during which a real turn may claim
+          // the session; discovering that only afterwards is too late, because
+          // this session's gateway.json would already name a tunnel port that
+          // only this (now abandoned) spawn was ever going to open.
+          const claimed = () => Boolean(this.lifecycle.getWarm(jinnSessionId)) || this.active.has(jinnSessionId);
+          const prepared = await this.prepareRemote(jinnSessionId, remoteTarget, undefined, claimed);
+          if (!prepared || claimed()) return;
+          const { facts, staging, remote } = prepared;
+          const claudeConfigDir = resolveRemoteClaudeConfigDir(remoteTarget, remote);
           const sshArgs = buildSshSpawnArgs({
             destination: staging.destination,
             tunnelPort: staging.tunnelPort,
             gatewayPort: this.readGatewayPort(),
             remoteCwd: remoteTarget.remoteCwd!,
-            remoteEnv: this.buildRemoteEnv(jinnSessionId, facts),
-            unsetRemoteEnv: InteractiveClaudeEngine.REMOTE_ENV_DENY,
+            remoteEnv: this.buildRemoteEnv(jinnSessionId, staging, claudeConfigDir),
+            envFile: staging.envFilePath,
+            unsetRemoteEnv: InteractiveClaudeEngine.remoteEnvDeny(claudeConfigDir),
             pathPrepend: [remoteNodeDir(facts)],
             claudeBin: facts.claudeBin,
             claudeArgs: baseArgs(staging.settingsPath),
