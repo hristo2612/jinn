@@ -232,6 +232,17 @@ export interface RemoteExecutionConfig {
    *  mount. A reboot does not bring sshfs back, so a successful wake normally
    *  lands on a dead mount without this. */
   remountCommand?: string;
+  /**
+   * How long {@link wakeCommand} may run before it is killed, in ms.
+   * Default 300000 (5 minutes).
+   *
+   * Generous on purpose. A real startup path is not a fire-and-forget packet:
+   * it may probe reachability, read a power state over the network, press a
+   * physical ATX button and then wait for POST. Killing that partway through
+   * can land between the state read and the press — no press, no wake, and a
+   * turn that simply times out with nothing to show for it.
+   */
+  wakeTimeoutMs?: number;
   /** Total bound on waiting for an unreachable host, in ms. Default 240000.
    *  Bounded on purpose: a box that is off for the weekend must fail the turn,
    *  not pin it at "waiting" forever. */

@@ -39,7 +39,7 @@ vi.mock("node:dgram", () => {
   return { default: { createSocket }, createSocket };
 });
 
-import { shq, buildSshSpawnArgs, sendWakeOnLan, FACTS_SCRIPT, FARM_SCRIPT, buildTrustSeedCommand, trustSeedKey } from "../remote-stage.js";
+import { shq, buildSshSpawnArgs, sendWakeOnLan, FACTS_SCRIPT, FARM_SCRIPT, buildTrustSeedCommand, trustSeedKey, ensureRemoteReady } from "../remote-stage.js";
 
 const isWindows = process.platform === "win32";
 
@@ -667,4 +667,45 @@ describe("trust seed — profile agreement", () => {
     expect(trustSeedKey("box", "/srv/jinn-work/proj", PROFILE))
       .toBe(trustSeedKey("box", "/srv/jinn-work/proj", PROFILE));
   });
+});
+
+
+/**
+ * The wake budget.
+ *
+ * A real startup path is not a packet: it may probe reachability, read a power
+ * state over the network, press a physical ATX button, then wait for POST. The
+ * dangerous kill is the one that lands BETWEEN the state read and the press —
+ * the host never wakes and the turn just times out with nothing to show.
+ */
+describe("wakeCommand timeout", () => {
+  const REMOTE = { root: "/srv/jinn-work", mount: "/mnt/jinn-home" };
+
+  it("defaults to five minutes, not the old thirty seconds", async () => {
+    const started = Date.now();
+    // A command that outlives 30s but finishes well inside the new default.
+    const res = await ensureRemoteReady(
+      { remoteHost: "203.0.113.1", remoteCwd: "/srv/jinn-work/p" },
+      { ...REMOTE, wakeCommand: "sleep 0.2", waitMs: 1, probeIntervalMs: 1 },
+      { allowWake: true, sleep: async () => {} },
+    );
+    // Unreachable host, so it still reports not ready — the point is that the
+    // wake command ran to completion rather than being cut short.
+    expect(res.ready).toBe(false);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(180);
+  }, 20_000);
+
+  it("honours an explicit wakeTimeoutMs", async () => {
+    const started = Date.now();
+    const res = await ensureRemoteReady(
+      { remoteHost: "203.0.113.1", remoteCwd: "/srv/jinn-work/p" },
+      { ...REMOTE, wakeCommand: "sleep 30", wakeTimeoutMs: 300, waitMs: 1, probeIntervalMs: 1 },
+      { allowWake: true, sleep: async () => {} },
+    );
+    expect(res.ready).toBe(false);
+    // The elapsed total is dominated by two unroutable ssh probes (~5s each),
+    // so the property under test is that the 30s sleep was CUT SHORT: without
+    // the kill this could not finish inside 25s.
+    expect(Date.now() - started).toBeLessThan(25_000);
+  }, 40_000);
 });

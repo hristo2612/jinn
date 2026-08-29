@@ -103,6 +103,8 @@ remote:
   # Which Claude Code profile remote sessions run as. Omit for the remote
   # user's default. An employee's remoteClaudeConfigDir overrides it.
   claudeConfigDir: /home/<user>/.claude-profiles/personal
+  # How long wakeCommand may run before it is killed. Default 300000 (5 min).
+  wakeTimeoutMs: 300000
   # Bound on waiting for an unreachable host. Default 240000 (4 minutes).
   waitMs: 300000
 ```
@@ -234,7 +236,15 @@ because a command line is readable by every process on that host.
 A desktop is usually off, so this is part of the feature rather than an error
 case. When a turn starts and the host is unreachable, the gateway sends the wake
 (`wakeCommand`, else a Wake-on-LAN magic packet), moves the session to
-`waiting`, tells the operator, and polls until `waitMs` runs out. On success the
+`waiting`, tells the operator, and polls until `waitMs` runs out.
+
+A `wakeCommand` gets `wakeTimeoutMs` (default five minutes) to finish. That is
+deliberately generous: a real startup path is not a fire-and-forget packet — it
+may probe reachability, read a power state over the network, press a physical
+ATX button and then wait for the machine to POST. Killing it partway through can
+land between the state read and the press, so nothing wakes and the turn simply
+times out. Give the command room to complete rather than backgrounding it, so
+its exit code and stderr are still yours to read when it fails. On success the
 turn proceeds; on timeout the turn fails with a message naming the host.
 
 Two deliberate asymmetries:

@@ -47,6 +47,9 @@ const SESSIONS_DIR = "sessions";
 const SESSION_STAGE_TTL_DAYS = 7;
 
 const DEFAULT_WAIT_MS = 240_000;
+/** Budget for a `wakeCommand`. Five minutes because a real startup path presses
+ *  a power button and waits for a machine to POST, rather than sending a packet. */
+const DEFAULT_WAKE_TIMEOUT_MS = 300_000;
 const DEFAULT_PROBE_INTERVAL_MS = 10_000;
 /** Per-probe ssh timeout. Short: this question is "is the box up", and a host
  *  that needs longer than this to answer a TCP handshake is, for our purposes,
@@ -375,12 +378,18 @@ export async function sendWakeOnLan(mac: string): Promise<void> {
   });
 }
 
-async function runLocalWakeCommand(command: string): Promise<void> {
+async function runLocalWakeCommand(command: string, timeoutMs: number): Promise<void> {
   await new Promise<void>((resolve) => {
     const child = spawn(command, { shell: true, stdio: ["ignore", "pipe", "pipe"] });
     let stderr = "";
     child.stderr.on("data", (d) => { stderr += String(d); });
-    const timer = setTimeout(() => { try { child.kill("SIGKILL"); } catch { /* gone */ } }, 30_000);
+    // Long by default: see `wakeTimeoutMs`. A wake command that presses a
+    // physical power button does real work before the press, and killing it in
+    // that window is worse than waiting — the host never comes up at all.
+    const timer = setTimeout(() => {
+      logger.warn(`remote wakeCommand exceeded ${Math.round(timeoutMs / 1000)}s and was killed`);
+      try { child.kill("SIGKILL"); } catch { /* gone */ }
+    }, timeoutMs);
     timer.unref?.();
     child.on("error", (err) => {
       clearTimeout(timer);
@@ -525,7 +534,7 @@ async function verifyClaudeProfile(
 async function triggerWake(destination: string, remote: RemoteExecutionConfig): Promise<string | undefined> {
   if (remote.wakeCommand) {
     logger.info(`remote: waking ${destination} via wakeCommand`);
-    await runLocalWakeCommand(remote.wakeCommand);
+    await runLocalWakeCommand(remote.wakeCommand, remote.wakeTimeoutMs ?? DEFAULT_WAKE_TIMEOUT_MS);
     return undefined;
   }
   if (remote.wakeMac) {
