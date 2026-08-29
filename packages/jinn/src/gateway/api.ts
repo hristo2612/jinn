@@ -239,6 +239,7 @@ import {
 import { resolveApprovalDecisionAuthority, resolveRootApprovalTarget, type ApprovalDecisionAuthorityOptions } from "./approval-authority.js";
 import { approvalGateClass } from "./workflow-todo-binding.js";
 import { orgRegistry } from "./org-registry.js";
+import { isRemoteTarget } from "../shared/remote-target.js";
 import { TODO_DISPATCHER_NAME } from "./system-employees.js";
 import { claimTodoForDelegation, claimTodoForDispatch } from "./todo-claim.js";
 import {
@@ -4924,8 +4925,29 @@ export async function handleApiRequest(
       const _parsed = await readJsonBody(req, res, { maxBytes: HOOK_BODY_MAX_BYTES });
       if (!_parsed.ok) return;
       const hookBody = _parsed.body as { jinnSessionId?: string; hook?: import("./hook-registry.js").HookPayload };
+      // Remote containment: a session running over SSH reaches the org's real
+      // knowledge/docs/org through one sshfs mount. If that mount drops, writes
+      // to a JINN_HOME-shaped path succeed into an empty local directory on the
+      // remote box and the org diverges with no error anywhere — so the mount
+      // root travels with the hook and the policy refuses anything outside it.
+      // Left undefined for a local employee, which keeps this path unchanged,
+      // and resolved only for PreToolUse — the sole event the policy inspects —
+      // so the Stop/SessionStart path costs no session or org lookup.
+      const hookConfig = context.getConfig();
+      const hookSession = hookBody.hook?.hook_event_name === "PreToolUse" && hookBody.jinnSessionId
+        ? getSession(hookBody.jinnSessionId)
+        : undefined;
+      const hookEmployee = hookSession?.employee
+        ? orgRegistry(hookConfig).get(hookSession.employee)
+        : undefined;
+      const remoteMountRoot = isRemoteTarget(hookEmployee) ? hookConfig.remote?.mount : undefined;
       const rejected = validateHookPost(
-        { reg: context.hookRegistry, secret: context.hookSecret, remoteAddress: remote },
+        {
+          reg: context.hookRegistry,
+          secret: context.hookSecret,
+          remoteAddress: remote,
+          ...(remoteMountRoot ? { remoteMountRoot, gatewayHome: context.jinnHome ?? JINN_HOME } : {}),
+        },
         req.headers["x-jinn-hook-secret"] as string | undefined,
         hookBody,
       );

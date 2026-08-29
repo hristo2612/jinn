@@ -15,6 +15,7 @@ import { isDurableWorkflowUserMessageInterruption } from "../workflow-interrupti
 import { runEngineAttempt, resolveModelFallback, type EngineAttempt } from "./engine-run.js";
 import { armTurnHeartbeat } from "./heartbeat.js";
 import { preflightTurn, warnIfNearUsageLimit } from "./preflight.js";
+import { ensureRemoteHostReady } from "./remote-ready.js";
 import { runRateLimitTurn } from "./rate-limit-turn.js";
 import { clearDeadEngineSession, settleAnsweredTurn, settleRefusedTurn, settleThrownTurn } from "./settle.js";
 import { clearSupersededTurnMeta, isTurnSuperseded } from "./superseded.js";
@@ -34,6 +35,15 @@ export async function runTurn(input: TurnInput, surface: TurnSurface): Promise<v
   const plan = preflightTurn(input);
   if (!plan.ok) {
     await settleRefusedTurn(input, surface, plan.error, terminalFields);
+    return;
+  }
+
+  // A remote employee's host may be asleep. Wake it and wait for it BEFORE the
+  // turn is announced as started, so the session reads as `waiting` rather than
+  // `running` against a machine that is still booting. No-op for local employees.
+  const remoteReady = await ensureRemoteHostReady(input);
+  if (!remoteReady.ok) {
+    await settleRefusedTurn(input, surface, remoteReady.error, terminalFields);
     return;
   }
 

@@ -611,6 +611,12 @@ export async function startGateway(
   });
   const interactiveClaudeEngine = new InteractiveClaudeEngine(claudeLifecycle, hookRegistry, {
     autoApproveSafetyPrompts: claudeCfg.autoApproveSafetyPrompts,
+    // Read live, not captured: config.yaml hot-reloads, so an edited `remote`
+    // block takes effect on the next spawn rather than the next restart.
+    remote: () => currentConfig.remote,
+    // The reverse tunnel's forward-to end. Loopback on the gateway, so this is
+    // the port the remote hook relay and MCP servers ultimately reach.
+    gatewayPort: () => port,
   });
 
   // Codex has two modes: headless `codex exec --json` for chat/default work

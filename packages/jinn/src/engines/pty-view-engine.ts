@@ -4,6 +4,7 @@
  * Antigravity engine implement this, so the WebSocket handler can route by
  * `session.engine` instead of being hardwired to one engine.
  */
+import type { RemoteTarget } from "../shared/types.js";
 
 import type { SerializedPtySnapshot } from "./pty-snapshot.js";
 
@@ -30,7 +31,7 @@ export interface PtySnapshotSubscription {
   unsubscribe(): void;
 }
 
-export interface PtyIdleSpawnOpts {
+export interface PtyIdleSpawnOpts extends RemoteTarget {
   /** Engine-side conversation/session id to resume into the idle PTY, if any. */
   engineSessionId?: string;
   cwd?: string;

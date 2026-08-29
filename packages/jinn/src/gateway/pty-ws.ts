@@ -1,6 +1,8 @@
 import type { WebSocket } from "ws";
 import type { PtyControlEvent, PtyIdleSpawnOpts, PtyViewEngine } from "../engines/pty-view-engine.js";
 import { getEngineSessionRef, getSession } from "../sessions/registry.js";
+import { orgRegistry } from "./org-registry.js";
+import { employeeRemoteTarget } from "../shared/remote-target.js";
 import { JINN_HOME } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
 
@@ -101,11 +103,18 @@ export function attachPtyWebSocket(
 
   const idleSpawnOpts = (cols: number, rows: number): PtyIdleSpawnOpts => {
     const session = getSession(sessionId);
+    // The employee's remote target has to reach the idle spawn too. Without it
+    // this path spawns claude on the GATEWAY and the engine adopts it as the
+    // session's warm PTY, so the next real turn pastes into a local process —
+    // a remote employee silently running here, looking entirely normal in the UI.
+    const employee = session?.employee ? orgRegistry().get(session.employee) : undefined;
+    const remote = employeeRemoteTarget(employee);
     return {
       engineSessionId: session ? getEngineSessionRef(session).id : undefined,
       model: session?.model ?? undefined,
       effortLevel: session?.effortLevel ?? undefined,
       cwd: JINN_HOME,
+      ...remote,
       cols,
       rows,
     };

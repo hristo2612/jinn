@@ -24,6 +24,8 @@
  */
 
 import type { RateLimitHandlerOpts, RateLimitOutcome } from "./rate-limit-contract.js";
+import type { RemoteTarget } from "../shared/types.js";
+import { isRemoteTarget } from "../shared/remote-target.js";
 import { JINN_HOME } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
 import { engineAvailable, type EngineName } from "../shared/models.js";
@@ -55,10 +57,19 @@ export async function handleRateLimit(opts: RateLimitHandlerOpts): Promise<RateL
   const {
     session, attemptToken, prompt, systemPrompt, platformContextRefresh, engineConfig, effortLevel, cliFlags,
     mcpConfigPath, resolvedMcp, attachments, config, engines, employee, engine,
-    rateLimit, originalResult, hooks,
+    remoteHost, remoteUser, remoteCwd, rateLimit, originalResult, hooks,
   } = opts;
 
   const engineLabel = rateLimitEngineLabel(session.engine);
+
+  // Where this turn actually runs. Read the same way `cliFlags` is below — the
+  // employee record first, the explicitly passed target as the fallback — so the
+  // two sources cannot silently disagree about which host owns the session.
+  const remoteTarget: RemoteTarget = {
+    remoteHost: employee?.remoteHost ?? remoteHost,
+    remoteUser: employee?.remoteUser ?? remoteUser,
+    remoteCwd: employee?.remoteCwd ?? remoteCwd,
+  };
 
   // Both chain walkers read the generic record; Claude's store answers a different question.
   recordEngineUnavailable(session.engine, `${engineLabel} usage limit`, rateLimit.resetsAt);
@@ -68,7 +79,18 @@ export async function handleRateLimit(opts: RateLimitHandlerOpts): Promise<RateL
   const isUsable = (candidate: EngineName) => engines.has(candidate) && engineAvailable(config, candidate);
   const substituteName = resolveHealthyFallbackEngine(config, session.engine, isUsable, readEngineHealth());
   const substituteEngine = substituteName ? engines.get(substituteName) : undefined;
-  if (substituteName && substituteEngine) {
+  // No engine but the session's own has any notion of a remote host, so handing
+  // a remote employee's turn to a substitute would move it onto the gateway —
+  // unattended, with --dangerously-skip-permissions, against a repository that
+  // deliberately was never cloned there. Skipping Branch A leaves the turn to
+  // Branch B, which waits the limit out on the host that already owns the work.
+  const remoteSuppressesSubstitute = isRemoteTarget(remoteTarget);
+  if (substituteName && substituteEngine && remoteSuppressesSubstitute) {
+    logger.info(
+      `Session ${session.id} runs on ${remoteTarget.remoteHost} — not substituting ${rateLimitEngineLabel(substituteName)} for the ${engineLabel} usage limit (no engine can run remotely); waiting for the reset instead`,
+    );
+  }
+  if (substituteName && substituteEngine && !remoteSuppressesSubstitute) {
     const { resumeAt } = computeNextRetryDelayMs(rateLimit.resetsAt);
     const until = resumeAt ?? new Date(Date.now() + 6 * 60 * 60_000);
     const syncSince = new Date().toISOString();
@@ -212,6 +234,10 @@ export async function handleRateLimit(opts: RateLimitHandlerOpts): Promise<RateL
         model: currentSession.model ?? engineConfig.model,
         effortLevel,
         cliFlags,
+        // The retry is a fresh spawn, not a resume of the limited process, so it
+        // re-states where the session runs. Omit this and a rate-limited remote
+        // turn silently comes back on the gateway.
+        ...remoteTarget,
         mcpConfigPath,
         resolvedMcp,
         attachments: attachments?.length ? attachments : undefined,

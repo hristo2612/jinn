@@ -48,6 +48,13 @@ export async function runEngineAttempt(args: EngineAttemptArgs): Promise<EngineA
     model: args.model,
     effortLevel: plan.effortLevel,
     cliFlags: input.employee?.cliFlags,
+    // `cwd` above stays JINN_HOME: it is the gateway-side working directory and
+    // is meaningless on the remote host. The engine branches on `remoteHost` and
+    // uses `remoteCwd` instead — passing both is what lets one code path serve
+    // a local and a remote employee.
+    remoteHost: input.employee?.remoteHost,
+    remoteUser: input.employee?.remoteUser,
+    remoteCwd: input.employee?.remoteCwd,
     mcpConfigPath: plan.mcpConfigPath,
     resolvedMcp: plan.resolvedMcp,
     attachments: input.attachments.length ? input.attachments : undefined,

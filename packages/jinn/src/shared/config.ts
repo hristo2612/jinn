@@ -268,7 +268,7 @@ const CONFIG_TOP_LEVEL_KEY_SET: Record<keyof JinnConfig, true> = {
   jinn: true, gateway: true, engines: true, models: true, connectors: true,
   logging: true, mcp: true, plugins: true, budgets: true, sessions: true,
   cron: true, notifications: true, workflows: true, portal: true, context: true,
-  stt: true, talk: true, realtime: true,
+  stt: true, talk: true, realtime: true, remote: true,
 };
 export const CONFIG_TOP_LEVEL_KEYS = Object.keys(CONFIG_TOP_LEVEL_KEY_SET);
 

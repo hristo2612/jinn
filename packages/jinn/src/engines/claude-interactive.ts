@@ -20,6 +20,16 @@ import { claudeResetsAtSeconds } from "../shared/engine-reset-times.js";
 import { writeMcpConfigFile } from "../mcp/resolver.js";
 import { parsePermissionPrompt, chooseApproval, keystrokesToSelect } from "./claude-permission-prompt.js";
 import { resolveClaudeConfigDir } from "../shared/home.js";
+import { assertRemoteTarget, isRemoteTarget } from "../shared/remote-target.js";
+import type { RemoteTarget, ResolvedMcpConfig } from "../shared/types.js";
+import type { RemoteExecutionConfig } from "../shared/config-types.js";
+import {
+  buildSshSpawnArgs,
+  ensureRemoteReady,
+  prepareRemoteSession,
+  type RemoteFacts,
+  type RemoteSessionStaging,
+} from "./remote-stage.js";
 
 export type { PtyControlEvent } from "./pty-view-engine.js";
 
@@ -926,12 +936,24 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
    *  rather than hanging, which is the other half of this fix. */
   private autoApproveSafetyPrompts: boolean;
 
+  /** Live readers rather than captured values: config.yaml hot-reloads, and a
+   *  remote block edited while the daemon runs must take effect on the next
+   *  spawn rather than at the next restart. */
+  private readRemoteConfig: () => RemoteExecutionConfig | undefined;
+  private readGatewayPort: () => number;
+
   constructor(
     private lifecycle: PtyLifecycleManager,
     private hookRegistry: HookRegistry,
-    opts: { autoApproveSafetyPrompts?: boolean } = {},
+    opts: {
+      autoApproveSafetyPrompts?: boolean;
+      remote?: () => RemoteExecutionConfig | undefined;
+      gatewayPort?: () => number;
+    } = {},
   ) {
     this.autoApproveSafetyPrompts = opts.autoApproveSafetyPrompts ?? true;
+    this.readRemoteConfig = opts.remote ?? (() => undefined);
+    this.readGatewayPort = opts.gatewayPort ?? (() => 0);
     this.streams = new PtyStreamManager("PTY", (id) => this.lifecycle.getWarm(id) !== undefined);
     // Purge per-PTY bookkeeping whenever the session's PTY is released (kill,
     // LRU eviction, sweep reap, cold respawn) so these maps don't grow forever
@@ -1177,6 +1199,20 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
       return { sessionId: opts.resumeSessionId ?? "", result: "", error: "Interactive engine: a turn is already running for this session" };
     }
 
+    // Attachments are gateway-local file paths (buildAttachmentSuffix), so they
+    // name nothing on another host. Refused HERE rather than in spawnRemote,
+    // because only the COLD path goes through spawn(): a remote session with a
+    // warm ssh PTY takes injectPrompt instead, which appends the same suffix
+    // unconditionally and would paste gateway paths into a session running
+    // elsewhere — the exact thing the guard exists to stop.
+    if (isRemoteTarget(opts) && opts.attachments?.length) {
+      return {
+        sessionId: opts.resumeSessionId ?? "",
+        result: "",
+        error: "Attachments are not supported for remote employees — the file paths are local to the gateway",
+      };
+    }
+
     // A previous turn may have left a late-recovery listener armed; this new
     // turn owns the session (and the hook registration) now.
     this.cancelLateRecovery(jinnSessionId);
@@ -1221,7 +1257,11 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
     });
     // A cold-respawn release cleans the per-session MCP file. Materialize the
     // already-resolved config again at the boundary where Claude will read it.
-    if (!warm && opts.resolvedMcp) {
+    // A remote session gets its MCP config staged on the other host instead
+    // (remapped for that install's node and entrypoints), so materializing the
+    // gateway-local file here would only write a config naming paths the remote
+    // claude cannot open — and it would carry any MCP server API keys with it.
+    if (!warm && opts.resolvedMcp && !isRemoteTarget(opts)) {
       opts.mcpConfigPath = writeMcpConfigFile(opts.resolvedMcp, jinnSessionId);
     }
     const nativeCommand = isNativeClaudeCommand(opts.prompt);
@@ -1592,9 +1632,144 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
     return handle;
   }
 
+  /** Variables the remote login environment must NOT carry into `claude`.
+   *  Mirrors `buildPtyEnv`'s `denyExact` plus the CLAUDECODE markers that
+   *  `scrubClaudeCode` strips locally — an inherited API key would silently
+   *  move the session off Max-subscription billing onto metered API billing,
+   *  which is the one thing the PTY architecture exists to prevent. */
+  private static readonly REMOTE_ENV_DENY = [
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "CLAUDECODE",
+    "CLAUDE_CODE_ENTRYPOINT",
+  ];
+
+  /** Environment for the REMOTE claude process.
+   *
+   *  `env` handed to `pty.spawn` reaches only the local ssh client — it never
+   *  crosses to the other host — so everything the engine needs there is
+   *  inlined into the remote command instead. This is the same set
+   *  {@link buildPtyEnv} builds, minus the SSE proxy pair (no proxy runs for a
+   *  remote session) and minus the inherited process env (the remote user's
+   *  login environment plays that role). */
+  private buildRemoteEnv(jinnSessionId: string, facts: RemoteFacts): Record<string, string> {
+    return {
+      // Points hook-relay.mjs and the built-in MCP server at the staged home —
+      // the symlink farm — rather than at a `~/.jinn` that may not exist there.
+      JINN_HOME: facts.stageDir,
+      JINN_SESSION_ID: jinnSessionId,
+      CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: "1",
+      CLAUDE_CODE_RESUME_TOKEN_THRESHOLD: "999999999",
+      CLAUDE_CODE_AUTO_COMPACT_WINDOW: process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW || "1000000",
+    };
+  }
+
+  /**
+   * Everything that has to be true, and true again, before a remote session is
+   * spawned: the host is up, its jinn-cli matches, and the gateway's JINN_HOME
+   * is genuinely mounted there.
+   *
+   * `allowWake` is false on both spawn paths. The turn runner has already woken
+   * the host and waited for it by the time it gets here, and the dashboard's
+   * idle PTY must never boot someone's desktop just because a tab was opened.
+   * What this call is really for is the mount sentinel, which is deliberately
+   * re-checked at every spawn rather than cached — it is the one fact that can
+   * go stale while the gateway keeps running.
+   */
+  private async prepareRemote(
+    jinnSessionId: string,
+    target: RemoteTarget,
+    resolvedMcp: ResolvedMcpConfig | undefined,
+  ): Promise<{ facts: RemoteFacts; staging: RemoteSessionStaging; remote: RemoteExecutionConfig }> {
+    const remote = this.readRemoteConfig();
+    assertRemoteTarget(target, remote);
+    // Without a real gateway port the reverse forward would be built as
+    // `-R <n>:127.0.0.1:0`, and the session would run with hooks and MCP calls
+    // going nowhere — the silent-hang failure this design works hardest to
+    // avoid. Refuse instead of spawning something that cannot report back.
+    if (!this.readGatewayPort()) {
+      throw new Error("remote spawn needs the gateway's port for the reverse tunnel, and none was provided");
+    }
+    const readiness = await ensureRemoteReady(target, remote, { allowWake: false });
+    if (!readiness.ready) throw new Error(`remote host not ready: ${readiness.reason}`);
+    const staging = await prepareRemoteSession({
+      target,
+      remote: remote!,
+      facts: readiness.facts,
+      jinnSessionId,
+      gatewayPort: this.readGatewayPort(),
+      ...(resolvedMcp ? { resolvedMcp } : {}),
+    });
+    return { facts: readiness.facts, staging, remote: remote! };
+  }
+
+  /** The remote counterpart of {@link spawn}. Same PTY contract — the object
+   *  node-pty owns here is the LOCAL ssh client, whose stream carries the
+   *  remote TUI, so scrollback, resize, kill and the safety-prompt parser all
+   *  work against it unchanged. */
+  private async spawnRemote(jinnSessionId: string, opts: EngineRunOpts): Promise<PtyHandle> {
+    if (opts.attachments?.length) {
+      // buildAttachmentSuffix appends GATEWAY filesystem paths into the prompt.
+      // On another host they name nothing, and a turn that silently references
+      // files the model cannot open is worse than one that refuses.
+      throw new Error("attachments are not supported for remote employees — the file paths are local to the gateway");
+    }
+    const { facts, staging } = await this.prepareRemote(jinnSessionId, opts, opts.resolvedMcp);
+
+    const args = buildInteractiveArgs({
+      prompt: buildPromptWithPlatformContext(opts),
+      // The REMOTE staged paths, not the gateway's.
+      settingsPath: staging.settingsPath,
+      ...(staging.mcpConfigPath ? { mcpConfigPath: staging.mcpConfigPath } : {}),
+      resumeSessionId: opts.resumeSessionId,
+      model: opts.model,
+      effortLevel: opts.effortLevel,
+      cliFlags: opts.cliFlags,
+      appendSystemPrompt: opts.systemPrompt
+        ? `${opts.systemPrompt}\n\n${MAIN_AGENT_SENTINEL}`
+        : MAIN_AGENT_SENTINEL,
+    });
+
+    const sshArgs = buildSshSpawnArgs({
+      destination: staging.destination,
+      tunnelPort: staging.tunnelPort,
+      gatewayPort: this.readGatewayPort(),
+      remoteCwd: opts.remoteCwd!,
+      remoteEnv: this.buildRemoteEnv(jinnSessionId, facts),
+      unsetRemoteEnv: InteractiveClaudeEngine.REMOTE_ENV_DENY,
+      claudeBin: facts.claudeBin,
+      claudeArgs: args,
+    });
+
+    const geom = this.lastGeom.get(jinnSessionId);
+    logger.info(
+      `InteractiveClaudeEngine spawning REMOTE session on ${staging.destination}:${opts.remoteCwd} `
+      + `(resume: ${opts.resumeSessionId || "none"}, tunnel: ${staging.tunnelPort}→${this.readGatewayPort()}, `
+      + `mcp: ${staging.mcpConfigPath ? "on" : "off"}, sseProxy: off)`,
+    );
+    const proc = pty.spawn(resolveBin("ssh"), sshArgs, {
+      name: "xterm-256color",
+      cols: geom?.cols ?? 120,
+      rows: geom?.rows ?? 40,
+      // The LOCAL cwd of the ssh client — irrelevant to the session, whose
+      // working directory is set by the `cd` inside the remote command.
+      cwd: JINN_HOME,
+      env: this.buildPtyEnv(undefined, jinnSessionId),
+    });
+    this.spawnParams.set(jinnSessionId, { model: opts.model, effortLevel: opts.effortLevel, appendApplied: true });
+    // No proxy argument: a remote session runs without the SSE forward proxy, so
+    // there is nothing to tear down when the PTY exits.
+    return this.wireProcToStream(jinnSessionId, proc);
+  }
+
   /** node-pty spawn of the genuine claude binary (no -p → cc_entrypoint=cli).
    *  Allocates a per-PTY SSE forward proxy first and points the child at it. */
   private async spawn(jinnSessionId: string, opts: EngineRunOpts, settingsPath: string): Promise<PtyHandle> {
+    // A remote employee never spawns claude on the gateway — not even as a
+    // fallback. Every path that could quietly relocate the session back here is
+    // closed on purpose; this is the last of them.
+    if (isRemoteTarget(opts)) return await this.spawnRemote(jinnSessionId, opts);
     const args = buildInteractiveArgs({
       prompt: buildPromptWithPlatformContext(opts),
       settingsPath,
@@ -1639,19 +1814,28 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
     if (this.idleSpawning.has(jinnSessionId)) return; // an idle spawn is already in flight
     this.idleSpawning.add(jinnSessionId);
 
+    const remoteTarget = isRemoteTarget(opts) ? opts : undefined;
+    // A local settings file is written even for a remote session: the cold-spawn
+    // cleanup path (`cleanupSessionSettings`) is keyed on it, and leaving a
+    // dangling entry there would be a second, subtler divergence. The REMOTE
+    // path is what actually reaches `--settings`.
     const settingsPath = writeSessionSettings(CLAUDE_SETTINGS_DIR, jinnSessionId, {
       sessionId: jinnSessionId,
       relayScript: HOOK_RELAY_SCRIPT,
       statusLineDir: CLAUDE_LIMITS_DIR,
     });
-    const args: string[] = [
-      "--chrome",
-      "--dangerously-skip-permissions",
-      "--disallowedTools", "AskUserQuestion", "ExitPlanMode",
-      "--settings", settingsPath,
-    ];
-    if (opts.engineSessionId) args.unshift("--resume", opts.engineSessionId);
-    if (opts.model) args.push("--model", opts.model);
+    const baseArgs = (settings: string): string[] => {
+      const args: string[] = [
+        "--chrome",
+        "--dangerously-skip-permissions",
+        "--disallowedTools", "AskUserQuestion", "ExitPlanMode",
+        "--settings", settings,
+      ];
+      if (opts.engineSessionId) args.unshift("--resume", opts.engineSessionId);
+      if (opts.model) args.push("--model", opts.model);
+      return args;
+    };
+    const args = baseArgs(settingsPath);
     const bin = resolveBin("claude", opts.bin);
     // Caller (pty-ws) passes the client's current cols/rows. Cache them so a
     // future cold spawn through run() picks up the right geometry too.
@@ -1661,6 +1845,37 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
 
     void (async () => {
       try {
+        if (remoteTarget) {
+          // Full parity: the dashboard's idle PTY goes over SSH too. Spawning
+          // claude locally here — which is what happens if this branch is
+          // missing — would `--resume` an engine session id the gateway's own
+          // ~/.claude has never seen, AND get adopted as the warm PTY, so the
+          // next real turn would paste its prompt into a local process and the
+          // employee would quietly be running on the gateway after all.
+          const { facts, staging } = await this.prepareRemote(jinnSessionId, remoteTarget, undefined);
+          if (this.lifecycle.getWarm(jinnSessionId) || this.active.has(jinnSessionId)) return;
+          const sshArgs = buildSshSpawnArgs({
+            destination: staging.destination,
+            tunnelPort: staging.tunnelPort,
+            gatewayPort: this.readGatewayPort(),
+            remoteCwd: remoteTarget.remoteCwd!,
+            remoteEnv: this.buildRemoteEnv(jinnSessionId, facts),
+            unsetRemoteEnv: InteractiveClaudeEngine.REMOTE_ENV_DENY,
+            claudeBin: facts.claudeBin,
+            claudeArgs: baseArgs(staging.settingsPath),
+          });
+          logger.info(
+            `InteractiveClaudeEngine ensureIdleSpawn REMOTE for session ${jinnSessionId} on `
+            + `${staging.destination} (resume ${opts.engineSessionId || "none — fresh"}, geom ${cols}×${rows})`,
+          );
+          const proc = pty.spawn(resolveBin("ssh"), sshArgs, {
+            name: "xterm-256color", cols, rows, cwd: JINN_HOME, env: this.buildPtyEnv(undefined, jinnSessionId),
+          });
+          const handle = this.wireProcToStream(jinnSessionId, proc);
+          this.spawnParams.set(jinnSessionId, { model: opts.model, effortLevel: undefined, appendApplied: false });
+          this.lifecycle.adopt(jinnSessionId, handle);
+          return;
+        }
         const { proxy, port } = await this.startProxy(jinnSessionId);
         // Re-check after the async gap: a real turn (run) or another idle spawn may
         // have claimed the session while we awaited the proxy bind. If so, don't

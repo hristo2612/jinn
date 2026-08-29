@@ -183,4 +183,46 @@ export interface JinnConfig {
    * slated for removal.
    */
   realtime?: RealtimeConfig;
+  /**
+   * Remote (SSH) execution for employees that declare `remoteHost`. Absent means
+   * remote employees refuse to load at all — the fail-closed default, because
+   * this ships to strangers and a remote session runs
+   * `--dangerously-skip-permissions` on someone's real machine.
+   */
+  remote?: RemoteExecutionConfig;
+}
+
+/**
+ * Remote (SSH) execution settings. One block for the whole instance: every
+ * remote employee shares the sandbox root, the JINN_HOME mount point, and the
+ * wake policy. Per-employee variation lives on the Employee record (host, user,
+ * cwd) and nowhere else.
+ */
+export interface RemoteExecutionConfig {
+  /** The one absolute prefix on the remote host that every `remoteCwd` must
+   *  resolve under. The single most proportionate guardrail for running
+   *  unattended with `--dangerously-skip-permissions` on a daily-driver box: it
+   *  does not stop a determined prompt from `cd ..`-ing out, but it bounds the
+   *  realistic accidental blast radius. */
+  root: string;
+  /** Where the gateway's own JINN_HOME is sshfs-mounted on the remote host. The
+   *  remote session's `$JINN_HOME` is a symlink farm over this, so knowledge,
+   *  docs, org and skills are the gateway's real files rather than copies. */
+  mount: string;
+  /** Run ON THE GATEWAY to wake a sleeping host (smart plug, jump box, …).
+   *  Takes precedence over {@link wakeMac}. */
+  wakeCommand?: string;
+  /** MAC address for the built-in Wake-on-LAN magic packet, used when
+   *  {@link wakeCommand} is unset. */
+  wakeMac?: string;
+  /** Run ON THE REMOTE once it is reachable, to re-establish the JINN_HOME
+   *  mount. A reboot does not bring sshfs back, so a successful wake normally
+   *  lands on a dead mount without this. */
+  remountCommand?: string;
+  /** Total bound on waiting for an unreachable host, in ms. Default 240000.
+   *  Bounded on purpose: a box that is off for the weekend must fail the turn,
+   *  not pin it at "waiting" forever. */
+  waitMs?: number;
+  /** Interval between reachability probes while waiting, in ms. Default 10000. */
+  probeIntervalMs?: number;
 }
