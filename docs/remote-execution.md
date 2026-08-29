@@ -32,7 +32,8 @@ blocked-on-a-question notifications are unaffected.
 ## Prerequisites on the remote host
 
 1. **Claude Code**, installed and signed in on the same plan the gateway uses.
-2. **Node.js**, on the login `PATH`.
+2. **Node.js**. Note the PATH caveat below — this is the single most likely
+   thing to bite you.
 3. **`jinn-cli` at the gateway's exact version**, installed globally:
    `npm install -g jinn-cli@<version>`. It is never started as a daemon there —
    it supplies the MCP server entrypoints, which are absolute paths that must
@@ -45,6 +46,38 @@ blocked-on-a-question notifications are unaffected.
    Mount it from `/etc/fstab` or a systemd automount so it survives a reboot,
    and set `remote.remountCommand` so the gateway can re-establish it after a
    wake.
+### The non-interactive PATH caveat
+
+Sessions reach the remote host over a non-interactive `ssh` command, which reads
+**no** shell rc file. A host whose Node comes from a version manager (nvm, fnm,
+asdf) therefore looks like it has no `node` at all:
+
+```
+ssh build-box 'command -v node'     # prints nothing
+ssh build-box                        # ...but node works fine once logged in
+```
+
+This matters twice over. The obvious half is that the preflight cannot find
+`node` or `jinn`. The dangerous half is that Claude Code invokes **every hook**
+as bare `node`, so without a resolvable `node` no hook could start — no `Stop`
+would ever arrive and the turn would hang forever with nothing reported.
+
+Jinn resolves nvm's layout directly rather than sourcing `nvm.sh` (which is
+bash-only, and `/bin/sh` is `dash` on Debian-family systems including Raspberry
+Pi OS), honouring nvm's `default` alias — a global `jinn-cli` lives under one
+version's tree, so taking the newest version instead would report jinn missing
+on a host where it is installed perfectly well. The resolved directory is then
+prepended to the session's PATH so the hook relay runs.
+
+If your host uses something Jinn cannot resolve, the fix is one symlink onto the
+default PATH:
+
+```bash
+ln -s "$(command -v node)" ~/.local/bin/node
+```
+
+Verify with `ssh <host> 'command -v node claude jinn'` — all three must print.
+
 5. **Key-only SSH from the gateway.** Sessions run with `BatchMode=yes`, so a
    passphrase-locked key with no agent will simply fail. The host key must
    already be in the gateway's `known_hosts` — Jinn will not accept a new host

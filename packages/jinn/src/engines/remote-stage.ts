@@ -172,8 +172,42 @@ export interface RemoteFacts {
   entryDir: string;
 }
 
-const FACTS_SCRIPT = `
+/**
+ * Probe the remote host for the absolute paths a session needs.
+ *
+ * The PATH dance at the top is load-bearing, not defensive clutter. A
+ * non-interactive ssh command reads no shell rc file, so a host whose Node is
+ * installed by a version manager reports no `node` at all — and nvm's own
+ * `nvm.sh` cannot rescue that, because it is bash-only and `/bin/sh` is `dash`
+ * on most Debian-family systems (a Raspberry Pi included). So nvm's layout is
+ * read directly.
+ *
+ * Honouring nvm's `default` alias matters rather than taking the newest
+ * version: a global `jinn-cli` lives under ONE version's tree, so a host with
+ * both v22 (default, where jinn was installed) and v24 would otherwise resolve
+ * to v24 and report jinn missing.
+ */
+export const FACTS_SCRIPT = `
 set -u
+# Common install dirs a login shell would add. Appended, so the system PATH wins.
+PATH="$PATH:$HOME/.local/bin:$HOME/bin:$HOME/.npm-global/bin:/usr/local/bin:/opt/homebrew/bin"
+if ! command -v node >/dev/null 2>&1; then
+  nvmdir=\${NVM_DIR:-$HOME/.nvm}
+  nodedir=""
+  if [ -d "$nvmdir/versions/node" ]; then
+    want=""
+    [ -f "$nvmdir/alias/default" ] && want=$(cat "$nvmdir/alias/default" 2>/dev/null)
+    if [ -n "$want" ]; then
+      case "$want" in v*) pat="$want" ;; *) pat="v$want" ;; esac
+      nodedir=$(ls -1d "$nvmdir/versions/node/$pat" "$nvmdir/versions/node/$pat".* 2>/dev/null | sort -V | tail -1)
+    fi
+    if [ -z "$nodedir" ]; then
+      nodedir=$(ls -1d "$nvmdir"/versions/node/v* 2>/dev/null | sort -V | tail -1)
+    fi
+  fi
+  if [ -n "$nodedir" ] && [ -x "$nodedir/bin/node" ]; then PATH="$nodedir/bin:$PATH"; fi
+fi
+export PATH
 printf 'home=%s\\n' "$HOME"
 printf 'node=%s\\n' "$(command -v node 2>/dev/null || true)"
 printf 'claude=%s\\n' "$(command -v claude 2>/dev/null || true)"
@@ -204,6 +238,33 @@ export function clearRemoteFactsCache(): void {
   factsCache.clear();
 }
 
+/**
+ * Reject a host missing the binaries a session needs, naming the PATH cause.
+ *
+ * A non-interactive ssh reads no rc file, so the overwhelmingly common reason a
+ * binary "is missing" here is that it is installed but only reachable from an
+ * interactive shell. Being told to install something already installed sends
+ * the operator down entirely the wrong path, so each message says how to check.
+ */
+function assertRemoteToolchain(destination: string, kv: Record<string, string>): void {
+  if (!kv.home) throw new Error(`${destination} reported no $HOME`);
+  if (!kv.node) {
+    throw new Error(
+      `${destination} has no \`node\` on the non-interactive PATH. Check with `
+      + `\`ssh ${destination} 'command -v node'\` — if that prints nothing but node works when you log in, `
+      + `it is installed by a version manager this could not resolve; symlink it somewhere on the default PATH `
+      + `(e.g. ~/.local/bin) or install Node.js system-wide`,
+    );
+  }
+  if (!kv.claude) {
+    throw new Error(
+      `${destination} has no \`claude\` on the non-interactive PATH. Check with `
+      + `\`ssh ${destination} 'command -v claude'\` — install Claude Code there and sign it in, `
+      + `or symlink it onto the default PATH if it is already installed`,
+    );
+  }
+}
+
 async function gatherFacts(destination: string): Promise<RemoteFacts> {
   const cached = factsCache.get(destination);
   if (cached) return cached;
@@ -213,11 +274,7 @@ async function gatherFacts(destination: string): Promise<RemoteFacts> {
     throw new Error(`could not read host facts from ${destination}: ${res.stderr.trim() || `exit ${res.code}`}`);
   }
   const kv = parseKeyValues(res.stdout);
-  if (!kv.home) throw new Error(`${destination} reported no $HOME`);
-  if (!kv.node) throw new Error(`${destination} has no \`node\` on PATH — install Node.js there`);
-  if (!kv.claude) {
-    throw new Error(`${destination} has no \`claude\` on PATH — install Claude Code there and sign it in`);
-  }
+  assertRemoteToolchain(destination, kv);
   if (!kv.jinnversion) {
     throw new Error(
       `${destination} has no \`jinn\` on PATH — run \`npm install -g jinn-cli@${getPackageVersion()}\` there `
@@ -743,6 +800,16 @@ export interface SshSpawnOpts {
    *  metered API billing, silently. The local path denies the same three from
    *  inheritance (`buildPtyEnv`); `env -u` is how that reaches another host. */
   unsetRemoteEnv?: string[];
+  /** Directories prepended to the remote PATH.
+   *
+   *  Critical, not cosmetic: Claude Code invokes every hook as bare `node`
+   *  (`buildSessionSettings`), and a hook runs in the claude process's own
+   *  environment. On a host whose Node comes from a version manager, the
+   *  non-interactive PATH we inherit has no `node` at all — so every hook would
+   *  fail to execute, no Stop would ever arrive, and the turn would hang
+   *  forever with nothing reported. Putting the resolved node directory here is
+   *  what makes the relay runnable. */
+  pathPrepend?: string[];
   claudeBin: string;
   claudeArgs: string[];
 }
@@ -766,13 +833,21 @@ export interface SshSpawnOpts {
  */
 export function buildSshSpawnArgs(opts: SshSpawnOpts): string[] {
   const unset = (opts.unsetRemoteEnv ?? []).flatMap((key) => ["-u", key]).map(shq).join(" ");
+  // The one env entry that is NOT fully quoted: `"$PATH"` has to be expanded by
+  // the remote shell so the prepended directories are added to whatever that
+  // host's PATH already is, rather than replacing it. Each prepended directory
+  // is still quoted individually, and `"$PATH"` is quoted so a directory
+  // containing spaces survives on either side.
+  const pathEntry = opts.pathPrepend?.length
+    ? `PATH=${opts.pathPrepend.map(shq).join(":")}:"$PATH" `
+    : "";
   const env = Object.entries(opts.remoteEnv)
     .map(([key, value]) => `${key}=${shq(value)}`)
     .join(" ");
   const claude = [opts.claudeBin, ...opts.claudeArgs].map(shq).join(" ");
   // `exec` so the remote shell is replaced by claude: one fewer process between
   // sshd and the TUI, so a dropped connection reaches claude directly.
-  const remoteCommand = `cd ${shq(opts.remoteCwd)} && exec env ${unset ? `${unset} ` : ""}${env} ${claude}`;
+  const remoteCommand = `cd ${shq(opts.remoteCwd)} && exec env ${unset ? `${unset} ` : ""}${pathEntry}${env} ${claude}`;
   return [
     "-tt",
     "-o", "BatchMode=yes",
@@ -785,4 +860,14 @@ export function buildSshSpawnArgs(opts: SshSpawnOpts): string[] {
     "--",
     remoteCommand,
   ];
+}
+
+/** The directory holding the remote host's `node`.
+ *
+ *  Prepended to a remote session's PATH so Claude Code's hooks — invoked as
+ *  bare `node` — can actually run. On a host using a version manager this
+ *  directory is the ONLY place node exists, and a non-interactive ssh sees
+ *  none of it. */
+export function remoteNodeDir(facts: RemoteFacts): string {
+  return path.posix.dirname(facts.nodeBin);
 }

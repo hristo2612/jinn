@@ -26,6 +26,7 @@ import type { RemoteExecutionConfig } from "../shared/config-types.js";
 import {
   buildSshSpawnArgs,
   ensureRemoteReady,
+  remoteNodeDir,
   prepareRemoteSession,
   type RemoteFacts,
   type RemoteSessionStaging,
@@ -1738,6 +1739,10 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
       remoteCwd: opts.remoteCwd!,
       remoteEnv: this.buildRemoteEnv(jinnSessionId, facts),
       unsetRemoteEnv: InteractiveClaudeEngine.REMOTE_ENV_DENY,
+      // Claude Code runs every hook as bare `node`; without the resolved node
+      // directory on PATH the relay cannot start, no Stop ever arrives, and the
+      // turn hangs forever with nothing reported anywhere.
+      pathPrepend: [remoteNodeDir(facts)],
       claudeBin: facts.claudeBin,
       claudeArgs: args,
     });
@@ -1861,6 +1866,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
             remoteCwd: remoteTarget.remoteCwd!,
             remoteEnv: this.buildRemoteEnv(jinnSessionId, facts),
             unsetRemoteEnv: InteractiveClaudeEngine.REMOTE_ENV_DENY,
+            pathPrepend: [remoteNodeDir(facts)],
             claudeBin: facts.claudeBin,
             claudeArgs: baseArgs(staging.settingsPath),
           });

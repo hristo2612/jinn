@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -39,7 +39,7 @@ vi.mock("node:dgram", () => {
   return { default: { createSocket }, createSocket };
 });
 
-import { shq, buildSshSpawnArgs, sendWakeOnLan } from "../remote-stage.js";
+import { shq, buildSshSpawnArgs, sendWakeOnLan, FACTS_SCRIPT } from "../remote-stage.js";
 
 const isWindows = process.platform === "win32";
 
@@ -317,5 +317,118 @@ describe("sendWakeOnLan — magic packet construction", () => {
       await expect(sendWakeOnLan(bad), bad).rejects.toThrow(/is not a 6-byte MAC address/);
     }
     expect(sent).toHaveLength(0);
+  });
+});
+
+/**
+ * The host-facts probe, run through a REAL POSIX shell against a fake nvm
+ * layout. These are shell semantics, not TypeScript, and the bug they guard was
+ * found on a live Raspberry Pi: a non-interactive ssh reads no rc file, so a
+ * version-managed node is invisible and every hook would fail to start.
+ */
+describe.skipIf(process.platform === "win32")("FACTS_SCRIPT node resolution", () => {
+  let home: string;
+
+  function runFacts(extraPath = ""): Record<string, string> {
+    const out = execFileSync("sh", ["-s"], {
+      input: FACTS_SCRIPT,
+      encoding: "utf8",
+      env: { HOME: home, PATH: extraPath || "/usr/bin:/bin" },
+    });
+    const kv: Record<string, string> = {};
+    for (const line of out.split("\n")) {
+      const eq = line.indexOf("=");
+      if (eq > 0) kv[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
+    }
+    return kv;
+  }
+
+  function fakeNode(version: string): void {
+    const dir = path.join(home, ".nvm", "versions", "node", version, "bin");
+    fs.mkdirSync(dir, { recursive: true });
+    const bin = path.join(dir, "node");
+    fs.writeFileSync(bin, "#!/bin/sh\nexit 0\n");
+    fs.chmodSync(bin, 0o755);
+  }
+
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), "jinn-facts-"));
+  });
+  afterEach(() => {
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+
+  it("reports $HOME even when nothing else is installed", () => {
+    expect(runFacts().home).toBe(home);
+  });
+
+  it("finds a version-managed node that a non-interactive shell cannot see", () => {
+    fakeNode("v22.22.3");
+    // No nvm.sh is created on purpose: it is bash-only and /bin/sh is dash on
+    // Debian-family systems, so sourcing it is not an option the script has.
+    expect(runFacts().node).toBe(path.join(home, ".nvm/versions/node/v22.22.3/bin/node"));
+  });
+
+  it("honours nvm's default alias rather than taking the newest version", () => {
+    fakeNode("v22.22.3");
+    fakeNode("v24.14.1");
+    fs.mkdirSync(path.join(home, ".nvm", "alias"), { recursive: true });
+    fs.writeFileSync(path.join(home, ".nvm", "alias", "default"), "22\n");
+    // This is the case that matters: a global jinn-cli lives under ONE version's
+    // tree, so resolving to v24 here would report jinn missing on a host where
+    // it is installed perfectly well under v22.
+    expect(runFacts().node).toContain("v22.22.3");
+    expect(runFacts().node).not.toContain("v24");
+  });
+
+  it("falls back to the newest version when no default alias is set", () => {
+    fakeNode("v22.22.3");
+    fakeNode("v24.14.1");
+    expect(runFacts().node).toContain("v24.14.1");
+  });
+
+  it("prefers a node already on PATH over anything under nvm", () => {
+    fakeNode("v22.22.3");
+    const realDir = path.join(home, "sysbin");
+    fs.mkdirSync(realDir, { recursive: true });
+    const bin = path.join(realDir, "node");
+    fs.writeFileSync(bin, "#!/bin/sh\nexit 0\n");
+    fs.chmodSync(bin, 0o755);
+    expect(runFacts(`${realDir}:/usr/bin:/bin`).node).toBe(bin);
+  });
+});
+
+describe("buildSshSpawnArgs — remote PATH", () => {
+  const base = {
+    destination: "builder@build-box",
+    tunnelPort: 40001,
+    gatewayPort: 7777,
+    remoteCwd: "/srv/jinn-work/main",
+    remoteEnv: { JINN_HOME: "/home/u/.jinn-remote-stage" },
+    claudeBin: "/usr/bin/claude",
+    claudeArgs: ["--chrome"],
+  };
+
+  it("prepends the node directory so Claude Code's bare `node` hooks can run", () => {
+    const cmd = buildSshSpawnArgs({
+      ...base,
+      pathPrepend: ["/home/u/.nvm/versions/node/v22.22.3/bin"],
+    }).at(-1)!;
+    expect(cmd).toContain(`PATH='/home/u/.nvm/versions/node/v22.22.3/bin':"$PATH"`);
+  });
+
+  it("leaves PATH untouched when nothing is prepended", () => {
+    expect(buildSshSpawnArgs(base).at(-1)!).not.toContain("PATH=");
+  });
+
+  it.skipIf(process.platform === "win32")("expands to the host's own PATH, not a replacement", () => {
+    const cmd = buildSshSpawnArgs({ ...base, pathPrepend: ["/opt/node/bin"] }).at(-1)!;
+    // Pull out just the PATH assignment and let a real shell evaluate it.
+    const assignment = cmd.match(/PATH=[^ ]+/)![0];
+    const shown = execFileSync("sh", ["-c", `${assignment} sh -c 'printf %s "$PATH"'`], {
+      encoding: "utf8",
+      env: { PATH: "/usr/bin:/bin" },
+    });
+    expect(shown).toBe("/opt/node/bin:/usr/bin:/bin");
   });
 });
