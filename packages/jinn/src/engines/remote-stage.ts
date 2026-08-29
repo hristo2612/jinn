@@ -94,8 +94,11 @@ async function sshRun(
 ): Promise<SshRunResult> {
   const full = [
     ...controlSshOpts(opts.connectTimeoutSeconds ?? CONTROL_CONNECT_TIMEOUT_S),
-    destination,
+    // Same shape as the interactive spawn: `--` BEFORE the destination so a host
+    // beginning with `-` cannot be read as a local ssh option, and none after it
+    // (see buildSshSpawnArgs — a second `--` lands in the remote command).
     "--",
+    destination,
     ...args,
   ];
   return await new Promise<SshRunResult>((resolve) => {
@@ -1110,7 +1113,11 @@ export function buildSshSpawnArgs(opts: SshSpawnOpts): string[] {
     // load too; this is the belt to that's braces.
     "--",
     opts.destination,
-    "--",
+    // NO second `--`. ssh's option parsing consumes the FIRST `--` it sees and
+    // passes any later one through as part of the remote command, so with a
+    // leading one already present the remote shell receives a command starting
+    // `-- cd …` and answers `/bin/bash: --: invalid option`. Verified against a
+    // real host: `ssh -- host -- cmd` fails, `ssh -- host cmd` works.
     remoteCommand,
   ];
 }

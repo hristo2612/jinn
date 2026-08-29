@@ -123,7 +123,12 @@ const TARGET = { remoteHost: "build-box", remoteUser: "builder", remoteCwd: "/sr
 
 /** The remote command ssh would run — the last argv element, after `--`. */
 function remoteCommandOf(args: string[]): string {
-  expect(args[args.length - 2]).toBe("--");
+  // The remote command is simply the last argument, and it must sit directly
+  // after the destination. The old helper asserted a `--` in front of it — which
+  // is exactly the bug it should have caught: ssh consumes only the FIRST `--`,
+  // so a second one reached the remote shell as `-- cd …` and every spawn died
+  // with `/bin/bash: --: invalid option`. The test was green while the feature
+  // could not start a single session.
   return args[args.length - 1];
 }
 
@@ -455,5 +460,54 @@ describe("InteractiveClaudeEngine — claude profile", () => {
     // .claude.json the session never opens and the first turn hangs.
     await remoteCommandFor({ ...REMOTE_CONFIG, claudeConfigDir: "/home/u/.claude-profiles/personal" });
     expect(hoisted.ensureCalls[0].remote.claudeConfigDir).toBe("/home/u/.claude-profiles/personal");
+  });
+});
+
+/**
+ * The ssh argv shape.
+ *
+ * This is the regression that took the whole feature down: ssh's option parsing
+ * consumes only the FIRST `--` it encounters and passes any later one straight
+ * into the remote command. With one before the destination (the guard against a
+ * host like `-oProxyCommand=…`) and one after, the remote shell received a
+ * command beginning `-- cd …` and answered `/bin/bash: --: invalid option`, so
+ * no session could ever start. Asserted as an invariant on the argv rather than
+ * a spot-check, because a spot-check is what missed it.
+ */
+describe("ssh argv — option-terminator placement", () => {
+  let lifecycle: PtyLifecycleManager;
+  let engine: InteractiveClaudeEngine;
+
+  beforeEach(() => {
+    hoisted.spawns.length = 0;
+    hoisted.ready = true;
+    lifecycle = new PtyLifecycleManager({ maxLivePtys: 10 });
+    engine = new InteractiveClaudeEngine(lifecycle, { register: () => {}, unregister: () => {} } as any, {
+      remote: () => REMOTE_CONFIG as any,
+      gatewayPort: () => 8722,
+    });
+  });
+  afterEach(() => {
+    lifecycle.killAll();
+    cleanupSessionSettings(CLAUDE_SETTINGS_DIR, SID);
+  });
+
+  it("passes exactly one `--`, and it comes before the destination", async () => {
+    void engine.run({ sessionId: SID, prompt: "go", cwd: "/tmp", ...TARGET } as any).catch(() => {});
+    await flush();
+    const { args } = hoisted.spawns[0];
+    const terminators = args.filter((a) => a === "--");
+    expect(terminators).toHaveLength(1);
+    expect(args.indexOf("--")).toBeLessThan(args.indexOf("builder@build-box"));
+  });
+
+  it("puts the remote command immediately after the destination", async () => {
+    void engine.run({ sessionId: SID, prompt: "go", cwd: "/tmp", ...TARGET } as any).catch(() => {});
+    await flush();
+    const { args } = hoisted.spawns[0];
+    const destIndex = args.indexOf("builder@build-box");
+    expect(args).toHaveLength(destIndex + 2);
+    // Nothing between them, and the command is a real command — not `--`.
+    expect(args[destIndex + 1]).toMatch(/^cd '/);
   });
 });
