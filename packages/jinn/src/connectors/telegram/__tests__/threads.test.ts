@@ -32,10 +32,13 @@ describe("buildReplyContext", () => {
     const ctx = buildReplyContext({
       chat: { id: 12345, type: "private" },
       message_id: 42,
+      from: { id: 67890 },
     });
     expect(ctx).toEqual({
       chatId: 12345,
       messageId: 42,
+      chatType: "private",
+      userId: 67890,
     });
   });
 
@@ -47,6 +50,7 @@ describe("buildReplyContext", () => {
     expect(ctx).toEqual({
       chatId: -100999,
       messageId: 99,
+      chatType: "group",
     });
   });
 });

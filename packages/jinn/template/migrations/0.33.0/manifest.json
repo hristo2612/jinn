@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "version": "0.33.0",
+  "baseVersion": "0.32.0",
+  "generatedFrom": {
+    "baseRef": "v0.32.0",
+    "headRef": "WORKTREE"
+  },
+  "files": [
+    {
+      "path": "CLAUDE.md",
+      "operation": "modify",
+      "baseSha256": "570b18d4e7f41861c11c9aa45376f11d0870dd62e903652ea1917690a30ba8e2",
+      "targetSha256": "92e89f2320a11c89f5fbae41c28df1920467d53d7e6e6308c83a42e758d0425a",
+      "basePayload": "files/base/CLAUDE.md",
+      "targetPayload": "files/target/CLAUDE.md"
+    },
+    {
+      "path": "docs/connectors.md",
+      "operation": "modify",
+      "baseSha256": "b439377e3feda09132cd4b92a3044ab6d61d4d578734ae551d0601f68943dcb2",
+      "targetSha256": "632140211f00005696014728d6ae163957aba136e625f29c101496f61eaa925c",
+      "basePayload": "files/base/docs/connectors.md",
+      "targetPayload": "files/target/docs/connectors.md"
+    },
+    {
+      "path": "docs/self-modification.md",
+      "operation": "modify",
+      "baseSha256": "d30cceeb4634a72b7c58374ecffd43a7d9766e0dff2282d23f5d4b093555c7ca",
+      "targetSha256": "32d2b824efa17188fb9ebae4e7ed3b05b95f8e6434440ef461459aae7e7e4e63",
+      "basePayload": "files/base/docs/self-modification.md",
+      "targetPayload": "files/target/docs/self-modification.md"
+    },
+    {
+      "path": "docs/skills.md",
+      "operation": "modify",
+      "baseSha256": "2735c30495a30abd565e36dbf1c74ab584927efb140c422efefb18d73cac8a33",
+      "targetSha256": "f5e252061ff70903a284ac085e34ce2372c40eb5f4058d456c3b3acaf2b62296",
+      "basePayload": "files/base/docs/skills.md",
+      "targetPayload": "files/target/docs/skills.md"
+    },
+    {
+      "path": "skills/migrate/SKILL.md",
+      "operation": "remove",
+      "baseSha256": "67de0a612bf28168ac9d16427ea851697e67b40d3b9173f504bb01a52366362a",
+      "targetSha256": null,
+      "basePayload": "files/base/skills/migrate/SKILL.md",
+      "targetPayload": null
+    }
+  ]
+}

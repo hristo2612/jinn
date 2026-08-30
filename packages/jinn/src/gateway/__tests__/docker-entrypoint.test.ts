@@ -148,6 +148,16 @@ describe.skipIf(process.platform === "win32")("Docker entrypoint runtime cleanup
     expect(source).toContain("ENV JINN_STT_MODELS_DIR=/home/node/.jinn/models/whisper");
   });
 
+  it("keeps Codex auth state inside its persisted volume", () => {
+    const source = fs.readFileSync(dockerfile, "utf-8");
+    const compose = fs.readFileSync(composeFile, "utf-8");
+
+    expect(source).toMatch(/RUN mkdir -p [^\n]*\/home\/node\/\.codex[^\n]*\/work/);
+    expect(source).toContain("ENV CODEX_HOME=/home/node/.codex");
+    expect(compose).toContain("- jinn-codex:/home/node/.codex");
+    expect(compose).toContain("  jinn-codex:");
+  });
+
   it("holds an exclusive shared-volume lock before cleanup and releases it on process death", async () => {
     const { home, ready, env } = fixture();
     seedRuntimeRecords(home);

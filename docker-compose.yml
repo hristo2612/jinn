@@ -37,6 +37,9 @@ services:
       # its OAuth token in place, so this volume cannot be read-only.
       - jinn-claude:/home/node/.claude
 
+      # Writable Codex device-auth state; keep it separate from Jinn and Claude state.
+      - jinn-codex:/home/node/.codex
+
       # Project mounts. THIS LIST IS THE BLAST RADIUS. At least one is required, or
       # /work is empty and agents have nothing to work on. Anything here can be
       # modified or deleted without a prompt, so prefer :ro where you can. Network
@@ -56,3 +59,4 @@ services:
 volumes:
   jinn-home:
   jinn-claude:
+  jinn-codex:

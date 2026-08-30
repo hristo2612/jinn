@@ -37,7 +37,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          VERSION="$(node -p "require('./packages/jinn/package.json').version")"
+          PACKAGE_VERSION="$(node -p "require('./packages/jinn/package.json').version")"
+          VERSION="$(find packages/jinn/template/migrations -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -V | tail -1)"
+          test -n "$VERSION"
+          if [ "$VERSION" != "$PACKAGE_VERSION" ]; then
+            echo "Checking unreleased migration $VERSION while package remains at $PACKAGE_VERSION"
+          fi
           # Same derivation and same command as the release job, so a PR can never
           # pass a gate the release then fails. The branch matters: --base-ref is
           # validated as a version tag, and once v$VERSION is tagged, passing it
@@ -47,4 +52,4 @@ jobs:
           else
             BASE="$(git describe --tags --abbrev=0)"
           fi
-          pnpm --filter jinn-cli migration:check -- --base-ref "$BASE" --version "$VERSION"
+          pnpm --filter jinn-cli migration:check -- --base-ref "$BASE" --version "$VERSION" --allow-unreleased

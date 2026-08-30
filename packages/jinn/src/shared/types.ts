@@ -668,6 +668,11 @@ export interface TelegramConnectorConfig {
   botToken: string;
   allowFrom?: number[];
   ignoreOldMessagesOnBoot?: boolean;
+  telegramAuth?: {
+    enabled?: boolean;
+    ownerUserIds?: number[];
+    flowTtlSeconds?: number;
+  };
   /** Speech-to-text settings forwarded from top-level `config.stt` */
   stt?: {
     enabled?: boolean;

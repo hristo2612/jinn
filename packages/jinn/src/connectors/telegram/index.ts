@@ -23,6 +23,8 @@ import {
   getModelPath,
 } from "../../stt/stt.js";
 
+import { createTelegramAuth, type TelegramAuth } from "./auth.js";
+import { scrubUnauthorizedTelegramAuth } from "./auth-message.js";
 type SendMessageOptions = Omit<SendMessageParams, "chat_id" | "text">;
 
 export class TelegramConnector implements Connector {
@@ -36,6 +38,7 @@ export class TelegramConnector implements Connector {
   private started = false;
   private lastError: string | null = null;
   private typingIntervals = new Map<string, ReturnType<typeof setInterval>>();
+  private readonly auth?: TelegramAuth;
 
   private readonly capabilities: ConnectorCapabilities = {
     threading: false,
@@ -57,6 +60,9 @@ export class TelegramConnector implements Connector {
         ? new Set(config.allowFrom)
         : null;
     this.sttConfig = config.stt;
+    if (config.telegramAuth?.enabled === true) {
+      this.auth = createTelegramAuth(this.bot, config.telegramAuth, this.allowedUsers);
+    }
   }
 
   async start(): Promise<void> {
@@ -66,6 +72,7 @@ export class TelegramConnector implements Connector {
       this.bot.startPolling();
       this.started = true;
       this.lastError = null;
+      this.auth?.start();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.lastError = msg;
@@ -80,11 +87,10 @@ export class TelegramConnector implements Connector {
         return;
       }
 
-      if (!this.handler) {
+      if (!this.auth && !this.handler) {
         logger.debug("[telegram] No handler registered, dropping message");
         return;
       }
-
       if (
         this.ignoreOldMessagesOnBoot &&
         isOldTelegramMessage(telegramMsg.date, this.bootTimeMs)
@@ -94,13 +100,22 @@ export class TelegramConnector implements Connector {
       }
 
       const userId = telegramMsg.from?.id;
-      if (this.allowedUsers) {
-        if (userId === undefined || !this.allowedUsers.has(userId)) {
-          logger.debug(
-            `[telegram] Ignoring message from unauthorized user ${userId}`,
-          );
-          return;
-        }
+      const rawMessageText = this.auth
+        ? messageTextFromTelegram(telegramMsg)
+        : undefined;
+      const allowedUser = !this.allowedUsers
+        || (userId !== undefined && this.allowedUsers.has(userId));
+      if (!allowedUser) {
+        await scrubUnauthorizedTelegramAuth(this.auth, telegramMsg, rawMessageText ?? "");
+        logger.debug(`[telegram] Ignoring message from unauthorized user ${userId}`);
+        return;
+      }
+
+      if (this.auth && await this.auth.handleIncoming(userId ?? "", telegramMsg.chat.type, telegramMsg.chat.id, telegramMsg.message_id, rawMessageText ?? "")) return;
+
+      if (!this.handler) {
+        logger.debug("[telegram] No handler registered, dropping message");
+        return;
       }
 
       const sessionKey = deriveSessionKey(telegramMsg, this.id);
@@ -110,7 +125,7 @@ export class TelegramConnector implements Connector {
         telegramMsg.from?.username || telegramMsg.from?.first_name || "unknown";
 
       let messageText: string =
-        (telegramMsg as any).text || (telegramMsg as any).caption || "";
+        rawMessageText ?? messageTextFromTelegram(telegramMsg);
 
       // File attachments: download via bot token and push to msg.attachments.
       // sessions/manager.ts pulls localPath and engines auto-inject
@@ -324,6 +339,7 @@ export class TelegramConnector implements Connector {
   }
 
   async stop(): Promise<void> {
+    this.auth?.stop();
     for (const interval of this.typingIntervals.values()) {
       clearInterval(interval);
     }
@@ -392,6 +408,7 @@ export class TelegramConnector implements Connector {
 
   async replyMessage(target: Target, text: string): Promise<string | undefined> {
     if (!text || !text.trim()) return undefined;
+    const replyText = this.auth?.decorateReply(target.replyContext, text) ?? text;
     const replyToId =
       target.replyContext?.messageId != null
         ? Number(target.replyContext.messageId)
@@ -400,7 +417,7 @@ export class TelegramConnector implements Connector {
     if (replyToId) {
       opts.reply_parameters = { message_id: replyToId };
     }
-    const chunks = formatResponse(text);
+    const chunks = formatResponse(replyText);
     let lastMessageId: string | undefined;
     for (const chunk of chunks) {
       if (!chunk.trim()) continue;
@@ -455,4 +472,8 @@ export class TelegramConnector implements Connector {
   onMessage(handler: (msg: IncomingMessage) => void): void {
     this.handler = handler;
   }
+}
+
+function messageTextFromTelegram(telegramMsg: any): string {
+  return telegramMsg.text || telegramMsg.caption || "";
 }

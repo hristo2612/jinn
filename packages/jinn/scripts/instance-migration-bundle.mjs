@@ -16,11 +16,12 @@ function fail(message) {
 function parseArgs(argv) {
   const [mode, ...rest] = argv
   if (mode !== "generate" && mode !== "check") throw new Error("first argument must be generate or check")
-  const values = { mode, allowEmpty: false, baseRef: "", version: "" }
+  const values = { mode, allowEmpty: false, allowUnreleased: false, baseRef: "", version: "" }
   for (let i = 0; i < rest.length; i++) {
     const arg = rest[i]
     if (arg === "--") continue
     if (arg === "--allow-empty") values.allowEmpty = true
+    else if (arg === "--allow-unreleased") values.allowUnreleased = true
     else if (arg === "--base-ref") values.baseRef = rest[++i]
     else if (arg === "--version") values.version = rest[++i]
     else throw new Error(`unknown argument ${arg}`)
@@ -29,6 +30,15 @@ function parseArgs(argv) {
   if (!/^v?\d+\.\d+\.\d+$/.test(values.baseRef)) throw new Error("--base-ref must name a plain release tag/ref")
   if (!/^\d+\.\d+\.\d+$/.test(values.version)) throw new Error("--version must be X.Y.Z")
   return values
+}
+
+function isNewerVersion(candidate, current) {
+  const candidateParts = candidate.split(".").map(Number)
+  const currentParts = current.split(".").map(Number)
+  for (let i = 0; i < candidateParts.length; i++) {
+    if (candidateParts[i] !== currentParts[i]) return candidateParts[i] > currentParts[i]
+  }
+  return false
 }
 
 function roots() {
@@ -224,7 +234,7 @@ function main() {
   const args = parseArgs(process.argv.slice(2))
   const { repoRoot, packageRoot } = roots()
   const pkg = JSON.parse(fs.readFileSync(path.join(packageRoot, "package.json"), "utf8"))
-  if (pkg.version !== args.version) throw new Error(`package version ${pkg.version} does not match requested bundle ${args.version}`)
+  if (pkg.version !== args.version && (!args.allowUnreleased || !isNewerVersion(args.version, pkg.version))) throw new Error(`package version ${pkg.version} does not match requested bundle ${args.version}`)
   git(repoRoot, ["rev-parse", "--verify", `${args.baseRef}^{commit}`])
   const outputDir = path.join(packageRoot, "template", "migrations", args.version)
   let committedFallback = ""
