@@ -1278,7 +1278,7 @@
       ]
     },
     "packages/web/src/components/crons/weekly-schedule.tsx": {
-      "lines": 388,
+      "lines": 330,
       "exempt": [
         "max-lines-per-function"
       ]
@@ -1461,7 +1461,7 @@
       ]
     },
     "packages/web/src/lib/cron-utils.ts": {
-      "lines": 389,
+      "lines": 358,
       "exempt": [
         "complexity",
         "max-depth",
