@@ -5,6 +5,7 @@ import { resolveJinnHome } from "../shared/paths.js";
 import type { Employee, JinnConfig } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
 import { getModelRegistry, effortLevelsForModel } from "../shared/models.js";
+import { validateRemoteTarget } from "../shared/remote-target.js";
 import {
   isSystemEmployeeName,
   resolveSystemEmployees,
@@ -94,11 +95,31 @@ export function scanOrg(config?: JinnConfig): Map<string, Employee> {
           // scan whitelist previously dropped it, which live QA phase D caught
           // (a YAML pilot could never arm the smoke gate).
           jinnMcp: typeof data.jinnMcp === "boolean" ? data.jinnMcp : undefined,
+          // Remote (SSH) execution. Validated immediately below — a bad remote
+          // target fails THIS employee's load loudly at boot rather than at the
+          // first turn, because the failure it guards against (an unattended
+          // --dangerously-skip-permissions session outside the sandbox root) is
+          // not one to discover mid-task.
+          remoteHost: typeof data.remoteHost === "string" ? data.remoteHost.trim() : undefined,
+          remoteUser: typeof data.remoteUser === "string" ? data.remoteUser.trim() : undefined,
+          remoteCwd: typeof data.remoteCwd === "string" ? data.remoteCwd.trim() : undefined,
+          remoteClaudeConfigDir: typeof data.remoteClaudeConfigDir === "string" ? data.remoteClaudeConfigDir.trim() : undefined,
           provides: Array.isArray(data.provides)
             ? data.provides.filter((s: unknown) => s && typeof s === "object" && typeof (s as any).name === "string" && typeof (s as any).description === "string")
               .map((s: any) => ({ name: s.name as string, description: s.description as string }))
             : undefined,
         };
+        const remoteProblem = validateRemoteTarget(employee, config?.remote);
+        if (remoteProblem) {
+          // Skip THIS employee, keep loading the rest — same containment the
+          // reserved-name guard above uses. Dropping the whole org because one
+          // YAML names an unconfigured host would be a worse outage than the
+          // misconfiguration it reports.
+          logger.error(
+            `Skipping employee file ${fullPath}: ${remoteProblem.error}`,
+          );
+          return undefined;
+        }
         registry.set(employee.name, employee);
       }
     } catch (err) {

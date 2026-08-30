@@ -183,4 +183,70 @@ export interface JinnConfig {
    * slated for removal.
    */
   realtime?: RealtimeConfig;
+  /**
+   * Remote (SSH) execution for employees that declare `remoteHost`. Absent means
+   * remote employees refuse to load at all — the fail-closed default, because
+   * this ships to strangers and a remote session runs
+   * `--dangerously-skip-permissions` on someone's real machine.
+   */
+  remote?: RemoteExecutionConfig;
+}
+
+/**
+ * Remote (SSH) execution settings. One block for the whole instance: every
+ * remote employee shares the sandbox root, the JINN_HOME mount point, and the
+ * wake policy. Per-employee variation lives on the Employee record (host, user,
+ * cwd) and nowhere else.
+ */
+export interface RemoteExecutionConfig {
+  /** The one absolute prefix on the remote host that every `remoteCwd` must
+   *  resolve under. The single most proportionate guardrail for running
+   *  unattended with `--dangerously-skip-permissions` on a daily-driver box: it
+   *  does not stop a determined prompt from `cd ..`-ing out, but it bounds the
+   *  realistic accidental blast radius. */
+  root: string;
+  /** Where the gateway's own JINN_HOME is sshfs-mounted on the remote host. The
+   *  remote session's `$JINN_HOME` is a symlink farm over this, so knowledge,
+   *  docs, org and skills are the gateway's real files rather than copies. */
+  mount: string;
+  /**
+   * Default `CLAUDE_CONFIG_DIR` for remote sessions on these hosts — i.e. which
+   * Claude Code profile they run as. An employee's own
+   * `remoteClaudeConfigDir` overrides it; unset on both means the remote
+   * user's default profile.
+   *
+   * Set this rather than pointing `claude` at a profile-manager wrapper. Those
+   * wrappers typically unset every `CLAUDE_*` variable before exec, which would
+   * strip the three the session depends on — including
+   * `CLAUDE_CODE_RESUME_TOKEN_THRESHOLD`, whose absence lets the "resume from
+   * summary?" picker appear in front of a PTY with nobody at the keyboard.
+   */
+  claudeConfigDir?: string;
+  /** Run ON THE GATEWAY to wake a sleeping host (smart plug, jump box, …).
+   *  Takes precedence over {@link wakeMac}. */
+  wakeCommand?: string;
+  /** MAC address for the built-in Wake-on-LAN magic packet, used when
+   *  {@link wakeCommand} is unset. */
+  wakeMac?: string;
+  /** Run ON THE REMOTE once it is reachable, to re-establish the JINN_HOME
+   *  mount. A reboot does not bring sshfs back, so a successful wake normally
+   *  lands on a dead mount without this. */
+  remountCommand?: string;
+  /**
+   * How long {@link wakeCommand} may run before it is killed, in ms.
+   * Default 300000 (5 minutes).
+   *
+   * Generous on purpose. A real startup path is not a fire-and-forget packet:
+   * it may probe reachability, read a power state over the network, press a
+   * physical ATX button and then wait for POST. Killing that partway through
+   * can land between the state read and the press — no press, no wake, and a
+   * turn that simply times out with nothing to show for it.
+   */
+  wakeTimeoutMs?: number;
+  /** Total bound on waiting for an unreachable host, in ms. Default 240000.
+   *  Bounded on purpose: a box that is off for the weekend must fail the turn,
+   *  not pin it at "waiting" forever. */
+  waitMs?: number;
+  /** Interval between reachability probes while waiting, in ms. Default 10000. */
+  probeIntervalMs?: number;
 }

@@ -180,6 +180,31 @@ for (const [name, handler] of [["approve", "approveWorkflowApproval"], ["reject"
   withJson(workflow.command(`${name} <workflowId> <runId> <nodeId>`).requiredOption("--expected-revision <number>").option("--reason <reason>")).action(workflowAction(handler));
 withJson(workflow.command("retry <workflowId> <runId> <nodeId>").requiredOption("--idempotency-key <key>")).action(workflowAction("retryWorkflowNode")); withJson(workflow.command("event <eventName>").requiredOption("--fire-id <id>").requiredOption("--payload <json>")).action(workflowAction("fireWorkflowEvent"));
 
+// Remote-execution subcommands (jinn remote status|wake).
+// An operator affordance only — a turn wakes and verifies its own remote host,
+// so nothing here is on the path a session depends on.
+{
+  const remoteCmd = program
+    .command("remote")
+    .description("Inspect and wake hosts that run remote employees");
+
+  remoteCmd
+    .command("status [employee]")
+    .description("Report what a turn would find on each remote host (never wakes one)")
+    .action(async (employee?: string) => {
+      const { remoteStatus } = await import("../src/cli/remote.js");
+      await remoteStatus(employee);
+    });
+
+  remoteCmd
+    .command("wake [employee]")
+    .description("Bring a remote host up and wait for it, without queueing work")
+    .action(async (employee?: string) => {
+      const { remoteWake } = await import("../src/cli/remote.js");
+      await remoteWake(employee);
+    });
+}
+
 // Skills subcommands (jinn skills find|add|remove|list|update|restore)
 {
   const skillsCmd = program

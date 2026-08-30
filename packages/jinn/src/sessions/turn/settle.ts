@@ -36,6 +36,13 @@ export async function settleRefusedTurn(
     error,
     fields: terminalFields(),
     employee: input.employee,
+    // `waiting` alongside the default `running`, for the same reason the
+    // rate-limit path widens it: the remote-host gate moves the session to
+    // `waiting` while a desktop boots, and a refusal out of that state has to
+    // land. Without it the fenced write is rejected, settleTurn returns before
+    // notifying the parent and the transport, and the session is pinned at
+    // `waiting` forever — the silent stall this feature is built to avoid.
+    expectedStatuses: ["running", "waiting"],
     surface,
   });
   await surface.reply(`⛔ ${error}`);

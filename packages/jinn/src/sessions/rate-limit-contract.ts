@@ -7,7 +7,7 @@
  * reads none of it.
  */
 
-import type { Employee, Engine, EngineResult, JinnConfig, ResolvedMcpConfig, Session, StreamDelta } from "../shared/types.js";
+import type { Employee, Engine, EngineResult, JinnConfig, RemoteTarget, ResolvedMcpConfig, Session, StreamDelta } from "../shared/types.js";
 import type { EngineName } from "../shared/models.js";
 
 /** What detectRateLimit returned for the original turn. */
@@ -88,7 +88,13 @@ export interface RateLimitHandlerHooks {
   onCancelled?: () => void | Promise<void>;
 }
 
-export interface RateLimitHandlerOpts {
+/**
+ * Extends {@link RemoteTarget} because the retry is a fresh spawn, not a resume
+ * of the process that was limited: without the target the retried turn lands on
+ * the gateway, which is exactly the machine the remote feature exists to keep
+ * repositories off. See the suppression note in rate-limit-handler.ts.
+ */
+export interface RateLimitHandlerOpts extends RemoteTarget {
   session: Session;
   /** Generation token minted when this turn entered running state. */
   attemptToken: string;

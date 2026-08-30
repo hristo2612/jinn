@@ -154,7 +154,38 @@ export function reportsTurnProgress(engine: Engine): engine is TurnProgressEngin
   return typeof (engine as Partial<TurnProgressEngine>).turnProgress === "function";
 }
 
-export interface EngineRunOpts {
+/**
+ * Where an engine session actually executes. Absent on every field = the gateway
+ * host, which is every employee today. When `remoteHost` is set the session is
+ * spawned through `ssh` instead, and `remoteCwd` — not {@link EngineRunOpts.cwd}
+ * — is the working directory the engine sees.
+ *
+ * `remoteCwd` is validated against `config.remote.root` at org-load time and
+ * again immediately before the spawn command is built. Both checks matter: the
+ * first fails a bad config loudly at boot, the second is what actually stands
+ * between a mutated in-memory Employee and an unattended
+ * `--dangerously-skip-permissions` session outside the sandbox.
+ */
+export interface RemoteTarget {
+  /** Hostname or ssh alias of the machine that runs the engine. */
+  remoteHost?: string;
+  /** SSH user on {@link remoteHost}. Defaults to ssh's own resolution when unset. */
+  remoteUser?: string;
+  /** Working directory ON the remote host. Must resolve under `config.remote.root`. */
+  remoteCwd?: string;
+  /**
+   * `CLAUDE_CONFIG_DIR` for this employee's sessions on the remote host —
+   * which Claude Code profile they run as. Overrides `remote.claudeConfigDir`;
+   * unset on both means the remote user's default profile.
+   *
+   * Per-employee rather than per-host because one machine commonly holds
+   * several profiles (a personal one and a work one), and which an employee
+   * should use is a property of the employee, not the box.
+   */
+  remoteClaudeConfigDir?: string;
+}
+
+export interface EngineRunOpts extends RemoteTarget {
   prompt: string;
   resumeSessionId?: string;
   systemPrompt?: string;
@@ -490,7 +521,7 @@ export interface CronDelivery {
   channel: string;
 }
 
-export interface Employee {
+export interface Employee extends RemoteTarget {
   name: string;
   /** Gateway-stamped built-in identity. Never sourced from employee YAML. */
   system?: boolean;
@@ -835,4 +866,4 @@ export interface EngineModelsConfig {
 /** `models:` block keyed by engine name (claude | codex | antigravity | grok | pi). */
 export type ModelsConfig = Record<string, EngineModelsConfig>;
 
-export type { JinnConfig, PortalConfig } from "./config-types.js";
+export type { JinnConfig, PortalConfig, RemoteExecutionConfig } from "./config-types.js";

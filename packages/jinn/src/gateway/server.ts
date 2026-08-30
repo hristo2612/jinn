@@ -611,6 +611,12 @@ export async function startGateway(
   });
   const interactiveClaudeEngine = new InteractiveClaudeEngine(claudeLifecycle, hookRegistry, {
     autoApproveSafetyPrompts: claudeCfg.autoApproveSafetyPrompts,
+    // Read live, not captured: config.yaml hot-reloads, so an edited `remote`
+    // block takes effect on the next spawn rather than the next restart.
+    remote: () => currentConfig.remote,
+    // The reverse tunnel's forward-to end. Loopback on the gateway, so this is
+    // the port the remote hook relay and MCP servers ultimately reach.
+    gatewayPort: () => port,
   });
 
   // Codex has two modes: headless `codex exec --json` for chat/default work
@@ -1050,7 +1056,7 @@ export async function startGateway(
       ptyWss.handleUpgrade(req, socket, head, (ws) => {
         trackHeartbeat(ws);
         try {
-          attachPtyWebSocket(ws, sessionId, ptyEngine);
+          attachPtyWebSocket(ws, sessionId, ptyEngine, { getConfig: () => currentConfig });
         } catch (err) {
           logger.warn(`PTY websocket attach failed for ${sessionId}: ${err instanceof Error ? err.message : err}`);
           ws.close();

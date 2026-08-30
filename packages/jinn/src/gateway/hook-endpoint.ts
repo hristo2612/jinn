@@ -1,11 +1,21 @@
 import { timingSafeEqual } from "node:crypto";
 import type { HookRegistry, HookPayload } from "./hook-registry.js";
-import { evaluateCommandPolicy } from "../shared/command-policy.js";
+import { evaluateCommandPolicy, evaluateWritePathPolicy } from "../shared/command-policy.js";
 
 export interface HookEndpointCtx {
   reg: HookRegistry;
   secret: string;
   remoteAddress: string | undefined;
+  /** `remote.mount` for a session running over SSH: the one place on the remote
+   *  host where the gateway's JINN_HOME is really mounted. Undefined for every
+   *  local session, which leaves the containment rule inert. The caller resolves
+   *  it — this module deliberately knows nothing about org or session lookups so
+   *  it stays unit-testable on its own. */
+  remoteMountRoot?: string;
+  /** The gateway's own JINN_HOME, for the same rule. */
+  gatewayHome?: string;
+  /** `$HOME` on the remote host, so the policy can expand `$HOME`-rooted paths. */
+  remoteHome?: string;
 }
 
 /**
@@ -59,14 +69,26 @@ export function validateHookPost(
   if (!body.jinnSessionId || !body.hook?.hook_event_name) {
     return { status: 400, body: "bad request" };
   }
-  if (body.hook.hook_event_name === "PreToolUse" && body.hook.tool_name === "Bash") {
+  if (body.hook.hook_event_name === "PreToolUse") {
+    const opts = { remoteMountRoot: ctx.remoteMountRoot, gatewayHome: ctx.gatewayHome, remoteHome: ctx.remoteHome };
     const input = body.hook.tool_input;
-    const command = input && typeof input === "object" && "command" in input
-      ? String((input as { command?: unknown }).command ?? "")
-      : "";
-    const decision = evaluateCommandPolicy(command);
-    if (decision.action === "block") {
-      return { status: 451, body: decision.reason || "Command blocked by Jinn security policy" };
+    const field = (name: string): string =>
+      input && typeof input === "object" && name in input
+        ? String((input as Record<string, unknown>)[name] ?? "")
+        : "";
+    if (body.hook.tool_name === "Bash") {
+      const decision = evaluateCommandPolicy(field("command"), opts);
+      if (decision.action === "block") {
+        return { status: 451, body: decision.reason || "Command blocked by Jinn security policy" };
+      }
+    } else if (body.hook.tool_name === "Write" || body.hook.tool_name === "Edit" || body.hook.tool_name === "MultiEdit") {
+      // Write/Edit carry a path, not a command line. Without this branch a
+      // remote session could not `sh -c 'echo … > …'` its way past the mount
+      // check but could still reach the same path with the file tools.
+      const decision = evaluateWritePathPolicy(field("file_path"), opts);
+      if (decision.action === "block") {
+        return { status: 451, body: decision.reason || "Write blocked by Jinn security policy" };
+      }
     }
   }
   return undefined;
