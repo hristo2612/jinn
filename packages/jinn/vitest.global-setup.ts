@@ -16,7 +16,7 @@ const TEMP_ENV_KEYS = ['TMPDIR', 'TMP', 'TEMP'] as const;
 // hermetic by dropping harmless no-op shims for these bins on PATH for the test
 // run — the shims are never executed (engines are stubbed), they only satisfy the
 // presence check so tests don't depend on what the host happens to have installed.
-const ENGINE_SHIM_BINS = ['codex'] as const;
+const ENGINE_SHIM_BINS = ['claude', 'codex'] as const;
 
 function installEngineShims(systemTempRoot: string): {
   restore: () => void;

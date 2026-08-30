@@ -34,6 +34,8 @@ function sourceFiles(directory: string): string[] {
   })
 }
 
+const relativePath = (path: string): string => relative(webRoot, path).replaceAll("\\", "/")
+
 function lineOf(source: string, index: number): number {
   return source.slice(0, index).split("\n").length
 }
@@ -251,21 +253,21 @@ describe("jinn shell contract", () => {
 
   it("rule 1 is green on the migrated tree", () => {
     const violations = sourceFiles(routesRoot).flatMap((path) =>
-      largeTitleViolations(readFileSync(path, "utf8"), relative(webRoot, path)),
+      largeTitleViolations(readFileSync(path, "utf8"), relativePath(path)),
     )
     expect(violations).toEqual([])
   })
 
   it("rule 2 is green on the migrated tree", () => {
     const violations = sourceFiles(routesRoot).flatMap((path) =>
-      accentButtonViolations(readFileSync(path, "utf8"), relative(webRoot, path)),
+      accentButtonViolations(readFileSync(path, "utf8"), relativePath(path)),
     )
     expect(violations).toEqual([])
   })
 
   it("rule 3 is green when only the enumerated bottom sheets remain", () => {
     const found = sourceFiles(routesRoot)
-      .flatMap((path) => sheetHits(readFileSync(path, "utf8"), relative(webRoot, path)))
+      .flatMap((path) => sheetHits(readFileSync(path, "utf8"), relativePath(path)))
       .sort()
     expect(found).toEqual([...KNOWN_SHEETS].sort())
   })
@@ -275,7 +277,7 @@ describe("jinn shell contract", () => {
     const hits: string[] = []
     for (const path of files) {
       const source = readFileSync(path, "utf8")
-      const rel = relative(webRoot, path)
+      const rel = relativePath(path)
       if (/addEventListener\(\s*["']scroll["']/.test(source)) hits.push(`${rel} addEventListener("scroll")`)
       if (/IntersectionObserver/.test(source)) hits.push(`${rel} IntersectionObserver`)
       if (/useState\([^)]*collaps/i.test(source) || /setCollapsed\b/.test(source)) {

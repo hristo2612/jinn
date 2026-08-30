@@ -16,10 +16,15 @@ export function deriveSessionKey(msg: TelegramMessageLike, prefix = "telegram"):
  * Build a reply context from a Telegram message.
  */
 export function buildReplyContext(msg: TelegramMessageLike): ReplyContext {
-  return {
+  const context: ReplyContext = {
     chatId: msg.chat.id,
     messageId: msg.message_id,
+    chatType: msg.chat.type,
   };
+  if (msg.from?.id !== undefined) {
+    context.userId = msg.from.id;
+  }
+  return context;
 }
 
 /**

@@ -89,7 +89,7 @@
       "lines": 341
     },
     "packages/jinn/src/connectors/telegram/index.ts": {
-      "lines": 458,
+      "lines": 479,
       "exempt": [
         "@typescript-eslint/no-floating-promises",
         "complexity",
@@ -800,7 +800,7 @@
       ]
     },
     "packages/jinn/src/shared/types.ts": {
-      "lines": 833
+      "lines": 838
     },
     "packages/jinn/src/stt/__tests__/settings-store.test.ts": {
       "lines": 314

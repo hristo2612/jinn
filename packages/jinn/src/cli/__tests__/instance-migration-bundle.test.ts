@@ -168,6 +168,19 @@ describe("instance migration bundle generator", () => {
     expect(unresolved.stderr).toMatch(/unresolved release placeholder/i)
   })
 
+  it("allows a staged newer migration while the package stays on the current release", () => {
+    const root = fixture()
+    const args = ["--base-ref", "v0.25.0", "--version", "0.26.0"]
+    expect(run(root, "generate", ...args).status).toBe(0)
+    fs.writeFileSync(
+      path.join(root, "packages/jinn/package.json"),
+      JSON.stringify({ name: "jinn-cli", version: "0.25.0" }, null, 2) + "\n",
+    )
+
+    expect(run(root, "check", ...args).status).toBe(1)
+    expect(run(root, "check", ...args, "--allow-unreleased").status).toBe(0)
+  })
+
   it("rejects empty bundles, unsafe symlinks, and version mismatch", () => {
     const root = fixture()
     git(root, "reset", "--hard", "v0.25.0")
