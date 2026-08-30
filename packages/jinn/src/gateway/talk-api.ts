@@ -50,20 +50,17 @@ export interface TalkApiOptions {
 }
 
 const talkDatabase = initDb();
-const talkSessions = new TalkSessionRegistry(Date.now, new TalkSessionRepository(talkDatabase));
+const talkSessions = new TalkSessionRegistry(() => Date.now(), new TalkSessionRepository(talkDatabase));
 const controlReceipts = new TalkToolReceiptRepository(talkDatabase);
 const controlRuntimes = new Map<string, TalkControlRuntime>();
 const controlManifest = buildTalkControlManifest();
-const REAP_INTERVAL_MS = 30_000;
 
-// Unref'd: an idle reaper must never be the reason the process stays alive. It
-// is the only thing that closes a session whose tab went away without a DELETE.
-setInterval(() => {
+export function reapTalkSessions(): void {
   for (const id of talkSessions.reap()) {
     controlRuntimes.delete(id);
     logger.info(`Talk session ${id} parked: no heartbeat for ${TALK_SESSION_TTL_MS}ms`);
   }
-}, REAP_INTERVAL_MS).unref();
+}
 
 // Only the argument order is local: talk chooses the status per failure, so one
 // shim covers every send — including the 500 that lands on serverError's shape.

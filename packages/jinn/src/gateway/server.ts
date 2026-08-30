@@ -58,7 +58,7 @@ import { rejectNonOperatorPtyUpgradeCaller, rejectUnverifiedIdentifiedUpgradeCal
 import { cleanupMcpConfigFile, sweepOrphanMcpConfigFiles } from "../mcp/resolver.js";
 import { startStatusReconciler } from "./status-reconciler.js";
 import { webTurnSurface } from "./web-session-dispatch.js";
-import { startHeartbeatScheduler } from "../heartbeats/scheduler.js";
+import { startSessionSchedulers } from "./session-schedulers.js";
 import { armJinnAttachGate } from "../mcp/attachment.js";
 import { syncExternalTurn } from "./external-turns.js";
 import { pickEncoding, isCompressibleExt, compressBuffer, compressStream, type Encoding } from "./compress.js";
@@ -886,7 +886,7 @@ export async function startGateway(
 
   // Unstick sessions whose completion event was lost (status:"running", no live turn): a 15s sweep, settling through the one completion path.
   const stopStatusReconciler = startStatusReconciler({ engines, surfaceFor: (id) => webTurnSurface(id, apiContext) });
-  const stopHeartbeatScheduler = startHeartbeatScheduler();
+  const stopSessionSchedulers = startSessionSchedulers();
 
   // Todos ledger truth-keeping: derive status from linked-session evidence so a mid-process settle lands without a boot (GRS-021a), and resume a Todo parked on a provider window that has since reopened (PLA-153).
   const stopWorkItemReconciler = startWorkItemReconciler();
@@ -1201,7 +1201,7 @@ export async function startGateway(
     logger.info("Gateway cleanup starting...");
 
     // Stop the periodic sweeps before we start marking sessions interrupted below — a mid-shutdown sweep must not race the teardown.
-    stopStatusReconciler(); stopWorkItemReconciler(); stopTodoSweeps(); stopHeartbeatScheduler();
+    stopStatusReconciler(); stopWorkItemReconciler(); stopTodoSweeps(); stopSessionSchedulers();
     backgroundRefreshes.stop();
     workflowService.dispose(); workflowDatabase.close();
 

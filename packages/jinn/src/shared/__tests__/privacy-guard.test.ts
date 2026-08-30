@@ -57,6 +57,7 @@ function listTrackedTextFiles(repo: string, scanPaths: string[]): string[] {
   const tracked = execFileSync("git", ["ls-files", "-z", "--", ...scanPaths], {
     cwd: repo,
     encoding: "utf-8",
+    stdio: ["ignore", "pipe", "pipe"],
   });
 
   return tracked
@@ -99,14 +100,14 @@ describe("privacy guard", () => {
   it("ignores an untracked personal path but catches it once tracked", () => {
     const repo = mkdtempSync(join(tmpdir(), "jinn-privacy-guard-"));
     try {
-      execFileSync("git", ["init", "--quiet"], { cwd: repo });
+      execFileSync("git", ["init", "--quiet"], { cwd: repo, stdio: "ignore" });
       mkdirSync(join(repo, "docs"));
       const scratch = join(repo, "docs", "scratch.md");
       writeFileSync(scratch, `local path: ${BLOCKED_TERMS.at(-1)}/scratch\n`);
 
       expect(findBlockedTerms(listTrackedTextFiles(repo, ["docs"]), repo)).toEqual([]);
 
-      execFileSync("git", ["add", "--", "docs/scratch.md"], { cwd: repo });
+      execFileSync("git", ["add", "--", "docs/scratch.md"], { cwd: repo, stdio: "ignore" });
       const findings = findBlockedTerms(listTrackedTextFiles(repo, ["docs"]), repo);
       expect(findings).not.toEqual([]);
       expect(findings).toEqual(
