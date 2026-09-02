@@ -192,7 +192,7 @@ export function createEmployeeSession(employee: string, suffix: string): string 
 
 export function managerVisibilityRequests(fetchSpy: ReturnType<typeof vi.fn>, managerSessionId: string) {
   return fetchSpy.mock.calls.filter(([url, opts]) => {
-    if (url !== `http://127.0.0.1:7777/api/sessions/${managerSessionId}/message`) return false;
+    if (url !== `http://127.0.0.1:7777/api/sessions/${managerSessionId}/message`) return false; // footgun: ok a read-only filter over recorded calls, moved verbatim out of delegations-route.test.ts — it owns no port and kills nothing
     const body = JSON.parse(opts.body);
     return body.role === "notification" && body.meta?.kind === "manager-visibility";
   });

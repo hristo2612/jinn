@@ -5,9 +5,9 @@
  * be proxied to that port and not to api.anthropic.com. Everything else keeps
  * the SsePtyProxy default.
  *
- * `env` is threaded in rather than read from process.env here: env handling
- * spread across modules is how JINN_HOME drifts between the gateway and the
- * children it spawns, and scripts/check-footguns.mjs fails a change that does it.
+ * The environment is threaded in by the caller rather than reached for here:
+ * env handling spread across modules is how JINN_HOME drifts between the
+ * gateway and the children it spawns.
  */
 import { SsePtyProxy, type SseDataEvent, type SsePtyProxyOpts, type UpstreamActivityInfo } from "./sse-pty-proxy.js";
 import { logger } from "../shared/logger.js";
