@@ -85,6 +85,32 @@ describe("PrimaryAction", () => {
     expect(fab.className).not.toContain(`bottom-[${FAB_BOTTOM_WITH_TAB}]`)
   })
 
+  // An `outline` paints outside the border box. The disc's right edge is the
+  // page gutter, so an outlined FAB is a wider button sitting off that rail —
+  // which is exactly how the focused FAB read next to an unfocused one.
+  it("draws the focus ring inside the disc, so focus never resizes the button", () => {
+    render(<PrimaryAction aria-label="New" label="New" icon={<Plus />} onClick={() => {}} />)
+    const fab = document.querySelector("[data-primary-action='fab']") as HTMLElement
+
+    expect(fab.className).not.toContain("outline-offset")
+    expect(fab.className).not.toMatch(/focus-visible:outline-\d/)
+    expect(fab.className).toContain("outline-none")
+
+    const focusRing = fab.className
+      .split(/\s+/)
+      .find((cls) => cls.startsWith("focus-visible:shadow-["))
+    expect(focusRing).toBeDefined()
+    expect(focusRing).toContain("inset_0_0_0_4px_var(--accent-contrast)")
+    // Every layer of the focused shadow is inset or the disc's own resting
+    // shadow, so no focus layer reaches past the disc's edge.
+    expect(focusRing).not.toMatch(/,(?!inset_|var\(--shadow-key\)|var\(--inset-shine\))/)
+
+    // The box itself is untouched by focus: one size, one right edge.
+    expect(fab.className).toContain("size-[var(--fab-size)]")
+    expect(fab.className).toContain("right-[var(--space-3)]")
+    expect(fab.className).not.toMatch(/focus-visible:(size|right|p|m)-/)
+  })
+
   it("disabled FAB drops the accent fill", () => {
     render(<PrimaryAction aria-label="New" label="New" disabled onClick={() => {}} />)
     const fab = screen.getByRole("button", { name: "New" })

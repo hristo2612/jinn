@@ -93,7 +93,12 @@ function FabAction({ "aria-label": ariaLabel, icon, onClick, disabled, testId, h
         "shadow-[var(--shadow-key),var(--inset-shine)]",
         "transition-transform duration-[var(--duration-fast)] ease-[var(--ease-snappy)]",
         "active:scale-[0.94]",
-        "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]",
+        // An outline paints outside the border box, so an outlined FAB is a
+        // wider disc that no longer ends on the page gutter. The ring is drawn
+        // inside instead: an invisible accent step holds it off the edge, then
+        // the same colour the glyph already uses draws it.
+        "outline-none",
+        "focus-visible:shadow-[var(--shadow-key),var(--inset-shine),inset_0_0_0_2px_var(--accent),inset_0_0_0_4px_var(--accent-contrast)]",
         "[&_svg]:size-6",
         disabled
           ? "bg-[var(--fill-tertiary)] text-[var(--text-quaternary)] shadow-none"
