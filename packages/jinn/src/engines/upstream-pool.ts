@@ -61,3 +61,9 @@ export function isRetriableUpstreamError(err: NodeJS.ErrnoException): boolean {
     /bad record mac|decrypt error/i.test(err.message)
   );
 }
+
+/** Transport for the upstream call, chosen from the same protocol that picks
+ *  the pool above. Lives here so a constructor does not spend its complexity
+ *  budget on the branch. */
+export const defaultRequestFn = (protocol?: "http:" | "https:") =>
+  protocol === "http:" ? http.request : https.request;

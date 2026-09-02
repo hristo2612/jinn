@@ -27,15 +27,15 @@ describe('routeMemoryTrialHook', () => {
     const operationStore = new Set<string>();
 
     await expect(route({
-      hook: { hook_event_name: 'SessionStart', cwd: '/Users/x/Projects/jarvis/packages/app' },
-      projectRoot: '/Users/x/Projects/jarvis',
+      hook: { hook_event_name: 'SessionStart', cwd: '/projects/jarvis/packages/app' },
+      projectRoot: '/projects/jarvis',
       operationStore,
       dispatch,
     })).resolves.toMatchObject({ routed: true });
     operationStore.clear();
     await expect(route({
-      hook: { hook_event_name: 'SessionStart', cwd: '/Users/x/Projects/jinn' },
-      projectRoot: '/Users/x/Projects/jarvis',
+      hook: { hook_event_name: 'SessionStart', cwd: '/projects/jinn' },
+      projectRoot: '/projects/jarvis',
       operationStore,
       dispatch,
     })).resolves.toMatchObject({ routed: false, reason: 'identity-denied' });

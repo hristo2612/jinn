@@ -3,7 +3,7 @@ import https from "node:https";
 import { StringDecoder } from "node:string_decoder";
 import { logger } from "../shared/logger.js";
 import {
-  createUpstreamPool,
+  createUpstreamPool, defaultRequestFn,
   isRetriableUpstreamError,
   MAX_UPSTREAM_ATTEMPTS,
   retryBackoffMs,
@@ -87,13 +87,6 @@ export interface SsePtyProxyOpts {
  * fingerprint heuristic we tried either dropped real turns (broke streaming) or
  * leaked sub-agents. The sentinel is the one signal the gateway fully controls.
  */
-/** Transport for the upstream call, chosen the same way `createUpstreamPool`
- *  chooses its agent. Lives outside the constructor so the branch does not
- *  count against its complexity budget. */
-function defaultRequestFn(protocol?: "http:" | "https:"): UpstreamRequestFn {
-  return protocol === "http:" ? http.request : https.request;
-}
-
 export class SsePtyProxy {
   private server: http.Server;
   /** Resolved listening port (0 until start() completes). */

@@ -3,6 +3,9 @@ import { join } from 'node:path';
 
 import { isSourceEligible, type CanonicalSource } from './preparation.js';
 import { writeJsonAtomically } from './trial-harness.js';
+import { isEligibleForMemoryTrial, isWithinMemoryTrialBudget, memoryTrialOperationId } from './claims.js';
+
+export { isEligibleForMemoryTrial, isWithinMemoryTrialBudget, isWithinMemoryTrialBudgets, memoryTrialOperationId } from './claims.js';
 
 export const MEMORY_TRIAL_POLICY = Object.freeze({
   projectId: 'jarvis',
@@ -99,66 +102,6 @@ function authorizedEffectState(
 ): ControlState {
   return authorizedState ? { ...state, ...authorizedState } : state;
 }
-
-function isCanonicalClaim(value: unknown): value is string {
-  return typeof value === 'string'
-    && value.length > 0
-    && value === value.trim()
-    && value === value.normalize('NFC');
-}
-
-function isEligibleCreationTime(value: unknown): value is number {
-  return typeof value === 'number'
-    && Number.isFinite(value)
-    && value > MEMORY_TRIAL_POLICY.activationEpoch;
-}
-
-function isAllowedAgentId(value: unknown): value is MemoryTrialClaims['agentId'] {
-  return isCanonicalClaim(value)
-    && MEMORY_TRIAL_POLICY.allowedAgentIds.some((agentId) => agentId === value);
-}
-
-function isAllowedTrigger(value: unknown): value is MemoryTrialTrigger {
-  return MEMORY_TRIAL_POLICY.triggers.some((trigger) => trigger === value);
-}
-
-function isClaimsObject(claims: unknown): claims is Partial<MemoryTrialClaims> {
-  return Boolean(claims) && typeof claims === 'object' && !Array.isArray(claims);
-}
-
-export function isEligibleForMemoryTrial(claims: unknown): claims is MemoryTrialClaims {
-  if (!isClaimsObject(claims)) return false;
-  return isEligibleCreationTime(claims.createdAt)
-    && claims.projectId === MEMORY_TRIAL_POLICY.projectId
-    && isAllowedAgentId(claims.agentId)
-    && isCanonicalClaim(claims.sessionId)
-    && isAllowedTrigger(claims.trigger);
-}
-
-export function memoryTrialOperationId(claims: MemoryTrialClaims): string {
-  return [
-    claims.projectId,
-    claims.agentId,
-    claims.sessionId,
-    claims.trigger,
-    MEMORY_TRIAL_POLICY.policyVersion,
-  ].join(FIELD_SEPARATOR);
-}
-
-export function isWithinMemoryTrialBudget(usage: MemoryTrialBudgetUsage): boolean {
-  const limits = MEMORY_TRIAL_POLICY.budgets;
-  return Object.values(usage).every((value) => Number.isInteger(value) && value >= 0)
-    && usage.sessions <= limits.maxSessions
-    && usage.agents <= limits.maxAgents
-    && usage.pairs <= limits.maxPairs
-    && usage.injectedBytes <= limits.maxInjectedBytesPerSession
-    && usage.items <= limits.maxItemsPerSession
-    && usage.elapsedMilliseconds <= limits.maxSessionMilliseconds
-    && usage.retries <= limits.maxRetries
-    && usage.concurrency <= limits.concurrency;
-}
-
-export const isWithinMemoryTrialBudgets = isWithinMemoryTrialBudget;
 
 function identityParts(operationId: string): readonly string[] {
   return operationId.split(FIELD_SEPARATOR);

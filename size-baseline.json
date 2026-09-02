@@ -160,7 +160,7 @@
       ]
     },
     "packages/jinn/src/engines/claude-interactive.ts": {
-      "lines": 1844,
+      "lines": 1834,
       "exempt": [
         "complexity",
         "max-lines-per-function"
@@ -282,7 +282,7 @@
       "lines": 556
     },
     "packages/jinn/src/gateway/__tests__/delegations-route.test.ts": {
-      "lines": 1074
+      "lines": 924
     },
     "packages/jinn/src/gateway/__tests__/external-turns.test.ts": {
       "lines": 485
@@ -324,7 +324,7 @@
       ]
     },
     "packages/jinn/src/gateway/api.ts": {
-      "lines": 5145,
+      "lines": 5137,
       "exempt": [
         "complexity",
         "max-depth",

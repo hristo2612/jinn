@@ -12,6 +12,7 @@ import { PtyStreamManager, createPtyHandle, setCapped } from "./pty-stream.js";
 import type { PtyControlEvent, PtyViewEngine, PtyIdleSpawnOpts, PtySnapshotSubscription } from "./pty-view-engine.js";
 import type { HookRegistry, HookPayload } from "../gateway/hook-registry.js";
 import { SsePtyProxy, MAIN_AGENT_SENTINEL, type SseDataEvent, type UpstreamActivityInfo } from "./sse-pty-proxy.js";
+import { startSseProxy } from "./omniroute-upstream.js";
 import { neutralizeForPaste } from "../shared/skill-commands.js";
 import { buildPromptWithPlatformContext } from "./platform-context.js";
 import { extractActivityReceiptId } from "../shared/activity-receipts.js";
@@ -1535,37 +1536,15 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
     if (e.type === "message_stop") for (const d of gate.end()) entry.onStream(d);
   }
 
-  /** Allocate + start a per-PTY SSE forward proxy. Returns the proxy and its port,
-   *  or {port:0} if it failed to bind — in which case the PTY is spawned WITHOUT
-   *  ANTHROPIC_BASE_URL (direct to Anthropic): the turn still works, only live
-   *  word-by-word streaming degrades. */
-  private async startProxy(jinnSessionId: string, bin?: string): Promise<{ proxy: SsePtyProxy; port: number }> {
-    const isOmniRoute = (bin ?? "").includes("claude-omni");
-    const upstreamUrl = isOmniRoute
-      ? new URL(process.env.JINN_OMNIROUTE_ANTHROPIC_BASE_URL || "http://127.0.0.1:20128")
-      : undefined;
-    const proxy = new SsePtyProxy(jinnSessionId, (e) => this.handleSseEvent(jinnSessionId, e), {
-      ...(upstreamUrl ? {
-        upstream: {
-          hostname: upstreamUrl.hostname,
-          port: Number(upstreamUrl.port) || (upstreamUrl.protocol === "https:" ? 443 : 80),
-          protocol: upstreamUrl.protocol as "http:" | "https:",
-        },
-      } : {}),
-      // ALL requests (main + subagent + background tasks) count here — this is
-      // how the gateway knows the CLI is still working after the turn settled.
+  /** Delegates to startSseProxy; see engines/omniroute-upstream.ts. */
+  private startProxy(jinnSessionId: string, bin?: string): Promise<{ proxy: SsePtyProxy; port: number }> {
+    return startSseProxy({
+      jinnSessionId,
+      bin,
+      onEvent: (e) => this.handleSseEvent(jinnSessionId, e),
       onUpstreamActivity: (info) => this.handleUpstreamActivity(jinnSessionId, info),
     });
-    try {
-      const port = await proxy.start();
-      return { proxy, port };
-    } catch (err) {
-      logger.warn(`SSE proxy failed to start for session ${jinnSessionId} (streaming degraded): ${err instanceof Error ? err.message : String(err)}`);
-      proxy.stop();
-      return { proxy, port: 0 };
-    }
   }
-
   /** Wrap a freshly-spawned pty.IPty in a PtyHandle and wire its output into
    *  the session's scrollback ring buffer + live subscribers. On PTY exit, if this
    *  proc is the one bound to the active turn, the resolver is interrupted (a crash
