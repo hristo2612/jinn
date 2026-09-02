@@ -70,6 +70,8 @@ export function validateConfigShape(config: unknown): string[] {
     }
   }
 
+  problems.push(...validateMemoryTrial(c.memoryTrial));
+
   if (typeof c.engines !== "object" || c.engines === null || Array.isArray(c.engines)) {
     problems.push("engines must be a mapping with at least an engines.claude entry");
   } else {
@@ -85,6 +87,49 @@ export function validateConfigShape(config: unknown): string[] {
 
   problems.push(...validateRealtime(c.realtime));
 
+  return problems;
+}
+
+function validateMemoryTrial(memoryTrial: unknown): string[] {
+  if (memoryTrial === undefined) return [];
+  if (typeof memoryTrial !== "object" || memoryTrial === null || Array.isArray(memoryTrial)) {
+    return ["memoryTrial must be a mapping"];
+  }
+  const problems: string[] = [];
+  const config = memoryTrial as Record<string, unknown>;
+  if (config.enabled !== undefined && typeof config.enabled !== "boolean") {
+    problems.push(`memoryTrial.enabled must be a boolean (got ${typeof config.enabled})`);
+  }
+  if (config.circuitOpen !== undefined && typeof config.circuitOpen !== "boolean") {
+    problems.push(`memoryTrial.circuitOpen must be a boolean (got ${typeof config.circuitOpen})`);
+  }
+  if (
+    config.activationEpoch !== undefined
+    && (typeof config.activationEpoch !== "number" || !Number.isFinite(config.activationEpoch))
+  ) {
+    problems.push(`memoryTrial.activationEpoch must be a finite number (got ${typeof config.activationEpoch})`);
+  }
+  if (config.enabled === true && typeof config.activationEpoch !== "number") {
+    problems.push("memoryTrial.activationEpoch is required when memoryTrial.enabled is true");
+  }
+  if (config.projectRoot !== undefined && (typeof config.projectRoot !== "string" || !config.projectRoot.startsWith("/"))) {
+    problems.push("memoryTrial.projectRoot must be an absolute path");
+  }
+  if (config.autoArchiveProjectContent !== undefined && typeof config.autoArchiveProjectContent !== "boolean") {
+    problems.push("memoryTrial.autoArchiveProjectContent must be a boolean");
+  }
+  if (config.autoArchiveProjectContent === true && typeof config.projectRoot !== "string") {
+    problems.push("memoryTrial.projectRoot is required when autoArchiveProjectContent is true");
+  }
+  if (config.triggers !== undefined) {
+    if (!Array.isArray(config.triggers)) {
+      problems.push("memoryTrial.triggers must be an array");
+    } else {
+      problems.push(...config.triggers
+        .filter((trigger) => trigger !== "authorized-session-start" && trigger !== "session-finalized")
+        .map((trigger) => `memoryTrial.triggers contains unsupported trigger ${JSON.stringify(trigger)}`));
+    }
+  }
   return problems;
 }
 
@@ -268,7 +313,7 @@ const CONFIG_TOP_LEVEL_KEY_SET: Record<keyof JinnConfig, true> = {
   jinn: true, gateway: true, engines: true, models: true, connectors: true,
   logging: true, mcp: true, plugins: true, budgets: true, sessions: true,
   cron: true, notifications: true, workflows: true, portal: true, context: true,
-  stt: true, talk: true, realtime: true,
+  stt: true, talk: true, realtime: true, memoryTrial: true,
 };
 export const CONFIG_TOP_LEVEL_KEYS = Object.keys(CONFIG_TOP_LEVEL_KEY_SET);
 

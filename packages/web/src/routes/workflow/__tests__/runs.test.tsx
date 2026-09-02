@@ -125,7 +125,7 @@ describe("workflow runs lens", () => {
 
     await userEvent.click(await screen.findByRole("button", { name: "Run" }))
 
-    await waitFor(() => expect(startWorkflowRun).toHaveBeenCalledWith("morning-digest"))
+    await waitFor(() => expect(startWorkflowRun).toHaveBeenCalledWith("morning-digest", {}))
     await waitFor(() =>
       expect(router.state.location.pathname).toBe("/workflow/morning-digest/runs/run-01HZX"))
   })

@@ -71,13 +71,13 @@ describe("restart interruption marking", () => {
     expect(restartResume.consumeRestartResumeCandidates()).toEqual([]);
   });
 
-  it("leaves a restart-requesting session idle and unstamped", () => {
+  it("leaves a restart-requesting session idle and marks it for resume", () => {
     const requester = session("running", { transportMeta: { [registry.RESTART_ACK_META_KEY]: new Date().toISOString() } });
 
     restartResume.interruptRunningSessionsForShutdown();
 
     expect(registry.getSession(requester.id)?.status).toBe("idle");
-    expect(restartResume.consumeRestartResumeCandidates()).toEqual([]);
+    expect(restartResume.consumeRestartResumeCandidates().map((candidate) => candidate.id)).toEqual([requester.id]);
   });
 
   it("stamps a session the previous gateway never got to shut down cleanly", () => {

@@ -27,8 +27,13 @@ For the Todo named in your prompt:
 1. Read it with get_work_item.
 2. Look for a Workflow that already covers it BEFORE considering an employee. Call list_workflows, then get_workflow on any candidate whose name or description sounds close.
 3. Judge whether one Workflow's stated purpose covers this Todo's WHOLE deliverable. If it does, call start_workflow_run with that workflow and this Todo's workItemId as todoId, then check the run with get_workflow_run and comment the run's id and state on the Todo. Starting a run and walking away is not dispatching it.
-4. If no Workflow covers it, delegate. Inspect the roster with find_employees, then get_employee for the best candidates, choose the employee whose role and experience best fit the complete Todo, and call delegate_task with the existing workItemId, that employee, and a self-contained brief that includes the acceptance criteria.
-5. Comment on the Todo with the choice and the concrete reason for it, then end your turn.
+4. If no Workflow covers it, classify the Todo before delegating. Use exactly one OmniRoute route:
+   - omnisource-complex-tools for development, architecture, security, infrastructure, deployment, multi-step investigation, high-risk work, or any task whose failure would be costly. Its fallback order is Claude, then Codex, then Qwen.
+   - omnisource-small-tools for short, low-risk work that needs Jinn tools, MCP, repository access, files, search, Todo operations, or skills. Its fallback order is Qwen, then Codex, then Claude.
+   - omnisource-small-local only for short, low-risk text work that needs no tool, no MCP, no file, no search and no external fact. It uses Gemma locally.
+   When uncertain, choose omnisource-complex-tools. Never select Kimi and never select a provider or a direct Codex model: every choice must be one of these OmniRoute routes.
+5. Call set_work_item_dispatch on the existing Todo with engine claude and the selected route as model. Include only installed skills that materially help the Todo. Then inspect the roster with find_employees and get_employee, choose the employee whose role and experience best fit the complete Todo, and call delegate_task with the existing workItemId, that employee, and a self-contained brief that includes the acceptance criteria. Do not override engine or model in delegate_task: the Todo dispatch configuration is the single source of truth.
+6. Comment on the Todo with the employee, selected route, tool/MCP need, complexity classification and concrete reason, then end your turn.
 
 The bias, when the two are close: a wrong Workflow is worse than falling back to an employee. A Workflow runs a fixed procedure to completion, so a bad match burns a whole pipeline on the wrong shape of work, while a misjudged employee reads the brief and says so. Anything short of "this Workflow's stated purpose covers this Todo" falls back to step 4.
 

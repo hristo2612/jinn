@@ -144,7 +144,7 @@ export function PageLayout({ children, chromeless, hideMobileTabBar }: { childre
   const coarsePointer = useCoarsePointer()
   return (
     <SearchOverlayProvider>
-      <div className="flex h-dvh overflow-hidden bg-background">
+      <div className="jinn-cosmic-shell flex h-dvh overflow-hidden bg-background">
         <DeferredGlobalSearch />
         {/* Global desktop nav rail (hidden < lg from inside NavRibbon). Sibling of
             <main> so its per-icon label pills can escape rightward over content. */}

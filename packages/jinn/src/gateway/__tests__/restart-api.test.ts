@@ -163,7 +163,10 @@ describe("POST /api/system/restart", () => {
       expect.objectContaining({
         status: "idle",
         lastError: null,
-        transportMeta: expect.objectContaining({ restartAcknowledgedAt: expect.any(String) }),
+        transportMeta: expect.objectContaining({
+          restartAcknowledgedAt: expect.any(String),
+          restartInterruptedAt: expect.any(String),
+        }),
       }),
     );
   });

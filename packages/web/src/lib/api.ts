@@ -734,8 +734,8 @@ export const api = {
   ...createWorkflowLifecycleApi({ workflowWrite }),
   /** Unprojected, like every workflow write route: the body carries
    *  `attempts[].input` and no `spendUsd`. See ICI-1190. */
-  startWorkflowRunV2: (id: string) =>
-    post<WorkflowRunDetailUnprojectedWire>(`/api/workflows/${encodeURIComponent(id)}/runs`, { input: {} }),
+  startWorkflowRunV2: (id: string, input: Record<string, JsonValueWire> = {}) =>
+    post<WorkflowRunDetailUnprojectedWire>(`/api/workflows/${encodeURIComponent(id)}/runs`, { input }),
   decideWorkflowApprovalV2: (
     id: string,
     runId: string,

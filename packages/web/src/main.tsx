@@ -32,6 +32,7 @@ const ExperimentDetailPage = lazyRoute(() => import('./routes/experiments/detail
 const LogsPage = lazyRoute(() => import('./routes/logs/page'), 'logs')
 const LimitsPage = lazyRoute(() => import('./routes/limits/page'), 'limits')
 const OrgPage = lazyRoute(() => import('./routes/org/page'), 'org')
+const ConstellationPage = lazyRoute(() => import('./routes/constellation/page'), 'constellation')
 const SettingsPage = lazyRoute(() => import('./routes/settings/page'), 'settings')
 const PluginsSettingsPage = lazyRoute(() => import('./routes/settings/plugins/page'), 'settings-plugins')
 const SkillsPage = lazyRoute(() => import('./routes/skills/page'), 'skills')
@@ -52,6 +53,7 @@ registerRoutePrefetch('/experiments', ExperimentsPage.prefetch)
 registerRoutePrefetch('/logs', LogsPage.prefetch)
 registerRoutePrefetch('/limits', LimitsPage.prefetch)
 registerRoutePrefetch('/org', OrgPage.prefetch)
+registerRoutePrefetch('/constellation', ConstellationPage.prefetch)
 registerRoutePrefetch('/settings', SettingsPage.prefetch)
 registerRoutePrefetch('/skills', SkillsPage.prefetch)
 registerRoutePrefetch('/more', MorePage.prefetch)
@@ -138,6 +140,7 @@ const routeElements: Partial<Record<AppRouteId, ReactNode>> = {
   logs: <LogsPage />,
   limits: <LimitsPage />,
   org: <OrgPage />,
+  constellation: <ConstellationPage />,
   settings: <SettingsPage />,
   "settings-plugins": <PluginsSettingsPage />,
   "skills-list": <SkillsPage />,

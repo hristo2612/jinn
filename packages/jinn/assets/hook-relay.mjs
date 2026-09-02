@@ -37,6 +37,9 @@ async function main() {
     const text = await response.text().catch(() => "Command blocked by Jinn security policy");
     process.stderr.write(text || "Command blocked by Jinn security policy");
     process.exitCode = 2;
+  } else if (response?.ok && payload.hook_event_name === "SessionStart") {
+    const result = await response.json().catch(() => null);
+    if (result?.hookSpecificOutput) process.stdout.write(JSON.stringify({ hookSpecificOutput: result.hookSpecificOutput }));
   }
 }
 

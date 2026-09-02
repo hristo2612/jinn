@@ -75,9 +75,11 @@ fs.writeFileSync(
 type Api = typeof import("../api.js");
 type Reg = typeof import("../../sessions/registry.js");
 type Store = typeof import("../../work-items/store.js");
+type Approvals = typeof import("../../work-items/approvals.js");
 let api: Api;
 let reg: Reg;
 let store: Store;
+let approvals: Approvals;
 const processFetch = globalThis.fetch;
 const routeFetchStub = vi.fn().mockResolvedValue({ ok: true });
 
@@ -237,6 +239,7 @@ beforeAll(async () => {
   api = await import("../api.js");
   reg = await import("../../sessions/registry.js");
   store = await import("../../work-items/store.js");
+  approvals = await import("../../work-items/approvals.js");
   // GRS-017e-fix: jinn attachment requires the armed-ok smoke gate (unarmed
   // fails closed). A booted gateway arms it at boot; this suite drives the
   // dispatch path without a boot, so arm it here — the identity-seam tests
@@ -252,6 +255,41 @@ afterAll(async () => {
 });
 
 describe("POST /api/delegations — the transaction (happy paths)", () => {
+  it("preserves the implementer when dispatching an in-review Todo to its approval target", async () => {
+    const item = store.createWorkItem({
+      title: "Independent approval review",
+      body: "Review the completed implementation without taking ownership.",
+      status: "in_review",
+      assignee: "qa-emp",
+      department: "qa",
+      createdBy: "operator",
+    });
+    approvals.requestApproval(item.id, {
+      request: "Decide the independent quality gate",
+      target: "qa-manager",
+      actor: "operator",
+    });
+
+    const response = await call("POST", "/api/delegations", {
+      workItemId: item.id,
+      employee: "qa-manager",
+      task: "Review the evidence and decide the pending approval.",
+      title: "Independent quality review",
+    });
+
+    expect(response.status).toBe(201);
+    expect(response.body.employee).toBe("qa-manager");
+    expect(store.getWorkItem(item.id)).toMatchObject({
+      assignee: "qa-emp",
+      approvalTarget: "qa-manager",
+      status: "in_review",
+    });
+    expect(reg.getSession(response.body.sessionId)).toMatchObject({
+      employee: "qa-manager",
+      workItemId: item.id,
+    });
+  });
+
   it("notifies the IC manager exactly once for a skip-level delegation and still dispatches to the IC", async () => {
     const managerSessionId = createEmployeeSession("qa-manager", "visibility");
     reg.updateSession(managerSessionId, { status: "running" });
@@ -708,6 +746,16 @@ describe("POST /api/delegations — the transaction (happy paths)", () => {
     expect(reg.getSession(resp.body.sessionId)?.transportMeta).toMatchObject({
       delegationCompletionTracked: true,
     });
+    let delegatedRun: Record<string, unknown> | undefined;
+    for (let i = 0; i < 1000 && !delegatedRun; i++) {
+      delegatedRun = engineRuns.find((run) => run.sessionId === resp.body.sessionId);
+      if (!delegatedRun) await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const dispatchedPrompt = String(delegatedRun?.prompt ?? "");
+    expect(dispatchedPrompt).toContain("Execute the canonical objective");
+    expect(dispatchedPrompt).toContain(`ID: ${item.id}`);
+    expect(dispatchedPrompt).toContain("Title: Canonical objective");
+    expect(dispatchedPrompt).toContain("Objective and evidence:\nPreserve this brief");
     expect(store.getWorkItem(item.id)).toMatchObject({
       title: "Canonical objective",
       body: "Preserve this brief",

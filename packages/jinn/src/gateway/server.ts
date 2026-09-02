@@ -15,7 +15,7 @@ import {
 } from "../shared/models.js";
 import { configureLogger, logger } from "../shared/logger.js";
 import { CONNECTOR_ID_REQUIREMENTS, isValidConnectorId } from "../shared/connector-id.js";
-import { scheduleFtsBackfill, recoverStaleSessions, recoverStaleWorkflowAttemptSessions, recoverStaleQueueItems, clearAllPartialMessages, consumeRestartAcknowledgements, getInterruptedSessions, listSessions, getSession, getMessages, getSessionSpend, listAllSessionIds } from "../sessions/registry.js";
+import { archiveSession, scheduleFtsBackfill, recoverStaleSessions, recoverStaleWorkflowAttemptSessions, recoverStaleQueueItems, clearAllPartialMessages, consumeRestartAcknowledgements, getInterruptedSessions, listSessions, getSession, getMessages, getSessionSpend, listAllSessionIds } from "../sessions/registry.js";
 import { getPackageVersion } from "../shared/version.js";
 import { interruptRunningSessionsForShutdown, resumeRestartInterruptedSessions } from "../sessions/restart-resume.js";
 import { initDb } from "../shared/db.js";
@@ -740,6 +740,51 @@ export async function startGateway(
   const workflowDatabase = openWorkflowDatabase();
   importLegacyWorkflowDefinitions(workflowDatabase);
   const workflowRepository = new WorkflowRepository(workflowDatabase);
+  const memoryWorkflowArchives = new Set<string>();
+  const archiveCompletedMemoryWorkflow = async (workflowId: string, runId: string): Promise<void> => {
+    if (workflowId !== "jarvis-memory-archiving" || memoryWorkflowArchives.has(runId)) return;
+    const run = workflowRepository.getRun(workflowId, runId);
+    if (!run || run.status !== "completed") return;
+    const end = run.nodeRuns.find((node) => node.nodeType === "end" && node.status === "completed");
+    const fields = end?.output?.fields;
+    if (!fields) return;
+    memoryWorkflowArchives.add(runId);
+    try {
+      if (fields.accepted === true && typeof fields.summary === "string" && fields.summary.trim()
+        && fields.project_key === "agency-global") {
+        const { runMemoryRuntimeEffect } = await import("../memory-trial/runtime-pipeline.js");
+        await runMemoryRuntimeEffect({
+          directory: path.join(JINN_HOME, "state", "memory-trial"),
+          claims: {
+            createdAt: Date.parse(run.startedAt),
+            projectId: fields.project_key,
+            agentId: "knowledge-curator",
+            sessionId: run.id,
+            trigger: "session-finalized",
+          },
+          hook: {
+            hook_event_name: "Stop",
+            session_id: run.id,
+            memory_trial_corpus: "public",
+            last_assistant_message: fields.summary,
+          },
+        });
+      }
+      const sourceSessionId = typeof fields.session_id === "string" ? fields.session_id.trim() : "";
+      const action = fields.conversation_action;
+      if (fields.critical !== true && sourceSessionId && (action === "archive" || action === "delete_candidate")) {
+        const sourceSession = getSession(sourceSessionId);
+        if (sourceSession && sourceSession.status !== "running" && sourceSession.status !== "waiting") {
+          archiveSession(sourceSessionId);
+          emit("session:updated", { sessionId: sourceSessionId });
+          logger.info(`Memory workflow ${action} archived source session ${sourceSessionId}`);
+        }
+      }
+    } catch (error) {
+      memoryWorkflowArchives.delete(runId);
+      logger.error(`Memory workflow archive failed for ${runId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
   const workflowService = new WorkflowService({ repository: workflowRepository,
     executor: new WorkflowSessionExecutor(sessionManager, (id) => { const session = getSession(id); if (!session) return null;
       const finalText = [...getMessages(id)].reverse().find((message) => message.role === "assistant")?.content; return { session, ...(finalText ? { finalText } : {}) }; }),
@@ -757,7 +802,10 @@ export async function startGateway(
     // prompt has to say so, and a dead run leaves its reason behind.
     todoLifecycle: workflowTodoLifecycle,
     readTranscript: (id) => getMessages(id).map(({ id: messageId, role, content, timestamp }) => ({ id: messageId, role, content, timestamp })),
-    onChange: ({ workflowId, runId }) => emit("company:changed", { entity: "workflow-run", workflowId, runId }),
+    onChange: ({ workflowId, runId }) => {
+      emit("company:changed", { entity: "workflow-run", workflowId, runId });
+      void archiveCompletedMemoryWorkflow(workflowId, runId);
+    },
     onDefinitionChange: ({ workflowId, revision }) => emit("company:changed", { entity: "workflow-definition", id: workflowId, revision }) });
 
   const backgroundRefreshes = startBackgroundRefreshes(() => currentConfig, emit);

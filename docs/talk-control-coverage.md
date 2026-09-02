@@ -19,6 +19,7 @@
 | logs | `/logs` | semantic | bounded redacted activity summary; controls: refresh |
 | limits | `/limits` | semantic | engine limit windows and freshness; controls: refresh |
 | org | `/org` | semantic | employee, reporting line, and activity; controls: open, delegate |
+| constellation | `/constellation` | semantic | visible company graph, active lens, and selected entity; controls: filter, open |
 | settings-plugins | `/settings/plugins` | semantic | plugin inventory and state; controls: enable, disable, rescan |
 | settings | `/settings` | semantic | active settings and safe configuration summary; controls: update |
 | skills-list | `/skills` | semantic | installed skill summaries; controls: open |

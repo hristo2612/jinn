@@ -48,8 +48,9 @@ export function interruptRunningSessionsForShutdown(): void {
         attemptOutcome: "interrupted",
         lastActivity: now,
         lastError: null,
+        transportMeta: { ...existingTransportMeta(session), [RESTART_RESUME_META_KEY]: now },
       });
-      logger.info(`Left restart-requesting session ${session.id} idle during gateway shutdown`);
+      logger.info(`Marked restart-requesting session ${session.id} for resume after gateway shutdown`);
       continue;
     }
     updateSession(session.id, {

@@ -121,6 +121,17 @@ export interface JinnConfig {
   /** Spend caps keyed by employee name: a USD cap on that employee's total spend across the
    *  current calendar month — NOT a per-session cap. At or above it, their turns are blocked. */
   budgets?: { employees?: Record<string, number> };
+  /** JAR-31 local memory/archive activation gate. Omitted = disabled and circuit-open. */
+  memoryTrial?: {
+    enabled?: boolean;
+    circuitOpen?: boolean;
+    activationEpoch?: number;
+    triggers?: ("authorized-session-start" | "session-finalized")[];
+    /** Exact local project root eligible for automatic project-memory capture. */
+    projectRoot?: string;
+    /** Treat unclassified Stop output inside projectRoot as project-public content. */
+    autoArchiveProjectContent?: boolean;
+  };
   sessions?: {
     interruptOnNewMessage?: boolean;
     staleChat?: {

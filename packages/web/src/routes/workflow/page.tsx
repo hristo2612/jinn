@@ -93,11 +93,28 @@ function RunsSection({ workflowId }: { workflowId: string }) {
   )
 }
 
-function RunButton({ workflowId }: { workflowId: string }) {
+function collectRunInput(inputs: WorkflowDefinitionWire["inputs"]): Record<string, string> | null {
+  const values: Record<string, string> = {}
+  for (const input of inputs ?? []) {
+    const value = window.prompt(
+      `${input.label}${input.description ? `\n\n${input.description}` : ""}`,
+      typeof input.default === "string" ? input.default : "",
+    )
+    if (value === null) return null
+    if (input.required && !value.trim()) {
+      window.alert(`${input.label} is required.`)
+      return null
+    }
+    if (value.trim()) values[input.key] = value.trim()
+  }
+  return values
+}
+
+function RunButton({ workflowId, inputs }: { workflowId: string; inputs: WorkflowDefinitionWire["inputs"] }) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const start = useMutation({
-    mutationFn: () => api.startWorkflowRunV2(workflowId),
+    mutationFn: (input: Record<string, string>) => api.startWorkflowRunV2(workflowId, input),
     onSuccess: (detail) => {
       queryClient.setQueryData(queryKeys.workflows.run(workflowId, detail.id), detail)
       void queryClient.invalidateQueries({ queryKey: queryKeys.workflows.runs(workflowId) })
@@ -108,7 +125,10 @@ function RunButton({ workflowId }: { workflowId: string }) {
   return (
     <button
       type="button"
-      onClick={() => start.mutate()}
+      onClick={() => {
+        const input = collectRunInput(inputs)
+        if (input) start.mutate(input)
+      }}
       disabled={start.isPending}
       title={start.isError ? (start.error instanceof Error ? start.error.message : "Failed to start run.") : undefined}
       className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full bg-[var(--accent)] px-3.5 text-[length:var(--text-footnote)] font-[var(--weight-semibold)] text-[var(--accent-contrast)] transition-opacity hover:opacity-90 disabled:opacity-50" // jinn-shell: ok editor run control, not page chrome
@@ -243,7 +263,7 @@ function WorkflowSurface({ store }: { store: EditorStoreApi }) {
         </div>
         <SaveChip onReload={() => void reload()} />
         <EnableSwitch flushNow={flushNow} />
-        {meta.enabled && hasManualTrigger && <RunButton workflowId={meta.id} />}
+        {meta.enabled && hasManualTrigger && <RunButton workflowId={meta.id} inputs={meta.inputs} />}
         <LensControl lens={lens} setLens={setLens} />
         <WorkflowLifecycleMenu
           variant="header"

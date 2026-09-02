@@ -688,6 +688,189 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+/* CONSTELLATION SYSTEM — the graph's spatial language is the shared Jinn
+   language now: deep blue-black space, cold glass, restrained spectral light
+   and a fine physical grain.  Light mode intentionally keeps the ledger-paper
+   treatment; this layer only replaces the dark material family. */
+[data-theme="dark"] {
+  --bg: #05060c;
+  --bg-secondary: rgba(14, 17, 31, 0.78);
+  --bg-tertiary: rgba(25, 29, 49, 0.88);
+  --material-regular: rgba(12, 15, 29, 0.78);
+  --material-thick: rgba(7, 9, 18, 0.94);
+  --material-thick-opaque: #080a14;
+  --material-thin: rgba(190, 202, 255, 0.07);
+  --material-ultra-thin: rgba(190, 202, 255, 0.035);
+  --fill-primary: rgba(185, 198, 255, 0.13);
+  --fill-secondary: rgba(173, 188, 255, 0.09);
+  --fill-tertiary: rgba(163, 181, 255, 0.065);
+  --fill-quaternary: rgba(150, 171, 255, 0.04);
+  --separator: rgba(210, 219, 255, 0.105);
+  --separator-opaque: #252a40;
+  --scrim: rgba(1, 2, 8, 0.58);
+  --text-primary: #f2f4ff;
+  --text-secondary: rgba(225, 230, 255, 0.66);
+  --text-tertiary: rgba(214, 222, 255, 0.43);
+  --text-quaternary: rgba(202, 212, 255, 0.25);
+  --accent: #a99cff;
+  --accent-fill: rgba(153, 140, 255, 0.16);
+  --accent-contrast: #080a14;
+  --talk-focus-ring: rgba(169, 156, 255, 0.62);
+  --system-blue: #73cfff;
+  --system-indigo: #929cff;
+  --system-green: #79f2c0;
+  --system-red: #ff7487;
+  --system-orange: #ffc06f;
+  --system-yellow: #ffda7a;
+  --system-purple: #c6a8ff;
+  --inset-shine: inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  --shadow-subtle: 0 1px 2px rgba(0, 2, 12, 0.38);
+  --shadow-ambient: 0 0 0 0.5px rgba(191, 204, 255, 0.12);
+  --shadow-key: 0 12px 34px rgba(0, 2, 15, 0.38);
+  --shadow-card: 0 0 0 0.5px rgba(198, 209, 255, 0.12), 0 18px 46px rgba(0, 2, 16, 0.26), inset 0 1px 0 rgba(255, 255, 255, 0.055);
+  --shadow-overlay: 0 0 0 0.5px rgba(202, 212, 255, 0.16), 0 28px 90px rgba(0, 1, 12, 0.62), inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  --pill-bg: rgba(12, 15, 29, 0.68);
+  --pill-bg-opaque: #0d101e;
+  --pill-border: rgba(213, 221, 255, 0.13);
+  --code-bg: rgba(156, 143, 255, 0.12);
+  --code-border: rgba(177, 167, 255, 0.17);
+  --code-text: #f0efff;
+  --ribbon-bg: #080a13;
+  --sidebar-bg: rgba(10, 12, 23, 0.92);
+}
+
+.jinn-cosmic-shell {
+  position: relative;
+  isolation: isolate;
+}
+
+[data-theme="dark"] .jinn-cosmic-shell {
+  background:
+    radial-gradient(circle at 68% 25%, rgba(91, 76, 255, 0.105), transparent 30%),
+    radial-gradient(circle at 22% 82%, rgba(29, 214, 180, 0.065), transparent 28%),
+    #05060c;
+}
+
+[data-theme="dark"] .jinn-cosmic-shell::before,
+[data-theme="dark"] .jinn-cosmic-shell::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+[data-theme="dark"] .jinn-cosmic-shell::before {
+  z-index: 0;
+  opacity: 0.3;
+  background-image:
+    radial-gradient(circle, rgba(209, 218, 255, 0.42) 0 0.6px, transparent 0.8px),
+    radial-gradient(circle, rgba(114, 227, 213, 0.3) 0 0.45px, transparent 0.7px);
+  background-position: 0 0, 43px 29px;
+  background-size: 89px 89px, 131px 131px;
+  mask-image: linear-gradient(to bottom, rgba(0,0,0,.85), transparent 86%);
+}
+
+[data-theme="dark"] .jinn-cosmic-shell::after {
+  z-index: 40;
+  opacity: 0.027;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.82' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.9'/%3E%3C/svg%3E");
+}
+
+.jinn-cosmic-shell > * { position: relative; z-index: 1; }
+
+[data-theme="dark"] .jinn-nav-ribbon {
+  border-right: 1px solid rgba(210, 219, 255, 0.075);
+  background:
+    linear-gradient(180deg, rgba(15, 18, 34, 0.96), rgba(6, 8, 17, 0.94)),
+    var(--ribbon-bg);
+  box-shadow: inset -1px 0 rgba(255, 255, 255, 0.018), 14px 0 48px rgba(0, 2, 14, 0.24);
+  backdrop-filter: blur(28px) saturate(125%);
+}
+
+[data-theme="dark"] .jinn-nav-ribbon::before {
+  content: "";
+  position: absolute;
+  top: 72px;
+  bottom: 74px;
+  left: 50%;
+  width: 1px;
+  z-index: -1;
+  opacity: 0.42;
+  background: linear-gradient(to bottom, transparent, rgba(143, 158, 231, 0.16) 12%, rgba(143, 158, 231, 0.08) 88%, transparent);
+}
+
+[data-theme="dark"] .jinn-nav-row {
+  color: rgba(218, 225, 255, 0.54);
+}
+
+[data-theme="dark"] .jinn-nav-row::before {
+  content: "";
+  position: absolute;
+  inset: 8px;
+  z-index: -1;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  transition: border-color 500ms cubic-bezier(.16, 1, .3, 1), box-shadow 500ms cubic-bezier(.16, 1, .3, 1), background 500ms cubic-bezier(.16, 1, .3, 1), transform 500ms cubic-bezier(.16, 1, .3, 1);
+}
+
+[data-theme="dark"] .jinn-nav-row:hover::before {
+  border-color: rgba(177, 190, 255, 0.16);
+  background: rgba(161, 177, 255, 0.07);
+  transform: scale(1.06);
+}
+
+[data-theme="dark"] .jinn-nav-row[aria-current="page"] {
+  color: #f7f8ff;
+  background: transparent;
+}
+
+[data-theme="dark"] .jinn-nav-row[aria-current="page"]::before {
+  border-color: rgba(194, 184, 255, 0.52);
+  background: radial-gradient(circle at 36% 28%, rgba(255,255,255,.18), rgba(141, 128, 255, .18) 48%, rgba(80, 204, 232, .08));
+  box-shadow: 0 0 18px rgba(143, 128, 255, 0.18), inset 0 1px 0 rgba(255,255,255,.14);
+}
+
+[data-theme="dark"] .jinn-nav-row[aria-current="page"]::after {
+  content: "";
+  position: absolute;
+  left: -5px;
+  width: 3px;
+  height: 16px;
+  border-radius: 999px;
+  background: #a99cff;
+  box-shadow: 0 0 14px rgba(169, 156, 255, 0.8);
+}
+
+[data-theme="dark"] .jinn-scrollport {
+  background: transparent;
+}
+
+[data-theme="dark"] [data-slot="large-title-header"] .jinn-large-title h1,
+[data-theme="dark"] .jinn-large-title > h1 {
+  letter-spacing: -0.05em;
+  font-weight: 570;
+  text-wrap: balance;
+  text-shadow: 0 0 34px rgba(167, 157, 255, 0.08);
+}
+
+[data-theme="dark"] input,
+[data-theme="dark"] textarea,
+[data-theme="dark"] select {
+  caret-color: var(--accent);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  [data-theme="dark"] .jinn-cosmic-shell main > div > .relative.flex.h-full,
+  [data-theme="dark"] .jinn-large-title {
+    animation: jinn-constellation-enter 620ms cubic-bezier(.16, 1, .3, 1) both;
+  }
+}
+
+@keyframes jinn-constellation-enter {
+  from { opacity: 0; transform: translateY(10px); filter: blur(4px); }
+  to { opacity: 1; transform: translateY(0); filter: blur(0); }
+}
+
 /* Display typeface for headings (per-theme; default = same UI stack). */
 h1, h2, h3, h4, h5, h6 {
   font-family: var(--font-display);

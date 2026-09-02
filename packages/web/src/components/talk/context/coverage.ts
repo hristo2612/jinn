@@ -44,6 +44,7 @@ export const TALK_SURFACE_COVERAGE: Record<AppRouteId, TalkSurfaceCoverage> = {
   logs: supported("bounded redacted activity summary", ["read", "filter"], ["refresh"], "focus filtered activity"),
   limits: supported("engine limit windows and freshness", ["read"], ["refresh"], "focus engine limits"),
   org: supported("employee, reporting line, and activity", ["list", "inspect"], ["open", "delegate"], "focus employee or resulting chat"),
+  constellation: supported("visible company graph, active lens, and selected entity", ["list", "inspect"], ["filter", "open"], "focus a graph layer or open the selected Jinn object"),
   settings: supported("active settings and safe configuration summary", ["read"], ["update"], "focus setting"),
   "settings-plugins": supported("plugin inventory and state", ["list", "inspect"], ["enable", "disable", "rescan"], "focus plugin state"),
   "skills-list": supported("installed skill summaries", ["list", "search"], ["open"], "open skill"),

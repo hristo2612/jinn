@@ -1,7 +1,11 @@
 packages:
   - "packages/*"
 
-onlyBuiltDependencies:
-  - "@swc/core"
-  - better-sqlite3
-  - classic-level
+allowBuilds:
+  "@swc/core": true
+  "@whiskeysockets/baileys": false
+  better-sqlite3: true
+  classic-level: true
+  esbuild: false
+  node-pty: true
+  protobufjs: false

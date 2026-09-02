@@ -31,6 +31,7 @@ export const APP_ROUTES = [
   { id: "logs", path: "/logs", availability: "always", surface: "logs" },
   { id: "limits", path: "/limits", availability: "always", surface: "limits" },
   { id: "org", path: "/org", availability: "always", surface: "org" },
+  { id: "constellation", path: "/constellation", availability: "always", surface: "constellation" },
   { id: "settings-plugins", path: "/settings/plugins", availability: "always", surface: "settings-plugins" },
   { id: "settings", path: "/settings", availability: "always", surface: "settings" },
   { id: "skills-list", path: "/skills", availability: "always", surface: "skills" },

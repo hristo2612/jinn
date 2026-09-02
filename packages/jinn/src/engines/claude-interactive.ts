@@ -1539,8 +1539,19 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
    *  or {port:0} if it failed to bind — in which case the PTY is spawned WITHOUT
    *  ANTHROPIC_BASE_URL (direct to Anthropic): the turn still works, only live
    *  word-by-word streaming degrades. */
-  private async startProxy(jinnSessionId: string): Promise<{ proxy: SsePtyProxy; port: number }> {
+  private async startProxy(jinnSessionId: string, bin?: string): Promise<{ proxy: SsePtyProxy; port: number }> {
+    const isOmniRoute = (bin ?? "").includes("claude-omni");
+    const upstreamUrl = isOmniRoute
+      ? new URL(process.env.JINN_OMNIROUTE_ANTHROPIC_BASE_URL || "http://127.0.0.1:20128")
+      : undefined;
     const proxy = new SsePtyProxy(jinnSessionId, (e) => this.handleSseEvent(jinnSessionId, e), {
+      ...(upstreamUrl ? {
+        upstream: {
+          hostname: upstreamUrl.hostname,
+          port: Number(upstreamUrl.port) || (upstreamUrl.protocol === "https:" ? 443 : 80),
+          protocol: upstreamUrl.protocol as "http:" | "https:",
+        },
+      } : {}),
       // ALL requests (main + subagent + background tasks) count here — this is
       // how the gateway knows the CLI is still working after the turn settled.
       onUpstreamActivity: (info) => this.handleUpstreamActivity(jinnSessionId, info),
@@ -1611,9 +1622,9 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
         ? `${opts.systemPrompt}\n\n${MAIN_AGENT_SENTINEL}`
         : MAIN_AGENT_SENTINEL,
     });
-    const { proxy, port } = await this.startProxy(jinnSessionId);
-    const env = this.buildPtyEnv(port || undefined, jinnSessionId);
     const bin = resolveBin("claude", opts.bin);
+    const { proxy, port } = await this.startProxy(jinnSessionId, bin);
+    const env = this.buildPtyEnv(port || undefined, jinnSessionId);
     const geom = this.lastGeom.get(jinnSessionId);
     logger.info(`InteractiveClaudeEngine spawning ${bin} (resume: ${opts.resumeSessionId || "none"}, geom: ${geom ? `${geom.cols}×${geom.rows}` : "default"}, sseProxy: ${port || "off"})`);
     const proc = pty.spawn(bin, args, {
@@ -1661,7 +1672,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine, PtyViewEngi
 
     void (async () => {
       try {
-        const { proxy, port } = await this.startProxy(jinnSessionId);
+        const { proxy, port } = await this.startProxy(jinnSessionId, bin);
         // Re-check after the async gap: a real turn (run) or another idle spawn may
         // have claimed the session while we awaited the proxy bind. If so, don't
         // adopt a duplicate PTY — drop our proxy and bail.

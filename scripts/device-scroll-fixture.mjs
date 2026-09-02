@@ -12,6 +12,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { createRequire } from "node:module"
+import { fileURLToPath } from "node:url"
 
 // The production gateway and the operator's demo instance. A home configured on
 // either is not disposable no matter what it is called, and this script rewrites
@@ -22,7 +23,7 @@ const PRODUCTION_HOME_NAME = ".jinn"
 const SESSION_ID = "device-scroll-check"
 const EXCHANGES = 110
 
-const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..")
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const requireFromJinn = createRequire(path.join(repoRoot, "packages/jinn/package.json"))
 const YAML = requireFromJinn("yaml")
 

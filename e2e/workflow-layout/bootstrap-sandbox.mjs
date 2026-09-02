@@ -2,6 +2,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { createRequire } from "node:module"
+import { fileURLToPath } from "node:url"
 
 const args = new Map()
 for (let i = 2; i < process.argv.length; i += 2) args.set(process.argv[i], process.argv[i + 1])
@@ -38,7 +39,7 @@ if (!Number.isInteger(port) || port < 8060) throw new Error("sandbox port must b
 if (!fs.existsSync(path.join(home, "config.yaml"))) throw new Error("sandbox setup must run before jinn-home bootstrap")
 if (!artifacts.startsWith(`${home}${path.sep}`)) throw new Error("artifacts must remain inside the sandbox home")
 
-const repo = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../..")
+const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
 const requireFromJinn = createRequire(path.join(repo, "packages/jinn/package.json"))
 const YAML = requireFromJinn("yaml")
 const Database = requireFromJinn("better-sqlite3")

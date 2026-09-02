@@ -87,6 +87,13 @@ export interface SsePtyProxyOpts {
  * fingerprint heuristic we tried either dropped real turns (broke streaming) or
  * leaked sub-agents. The sentinel is the one signal the gateway fully controls.
  */
+/** Transport for the upstream call, chosen the same way `createUpstreamPool`
+ *  chooses its agent. Lives outside the constructor so the branch does not
+ *  count against its complexity budget. */
+function defaultRequestFn(protocol?: "http:" | "https:"): UpstreamRequestFn {
+  return protocol === "http:" ? http.request : https.request;
+}
+
 export class SsePtyProxy {
   private server: http.Server;
   /** Resolved listening port (0 until start() completes). */
@@ -114,7 +121,7 @@ export class SsePtyProxy {
     private readonly onEvent: (e: SseDataEvent) => void,
     opts: SsePtyProxyOpts = {},
   ) {
-    this.requestFn = opts.requestFn ?? https.request;
+    this.requestFn = opts.requestFn ?? defaultRequestFn(opts.upstream?.protocol);
     this.upstreamHost = opts.upstream?.hostname ?? "api.anthropic.com";
     this.upstreamPort = opts.upstream?.port ?? 443;
     this.ownsPool = opts.primaryAgent === undefined;

@@ -12,6 +12,7 @@ import {
   NotebookPen,
   FlaskConical,
   Puzzle,
+  Orbit,
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 import { contributions } from "@/contrib/registry"
@@ -55,6 +56,7 @@ const BASE_NAV_ITEMS: NavItem[] = [
   { href: "/workflow", label: "Workflows", icon: Workflow },
   { href: "/experiments", label: "Experiments", icon: FlaskConical },
   { href: "/org", label: "Organization", icon: Users },
+  { href: "/constellation", label: "Constellation", icon: Orbit },
   { href: "/cron", label: "Cron", icon: Clock },
   { href: "/limits", label: "Limits", icon: Gauge },
   { href: "/logs", label: "Activity", icon: Activity },

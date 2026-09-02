@@ -74,6 +74,7 @@ import {
   getSessionBySessionKey,
   recordChildReportedToParent,
   RESTART_ACK_META_KEY,
+  RESTART_RESUME_META_KEY,
 } from "../sessions/registry.js";
 import { claimIncomingTurn, lateralSendDedupeKey } from "../sessions/incoming-turn.js";
 import { blockFallbackText, validateBlockEnvelope } from "../shared/blocks.js";
@@ -376,6 +377,49 @@ export interface ApiContext {
   startWorkspaceInstance?: (input: StartInstanceInput) => Promise<StartInstanceResult>;
   issueWorkspacePairingCode?: (home: string) => string;
   workflowService?: WorkflowService;
+}
+
+type MemoryTrialHookRouteInjection = Pick<
+  import("../memory-trial/hook-adapter.js").MemoryTrialHookRouteOptions,
+  "enabled" | "circuitOpen" | "activationEpoch" | "triggers" | "projectRoot" | "dispatch" | "operationStore"
+>;
+
+const memoryTrialGuards = new Map<string, Promise<import("../memory-trial/guardrails.js").MemoryTrialGuard>>();
+
+function memoryTrialHookRouteOptions(context: ApiContext, hook: import("./hook-registry.js").HookPayload): MemoryTrialHookRouteInjection {
+  const config = context.getConfig().memoryTrial;
+  const directory = path.join(context.jinnHome ?? JINN_HOME, "state", "memory-trial");
+  const enabled = config?.enabled === true;
+  const circuitOpen = config?.circuitOpen !== false;
+  const triggers = config?.triggers ?? [];
+  return {
+    enabled,
+    circuitOpen,
+    activationEpoch: config?.activationEpoch,
+    triggers,
+    projectRoot: config?.projectRoot,
+    dispatch: async (claims) => {
+      let guard = memoryTrialGuards.get(directory);
+      if (!guard) {
+        guard = import("../memory-trial/guardrails.js")
+          .then(({ MemoryTrialGuard }) => MemoryTrialGuard.create(directory));
+        memoryTrialGuards.set(directory, guard);
+      }
+      let additionalContext: string | undefined;
+      await (await guard).runEffect(claims, async () => {
+        const { runMemoryRuntimeEffect } = await import("../memory-trial/runtime-pipeline.js");
+        additionalContext = await runMemoryRuntimeEffect({
+          directory,
+          claims,
+          hook,
+          autoArchiveProjectContent: config?.autoArchiveProjectContent === true,
+        });
+      }, {
+        authorizedState: { enabled, circuitOpen, triggers },
+      });
+      return additionalContext;
+    },
+  };
 }
 
 function killSessionEngines(context: ApiContext, session: Session, reason: string): void {
@@ -1572,10 +1616,12 @@ export async function handleApiRequest(
         const transportMeta = (requestingSession?.transportMeta && typeof requestingSession.transportMeta === "object" && !Array.isArray(requestingSession.transportMeta))
           ? { ...(requestingSession.transportMeta as JsonObject) }
           : {};
-        transportMeta[RESTART_ACK_META_KEY] = new Date().toISOString();
+        const restartRequestedAt = new Date().toISOString();
+        transportMeta[RESTART_ACK_META_KEY] = restartRequestedAt;
+        transportMeta[RESTART_RESUME_META_KEY] = restartRequestedAt;
         updateSession(requestingSessionId, {
           status: "idle",
-          lastActivity: new Date().toISOString(),
+          lastActivity: restartRequestedAt,
           lastError: null,
           transportMeta,
         });
@@ -3785,8 +3831,6 @@ export async function handleApiRequest(
         effortLevel: body.effortLevel,
       }, todoOverride.engine ? { employee: employeeName } : employeeDefaults);
       if (!selection.ok) return badRequest(res, selection.error || "invalid engine/model/effort");
-      // The Todo's skills are preloaded by prefixing the brief the delegate reads.
-      const brief = todoOverride.prefix + task;
       const engineName = selection.engine || config.engines.default;
 
       const title = (
@@ -3853,6 +3897,25 @@ export async function handleApiRequest(
           return json(res, { error: "delegation failed before any work started — the work item could not be minted; nothing was spawned" }, 500);
         }
       }
+
+      // An existing Todo is the canonical delegation dossier. Linking the
+      // session without also putting that dossier in the first turn leaves the
+      // delegate dependent on a later MCP read, which may be unavailable or
+      // fail transiently. Keep the caller's task as the immediate instruction,
+      // then attach the durable objective and acceptance criteria verbatim.
+      // This also makes a delegated attempt self-contained and auditable.
+      const canonicalTodoContext = requestedWorkItemId
+        ? [
+            "\n\n---\n## Canonical linked Todo",
+            `ID: ${workItem.id}`,
+            `Title: ${workItem.title}`,
+            workItem.body ? `\nObjective and evidence:\n${workItem.body}` : "",
+            workItem.acceptance ? `\nAcceptance criteria:\n${workItem.acceptance}` : "",
+            "\nTreat this linked Todo dossier as the source of truth. Use the Jinn MCP to append progress and evidence when available; a transient Todo-read failure must not erase or block the dossier above.",
+          ].filter(Boolean).join("\n")
+        : "";
+      // The Todo's skills are preloaded by prefixing the complete brief.
+      const brief = todoOverride.prefix + task + canonicalTodoContext;
       const claim = claimTodoForDelegation(res, workItem.id, dispatcherHandoffFrom);
       if (!claim) return;
 
@@ -3867,11 +3930,21 @@ export async function handleApiRequest(
           hint: "the work item was minted before the spawn and is preserved as backlog — the delegation intent is durable, not lost",
         }, 502);
       }
-      // The assignment no-ops when the Todo already carries this assignee, so the link is the only record that a caller delegated at all.
+      // A reviewer must remain independent from the work they are reviewing.
+      // Delegating an in-review Todo to its pending approval target is a review
+      // dispatch, not an ownership transfer. Reassigning here would make the
+      // reviewer the Todo owner and the approval authority would then correctly
+      // refuse the decision as self-review, leaving the Todo permanently stuck.
+      const isApprovalReviewDelegation = requestedWorkItemId
+        && workItem.status === "in_review"
+        && workItem.approvalTarget === employeeName;
+      // Ordinary execution delegations still transfer assignment. Review
+      // delegations preserve the implementer/owner and use the linked session as
+      // the durable record that the reviewer was dispatched.
       const delegationActor = workItemActor(delegationCaller.kind === "session"
         ? { kind: "session", callerId: delegationCaller.callerId, session: getSession(delegationCaller.callerId)! }
         : { kind: "operator" });
-      if (requestedWorkItemId && employeeName) {
+      if (requestedWorkItemId && employeeName && !isApprovalReviewDelegation) {
         try {
           workItem = assignWorkItem(workItem.id, employeeName, delegateEmployee?.department ?? null, delegationActor) ?? workItem;
         } catch (assignmentErr) {
@@ -4933,6 +5006,19 @@ export async function handleApiRequest(
       const jinnSessionId = hookBody.jinnSessionId!;
       const hook = hookBody.hook!;
       context.hookRegistry.deliver(jinnSessionId, hook);
+      const { routeMemoryTrialHook } = await import("../memory-trial/hook-adapter.js");
+      // JAR-31 remains inert by default; tests may inject gates and dispatch to
+      // prove this central hook path without enabling runtime effects.
+      const injected = (context as { memoryTrialHookRouteOptions?: MemoryTrialHookRouteInjection })
+        .memoryTrialHookRouteOptions;
+      // Memory is optional and must never break the hook path: a guard refusal
+      // (budget, circuit, eligibility) or a storage error is logged and the hook
+      // still completes, so engineSessionId capture below always runs.
+      const memoryTrial = await routeMemoryTrialHook({ ...(injected ?? memoryTrialHookRouteOptions(context, hook)), jinnSessionId, hook, getSession })
+        .catch((error: unknown): import("../memory-trial/hook-adapter.js").MemoryTrialHookRouteResult => {
+          logger.warn(`Memory trial hook ${hook.hook_event_name} skipped for ${jinnSessionId}: ${error instanceof Error ? error.message : String(error)}`);
+          return { routed: false, reason: "dispatch-failed" };
+        });
       // Central engineSessionId capture: persist claude's OWN session id the moment
       // it reports one (SessionStart, or Stop as backup), independent of turn state.
       // Without this, an interrupted turn or an idle CLI-view spawn never persisted
@@ -4948,7 +5034,15 @@ export async function handleApiRequest(
           recordEngineSessionId(jinnSessionId, "claude", hook.session_id);
         }
       }
-      return json(res, { message: "ok" });
+      return json(res, {
+        message: "ok",
+        ...(memoryTrial.additionalContext ? {
+          hookSpecificOutput: {
+            hookEventName: "SessionStart",
+            additionalContext: memoryTrial.additionalContext,
+          },
+        } : {}),
+      });
     }
 
     return notFound(res);
