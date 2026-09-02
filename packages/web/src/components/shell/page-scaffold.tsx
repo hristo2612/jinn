@@ -34,10 +34,15 @@ export function useScaffoldScrollElement() {
 }
 
 /**
- * What the tab bar, the FAB and the keyboard between them cover at the bottom of
- * a scrollport. Joined rather than concatenated because `calc()` reads `+` as an
- * operator only when it is whitespace-delimited: unspaced, the declaration is
- * dropped without complaint and the padding resolves to 0.
+ * What overlaps the bottom of a scrollport: the FAB that floats over it, the
+ * keyboard, and — only on the pushed pages that hide the tab bar — the safe
+ * area. With the tab bar up, `StatusBar` already holds the whole column clear of
+ * it, so reserving --tab-bar-height here covered the bar twice and left ~150px
+ * of dead scroll under the last row.
+ *
+ * Joined rather than concatenated because `calc()` reads `+` as an operator only
+ * when it is whitespace-delimited: unspaced, the declaration is dropped without
+ * complaint and the padding resolves to 0.
  */
 export function scaffoldBottomPadding({
   hasPrimaryAction,
@@ -47,10 +52,9 @@ export function scaffoldBottomPadding({
   hideMobileTabBar: boolean
 }): string {
   const terms = [
-    ...(hideMobileTabBar ? [] : ["var(--tab-bar-height)"]),
-    "max(var(--safe-bottom), 6px)",
+    ...(hideMobileTabBar ? ["max(var(--safe-bottom), 6px)"] : []),
     "var(--space-4)",
-    ...(hasPrimaryAction ? ["var(--tab-bar-height)", "var(--space-4)"] : []),
+    ...(hasPrimaryAction ? ["var(--fab-size)", "var(--space-4)"] : []),
     "var(--keyboard-inset)",
   ]
   return `calc(${terms.join(" + ")})`

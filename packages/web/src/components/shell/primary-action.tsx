@@ -3,9 +3,17 @@ import { cn } from "@/lib/utils"
 
 export const PRIMARY_ACTION_SLOT = "primary-action"
 
-/** FAB clearance above the tab bar. Both the offset and the scaffold pad consume this. */
-export const FAB_BOTTOM_WITH_TAB =
-  "calc(var(--tab-bar-height)+max(var(--safe-bottom),6px)+var(--space-4))"
+/**
+ * The FAB is absolutely placed inside the scaffold, whose column already ends
+ * above the status row — and `StatusBar` carries the fixed tab bar's clearance
+ * for the whole column. So with the tab bar up, the offset is the gutter alone;
+ * re-adding --tab-bar-height here counted that clearance a second time and
+ * parked the button ~180px above the bar, mid-list.
+ *
+ * With the tab bar hidden the status row stands down with it and the column does
+ * reach the viewport edge, so that offset still clears the safe area itself.
+ */
+export const FAB_BOTTOM_WITH_TAB = "var(--space-4)"
 export const FAB_BOTTOM_WITHOUT_TAB = "calc(max(var(--safe-bottom),6px)+var(--space-4))"
 
 type Placement = "fab" | "trailing"
@@ -75,14 +83,22 @@ function FabAction({ "aria-label": ariaLabel, icon, onClick, disabled, testId, h
       disabled={disabled}
       onClick={onClick}
       className={cn(
-        "absolute right-[var(--space-4)] z-30 size-14 rounded-full lg:hidden",
+        // --space-3 is the mobile page gutter (`.jinn-scrollport`'s --jinn-gutter
+        // floor, and what the external-scroll routes pad by), so the disc's
+        // right edge lands on the card edge instead of 4px inside it.
+        "absolute right-[var(--space-3)] z-30 inline-flex size-[var(--fab-size)] items-center justify-center rounded-full lg:hidden",
         hideMobileTabBar
           ? "bottom-[calc(max(var(--safe-bottom),6px)+var(--space-4))]"
-          : "bottom-[calc(var(--tab-bar-height)+max(var(--safe-bottom),6px)+var(--space-4))]",
-        "shadow-[var(--shadow-key)]",
+          : "bottom-[var(--space-4)]",
+        "shadow-[var(--shadow-key),var(--inset-shine)]",
         "transition-transform duration-[var(--duration-fast)] ease-[var(--ease-snappy)]",
         "active:scale-[0.94]",
-        "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]",
+        // An outline paints outside the border box, so an outlined FAB is a
+        // wider disc that no longer ends on the page gutter. The ring is drawn
+        // inside instead: an invisible accent step holds it off the edge, then
+        // the same colour the glyph already uses draws it.
+        "outline-none",
+        "focus-visible:shadow-[var(--shadow-key),var(--inset-shine),inset_0_0_0_2px_var(--accent),inset_0_0_0_4px_var(--accent-contrast)]",
         "[&_svg]:size-6",
         disabled
           ? "bg-[var(--fill-tertiary)] text-[var(--text-quaternary)] shadow-none"
