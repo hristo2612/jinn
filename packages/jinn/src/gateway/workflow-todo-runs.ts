@@ -1,8 +1,5 @@
-import path from "node:path";
 
 import { logger } from "../shared/logger.js";
-import { JINN_HOME } from "../shared/paths.js";
-import { archiveSession, getSession } from "../sessions/registry.js";
 import type { GatewayEmit } from "../shared/gateway-events.js";
 import type { WorkflowRepository } from "../workflows/repository.js";
 
@@ -75,7 +72,14 @@ function completedArchiveFields(run: ReturnType<WorkflowRepository["getRun"]>): 
 async function keepAcceptedSummary(runId: string, startedAt: string, fields: ArchiveFields): Promise<void> {
   const summary = typeof fields.summary === "string" ? fields.summary : "";
   if (fields.accepted !== true || !summary.trim() || fields.project_key !== "agency-global") return;
-  const { runMemoryRuntimeEffect } = await import("../memory-trial/runtime-pipeline.js");
+  // Imported here, not at module load: this file is pulled in by work-item and
+  // workflow suites that never reach this branch, and opening the registry's
+  // SQLite handle just by importing it locks the database out from under them.
+  const [{ runMemoryRuntimeEffect }, path, { JINN_HOME }] = await Promise.all([
+    import("../memory-trial/runtime-pipeline.js"),
+    import("node:path"),
+    import("../shared/paths.js"),
+  ]);
   await runMemoryRuntimeEffect({
     directory: path.join(JINN_HOME, "state", "memory-trial"),
     claims: {
@@ -90,11 +94,14 @@ async function keepAcceptedSummary(runId: string, startedAt: string, fields: Arc
 }
 
 /** Archive the conversation the summary came from, unless it is still live. */
-function archiveSourceConversation(fields: ArchiveFields, emit: GatewayEmit): void {
+async function archiveSourceConversation(fields: ArchiveFields, emit: GatewayEmit): Promise<void> {
   const action = fields.conversation_action;
   const sourceSessionId = typeof fields.session_id === "string" ? fields.session_id.trim() : "";
   if (fields.critical === true || !sourceSessionId) return;
   if (action !== "archive" && action !== "delete_candidate") return;
+  // Same reason as above: the session registry is reached for only on the path
+  // that actually archives, never merely by importing this module.
+  const { archiveSession, getSession } = await import("../sessions/registry.js");
   const source = getSession(sourceSessionId);
   if (!source || source.status === "running" || source.status === "waiting") return;
   archiveSession(sourceSessionId);
@@ -123,7 +130,7 @@ export function workflowRunOnChange(deps: {
     seen.add(runId);
     try {
       await keepAcceptedSummary(run.id, run.startedAt, fields);
-      archiveSourceConversation(fields, emit);
+      await archiveSourceConversation(fields, emit);
     } catch (error) {
       seen.delete(runId);
       logger.error(`Memory workflow archive failed for ${runId}: ${error instanceof Error ? error.message : String(error)}`);
