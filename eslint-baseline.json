@@ -58,9 +58,6 @@
       "complexity",
       "max-lines-per-function"
     ],
-    "packages/jinn/src/cron/run-summary.ts": [
-      "complexity"
-    ],
     "packages/jinn/src/cron/runner.ts": [
       "complexity",
       "max-depth",
@@ -149,9 +146,6 @@
       "complexity",
       "max-lines-per-function"
     ],
-    "packages/jinn/src/gateway/__tests__/workflow-v2-api.test.ts": [
-      "max-params"
-    ],
     "packages/jinn/src/gateway/api.ts": [
       "complexity",
       "max-depth",
@@ -215,7 +209,6 @@
       "max-lines-per-function"
     ],
     "packages/jinn/src/gateway/server.ts": [
-      "@typescript-eslint/no-floating-promises",
       "complexity",
       "max-depth",
       "max-lines-per-function"
@@ -395,6 +388,9 @@
     "packages/jinn/src/shared/effort.ts": [
       "complexity"
     ],
+    "packages/jinn/src/shared/engine-limits-claude.ts": [
+      "complexity"
+    ],
     "packages/jinn/src/shared/engine-limits.ts": [
       "complexity",
       "max-depth",
@@ -464,13 +460,7 @@
       "max-depth",
       "max-lines-per-function"
     ],
-    "packages/jinn/src/workflows/model.ts": [
-      "complexity"
-    ],
     "packages/jinn/src/workflows/output.ts": [
-      "complexity"
-    ],
-    "packages/jinn/src/workflows/repository-migrations.ts": [
       "complexity"
     ],
     "packages/jinn/src/workflows/repository-run-transaction.ts": [
@@ -556,7 +546,6 @@
     "packages/web/src/components/chat/chat-sidebar.tsx": [
       "@typescript-eslint/no-floating-promises",
       "complexity",
-      "max-depth",
       "max-lines-per-function"
     ],
     "packages/web/src/components/chat/chat-tabs.tsx": [
@@ -587,8 +576,7 @@
     ],
     "packages/web/src/components/chat/fold-region.tsx": [
       "complexity",
-      "max-lines-per-function",
-      "max-params"
+      "max-lines-per-function"
     ],
     "packages/web/src/components/chat/handoff-card.tsx": [
       "max-lines-per-function"
@@ -611,10 +599,6 @@
     ],
     "packages/web/src/components/chat/model-selector-row.tsx": [
       "complexity",
-      "max-lines-per-function"
-    ],
-    "packages/web/src/components/chat/queue-panel.tsx": [
-      "@typescript-eslint/no-floating-promises",
       "max-lines-per-function"
     ],
     "packages/web/src/components/chat/session-row-menu.tsx": [
@@ -648,9 +632,6 @@
       "complexity",
       "max-depth",
       "max-lines-per-function"
-    ],
-    "packages/web/src/components/code-block-chrome.tsx": [
-      "@typescript-eslint/no-floating-promises"
     ],
     "packages/web/src/components/crons/weekly-schedule.tsx": [
       "max-lines-per-function"
@@ -762,9 +743,6 @@
       "complexity",
       "max-lines-per-function"
     ],
-    "packages/web/src/lib/conversations.ts": [
-      "max-lines-per-function"
-    ],
     "packages/web/src/lib/cron-utils.ts": [
       "complexity",
       "max-depth",
@@ -817,10 +795,6 @@
     "packages/web/src/routes/logs/page.tsx": [
       "max-lines-per-function"
     ],
-    "packages/web/src/routes/more/page.tsx": [
-      "complexity",
-      "max-lines-per-function"
-    ],
     "packages/web/src/routes/notes/note-editor.tsx": [
       "complexity",
       "max-depth",
@@ -861,9 +835,6 @@
     "packages/web/src/routes/skills/page.tsx": [
       "max-lines-per-function"
     ],
-    "packages/web/src/routes/todos/__tests__/filter-bar.test.tsx": [
-      "@typescript-eslint/no-floating-promises"
-    ],
     "packages/web/src/routes/todos/board/board-page.tsx": [
       "@typescript-eslint/no-floating-promises",
       "complexity",
@@ -893,9 +864,6 @@
     ],
     "packages/web/src/routes/todos/filter-bar.tsx": [
       "complexity",
-      "max-lines-per-function"
-    ],
-    "packages/web/src/routes/todos/list/group-items.ts": [
       "max-lines-per-function"
     ],
     "packages/web/src/routes/todos/list/list-group.tsx": [
@@ -1022,7 +990,6 @@
       "max-lines-per-function"
     ],
     "packages/web/vite.config.ts": [
-      "complexity",
       "max-lines-per-function"
     ],
     "scripts/docker-configure.mjs": [

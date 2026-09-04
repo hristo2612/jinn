@@ -12,13 +12,13 @@
 
 import fs from "node:fs";
 import { CLAUDE_LIMITS_DIR } from "./paths.js";
+import { windowFromCodexRollout } from "./engine-limits.js";
 import {
   claudeSnapshotFile,
   fetchClaudeOAuthUsage,
   windowFromClaude,
-  windowFromCodexRollout,
   windowsFromClaudeUsage,
-} from "./engine-limits.js";
+} from "./engine-limits-claude.js";
 
 /**
  * The reset Codex stated in a `rate_limits` payload, in Unix seconds. Codex

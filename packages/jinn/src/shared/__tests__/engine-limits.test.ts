@@ -285,7 +285,7 @@ describe("windowsFromClaudeUsage — OAuth usage-API bucket mapping", () => {
     name: string; usedPercent?: number; windowDurationMins?: number; resetsAt?: number; resetsAtIso?: string;
   }>;
   beforeAll(async () => {
-    ({ windowsFromClaudeUsage } = await import("../engine-limits.js"));
+    ({ windowsFromClaudeUsage } = await import("../engine-limits-claude.js"));
   });
 
   it("maps every limits[] entry generically, including per-model scoped buckets (Fable)", () => {

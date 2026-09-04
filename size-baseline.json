@@ -770,7 +770,7 @@
       ]
     },
     "packages/jinn/src/shared/engine-limits.ts": {
-      "lines": 658,
+      "lines": 373,
       "exempt": [
         "complexity",
         "max-depth",
