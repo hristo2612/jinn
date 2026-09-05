@@ -58,7 +58,10 @@ touch phase covers the same rule.
 
 ---
 
-## What was measured
+## Original ICI-1422 measurements
+
+These are the original branch measurements, not the fresh integration verdict. The
+ICI-1385 workflow retains its current-base comparisons and review evidence on the Todo.
 
 A throwaway gateway on port **7792**, its own home, built from this worktree, seeded with a
 130-group transcript and destroyed at the end of the run. Port 7777 was confirmed healthy and

@@ -98,16 +98,27 @@ const { spawnSync } = require("node:child_process")
 // any child would inherit it, so `ps` is given PATH and nothing else, and this pid is
 // skipped. Reading the table through a shell pipeline instead puts the home into the
 // arguments of the pipeline itself: a match that never clears and a sweep that never ends.
-const needle = "HOME=" + process.env.JINN_VERIFY_SANDBOX_HOME + " "
+const needle = " HOME=" + process.env.JINN_VERIFY_SANDBOX_HOME + " "
 // `ps -A` exits non-zero when a process disappears mid-listing, and the rows it did print
 // are still the answer, so its status is ignored rather than thrown on.
+// Remove argv before matching HOME: a monitor may mention this path in its arguments.
+const commands = new Map((spawnSync("ps", ["ww", "-A", "-o", "pid=,command="], {
+  encoding: "utf8", env: { PATH: process.env.PATH },
+}).stdout || "").split("\n").flatMap((line) => {
+  const row = line.match(/^\s*(\d+)\s+(.*)$/)
+  return row ? [[row[1], row[2]]] : []
+}))
 const listing = spawnSync("ps", ["eww", "-A", "-o", "pid=,state=,command="], { encoding: "utf8", env: { PATH: process.env.PATH } })
 for (const line of (listing.stdout || "").split("\n")) {
   const [pid, state] = line.trim().split(/\s+/)
   // A zombie is already dead; it sits in the table until init reaps it, and waiting for
   // one to leave never ends.
   if (!pid || !state || state.startsWith("Z") || Number(pid) === process.pid) continue
-  if ((line + " ").includes(needle)) process.stdout.write(pid + "\n")
+  const command = commands.get(pid)
+  const withEnv = line.trim().replace(/^\d+\s+\S+\s+/, "")
+  // An exec between snapshots is not evidence of ownership; the next sweep can retry.
+  if (!command || !withEnv.startsWith(command + " ")) continue
+  if ((withEnv.slice(command.length) + " ").includes(needle)) process.stdout.write(pid + "\n")
 }'
 }
 

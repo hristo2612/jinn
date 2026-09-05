@@ -1,4 +1,5 @@
-import { spawnSync } from "node:child_process"
+import { spawn, spawnSync } from "node:child_process"
+import { once } from "node:events"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -211,5 +212,40 @@ test("a run aimed at the production port is refused before it creates anything",
     assert.deepEqual(fs.readdirSync(tmpRoot), [], "the refused run must not have created a sandbox")
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true })
+  }
+})
+
+
+test("ownership ignores a sandbox home mentioned only in arguments or another variable", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "scroll-owner."))
+  const home = path.join(root, "host with spaces")
+  const cases = [
+    { label: "owned", env: { HOME: home }, args: [], owned: true },
+    { label: "argument", env: { HOME: root }, args: [`HOME=${home}`, "marker"], owned: false },
+    { label: "other key", env: { HOME: root, JINN_HOME: home }, args: [], owned: false },
+    { label: "other home", env: { HOME: `${home}-other` }, args: [], owned: false },
+  ]
+  const children = cases.map((entry) => spawn(process.execPath, [
+    "-e", "process.stdout.write(\"ready\"); setInterval(() => {}, 1000)", ...entry.args,
+  ], { env: { PATH: process.env.PATH, ...entry.env }, stdio: ["ignore", "pipe", "pipe"] }))
+  try {
+    await Promise.all(children.map((child) => once(child.stdout, "data")))
+    const scanner = script.slice(script.indexOf("pids_holding_sandbox_home() {"), script.indexOf("\ncleanup() {"))
+    const run = spawnSync("bash", ["-c", `${scanner}\npids_holding_sandbox_home`], {
+      env: { PATH: process.env.PATH, HOST_HOME: home, NODE_BIN: process.execPath },
+      encoding: "utf8",
+      timeout: 10_000,
+    })
+    assert.equal(run.status, 0, run.stderr)
+    const holders = new Set(run.stdout.trim().split(/\s+/).map(Number))
+    cases.forEach((entry, index) => assert.equal(holders.has(children[index].pid), entry.owned, entry.label))
+  } finally {
+    await Promise.all(children.map(async (child) => {
+      if (child.exitCode !== null || child.signalCode !== null) return
+      const exited = once(child, "exit")
+      child.kill("SIGTERM")
+      await exited
+    }))
+    fs.rmSync(root, { recursive: true, force: true })
   }
 })
