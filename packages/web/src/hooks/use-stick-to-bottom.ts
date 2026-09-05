@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useTranscriptOpen } from '@/components/chat/transcript-open'
 import { distanceFromBottom, followAfterScroll, shouldFollow, STICK_THRESHOLD_PX, unreadDelta } from './stick-geometry'
-import { involuntaryRepin } from './stick-repin'
 
 /**
  * Stick-to-bottom for the chat thread.
@@ -19,8 +18,8 @@ import { involuntaryRepin } from './stick-repin'
  * Following is performed synchronously in a layout effect (before paint) keyed on
  * the growing content, so streaming can never visually detach. Resize / mobile
  * keyboard (ResizeObserver on the *viewport*) and tab return (visibilitychange /
- * pageshow) each re-pin only while following, never over a live touch. When NOT
- * following we never touch scrollTop — native `overflow-anchor` then holds the
+ * pageshow) each re-pin when — and only when — we're following. When NOT following
+ * we never touch scrollTop, so the browser's native `overflow-anchor` holds the
  * read position through image/content reflow above. Opening a transcript — one
  * target chosen before paint, then a bounded settle window — is transcript-open.ts.
  *
@@ -255,7 +254,9 @@ export function useStickToBottom({
   // ── Viewport resize / mobile keyboard: re-pin when following (RO on the container). ──
   useEffect(() => {
     if (!el || typeof ResizeObserver === 'undefined') return
-    const ro = new ResizeObserver(() => involuntaryRepin(elRef.current, followRef.current, pinNow))
+    const ro = new ResizeObserver(() => {
+      if (followRef.current && elRef.current) pinNow(elRef.current)
+    })
     ro.observe(el)
     return () => ro.disconnect()
   }, [el, pinNow])
@@ -266,7 +267,9 @@ export function useStickToBottom({
     if (!el || typeof ResizeObserver === 'undefined') return
     const content = el.firstElementChild
     if (!(content instanceof Element)) return
-    const ro = new ResizeObserver(() => involuntaryRepin(elRef.current, followRef.current, pinToEnd, prevTopRef.current))
+    const ro = new ResizeObserver(() => {
+      if (followRef.current && elRef.current) pinToEnd(elRef.current)
+    })
     ro.observe(content)
     return () => ro.disconnect()
   }, [el, pinToEnd])
@@ -274,7 +277,9 @@ export function useStickToBottom({
   // ── Tab return: re-sync (rAF is throttled in background tabs, so don't rely on it). ──
   useEffect(() => {
     const resync = () => {
-      if (document.visibilityState === 'visible') involuntaryRepin(elRef.current, followRef.current, pinNow)
+      if (document.visibilityState === 'visible' && followRef.current && elRef.current) {
+        pinNow(elRef.current)
+      }
     }
     document.addEventListener('visibilitychange', resync)
     window.addEventListener('pageshow', resync)

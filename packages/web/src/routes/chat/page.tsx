@@ -47,7 +47,6 @@ const FileView = lazy(() =>
 )
 import { FileOpenContext } from '@/components/chat/file-open-context'
 import { ShortcutOverlay } from '@/components/chat/shortcut-overlay'
-import { rememberVisibleScrollTop } from '@/hooks/stick-geometry'
 import { useChatTabs, type ChatTab } from '@/hooks/use-chat-tabs'
 import { invalidateLiveSessionSnapshot, prefetchLiveSessionSnapshot } from '@/hooks/use-live-session'
 import { useKeyboardShortcuts, type ShortcutDef } from '@/hooks/use-keyboard-shortcuts'
@@ -167,6 +166,7 @@ function ChatPage() {
   const sidebarOrderRef = useRef<SidebarOrder>({ sessionIds: [], employeeNames: [], employeeSessionMap: {} })
   const handleOrderComputed = useCallback((order: SidebarOrder) => { sidebarOrderRef.current = order }, [])
 
+
   // Close more menu on outside click. The moreMenu JSX is shared between the
   // desktop tab bar and the mobile header (rendered twice in the DOM, one
   // hidden via CSS), so a single ref points to only one copy — mobile taps
@@ -276,7 +276,8 @@ function ChatPage() {
   const handleSelect = useCallback(
     (id: string, opts?: { navigateMobile?: boolean; replace?: boolean; from?: ThreadOrigin; system?: boolean }) => {
       const currentId = selectedIdRef.current
-      rememberVisibleScrollTop(sessionScrollRef.current, currentId, document.querySelector('.chat-messages-scroll'))
+      const currentScroller = document.querySelector<HTMLElement>('.chat-messages-scroll') // display-toggled away on a phone, where it reports scrollTop 0
+      if (currentId && currentScroller?.clientHeight) sessionScrollRef.current.set(currentId, currentScroller.scrollTop)
       newChatIntentRef.current = false; setSystemPrimedId(opts?.system ? id : null); releaseMobilePicker()
       // On mobile, opening a session pushes from the list into the thread, and the
       // pane arrives with it (see revealSelection). The one exception is the
@@ -372,9 +373,6 @@ function ChatPage() {
     // Leaving a session for the composer is a navigation — push, so back
     // returns to the thread you left. (The header names the composer, not a chat.)
     if (selectedIdRef.current) {
-      // And returns to where you left it: a leave owes the same record as handleSelect,
-      // or back replays whatever offset the last session switch happened to store.
-      rememberVisibleScrollTop(sessionScrollRef.current, selectedIdRef.current, document.querySelector('.chat-messages-scroll'))
       pendingNavRef.current = null
       navigate('/')
     }
@@ -551,8 +549,10 @@ function ChatPage() {
     const escapedSessionId = typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
       ? CSS.escape(currentId)
       : currentId.replace(/["\\]/g, '\\$&')
-    const paneScroller = `[data-chat-pane-session="${escapedSessionId}"] .chat-messages-scroll`
-    rememberVisibleScrollTop(sessionScrollRef.current, currentId, document.querySelector(paneScroller))
+    const scroller = document.querySelector<HTMLElement>(
+      `[data-chat-pane-session="${escapedSessionId}"] .chat-messages-scroll`,
+    )
+    if (currentId && scroller?.clientHeight) sessionScrollRef.current.set(currentId, scroller.scrollTop)
     previewSourceRef.current = {
       sessionId: currentId,
       messageId: peek.messageId,

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, act, fireEvent } from '@testing-library/react'
-import { STICK_THRESHOLD_PX, scrollTopToRemember } from '@/hooks/stick-geometry'
+import { STICK_THRESHOLD_PX } from '@/hooks/stick-geometry'
 import { Harness, setClampedMetrics, setMetrics, stubScrollEnvironment } from './stick-harness'
 
 // The two rules ICI-821 changed: where a transcript opens, and when the arrow
@@ -141,43 +141,6 @@ describe('useStickToBottom — opening a virtualised transcript', () => {
     // Still theirs to follow: the next message pins to the bottom that moved.
     act(() => { view.rerender(<Harness messageCount={81} latestMessageKey="m81" {...props} />) })
     expect(el.scrollTop).toBe(4600 - 200)
-  })
-
-  it('opens at the bottom for a reader who left within the threshold', () => {
-    // What the page records on the way out. The pixel a reader at the bottom
-    // would have left behind is the bottom of the transcript AS IT WAS, and
-    // opening on it once the transcript has grown lands short of the real one.
-    const leftAtBottom = { scrollHeight: 4000, scrollTop: 4000 - 200 - 4, clientHeight: 200 }
-
-    const view = render(<Harness messageCount={0} />)
-    const el = view.getByTestId('scroller')
-    setClampedMetrics(el, () => 5200, 200)
-    const scrollToEnd = vi.fn(() => { el.scrollTop = 5200 })
-    act(() => {
-      view.rerender(
-        <Harness messageCount={80} initialScrollTop={scrollTopToRemember(leftAtBottom)} scrollToEnd={scrollToEnd} />,
-      )
-    })
-
-    expect(scrollToEnd).toHaveBeenCalledWith('auto')
-    expect(el.scrollTop).toBe(5200 - 200)
-  })
-
-  it('still restores a reader who left scrolled up', () => {
-    const leftScrolledUp = { scrollHeight: 4000, scrollTop: 900, clientHeight: 200 }
-
-    const view = render(<Harness messageCount={0} />)
-    const el = view.getByTestId('scroller')
-    setClampedMetrics(el, () => 5200, 200)
-    const scrollToEnd = vi.fn()
-    act(() => {
-      view.rerender(
-        <Harness messageCount={80} initialScrollTop={scrollTopToRemember(leftScrolledUp)} scrollToEnd={scrollToEnd} />,
-      )
-    })
-
-    expect(el.scrollTop).toBe(900)
-    expect(scrollToEnd).not.toHaveBeenCalled()
   })
 
   it('opens on a remembered offset without snapping to the bottom first', () => {

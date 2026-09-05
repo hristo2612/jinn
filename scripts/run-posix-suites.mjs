@@ -3,7 +3,7 @@
  * Runs the node suites that exercise POSIX host tooling, and says so instead of running them
  * on Windows.
  *
- * These files test the maintainer's tools, not shipped product code: the upgrade lab reads
+ * These six files test the maintainer's tools, not shipped product code: the upgrade lab reads
  * the process table with `ps`, the deliverable recorder shells out to `shasum`, the worktree
  * reaper depends on git worktree and symlink semantics, and the prerelease converter compiles a
  * C helper built on `openat`/`dirent.h`. None of that exists on Windows, and none of it ever
@@ -18,7 +18,6 @@ import { spawnSync } from "node:child_process";
 const SUITES = [
   "scripts/__tests__/deliverable-evidence.test.mjs",
   "scripts/__tests__/device-scroll-fixture.test.mjs",
-  "scripts/__tests__/verify-chat-scroll.test.mjs",
   "scripts/__tests__/reap-worktrees.test.mjs",
   "scripts/upgrade-lab/__tests__/guards.test.mjs",
   "tools/prerelease-todo-converter/__tests__/artifacts.test.mjs",

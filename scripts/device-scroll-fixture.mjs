@@ -5,9 +5,8 @@
 // run them, so the only way to see the real behaviour is a real phone, and the
 // only way a phone reaches a loopback sandbox is a bind it can route to.
 //
-// Runs after the sandbox home exists and before its gateway starts, because the
-// transcript store is the home's sqlite registry and the gateway holds it open once
-// it is running. scripts/verify-chat-scroll.sh drives that order for a desktop pass.
+// Runs between `jinn-sandbox.sh create` and `start`, because the transcript store
+// is the home's sqlite registry and the gateway holds it open once it is running.
 
 import fs from "node:fs"
 import os from "node:os"
