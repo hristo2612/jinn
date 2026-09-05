@@ -95,7 +95,7 @@ export function buildEnvironment(root, scenario, port) {
     XDG_DATA_HOME: path.join(scenarioRoot, "xdg", "data"),
     npm_config_prefix: prefix,
     npm_config_cache: path.join(scenarioRoot, "cache"),
-    npm_config_ignore_scripts: "true",
+    npm_config_ignore_scripts: "false",
     npm_config_audit: "false",
     npm_config_fund: "false",
     JINN_NO_OPEN: "1",
@@ -120,15 +120,14 @@ export function latestPublishedTarball(root, env) {
 
 export function installTarball(tarball, prefix, env) {
   fs.mkdirSync(prefix, { recursive: true })
-  run("npm", ["install", "--global", "--prefix", prefix, "--ignore-scripts", "--no-audit", "--no-fund", tarball], {
+  // The v0.33.0 gate skipped node-pty's Linux source build. Exercise every
+  // dependency's normal lifecycle instead of maintaining a native rebuild list.
+  run("npm", ["install", "--global", "--prefix", prefix, "--ignore-scripts=false", "--no-audit", "--no-fund", tarball], {
     env: { ...env, npm_config_prefix: prefix },
   })
   const packageRoot = path.join(prefix, "lib", "node_modules", "jinn-cli")
   const cli = path.join(packageRoot, "dist", "bin", "jinn.js")
   if (!fs.existsSync(cli)) throw new Error(`installed package has no CLI: ${cli}`)
-  run("npm", ["rebuild", "better-sqlite3", "--prefix", packageRoot, "--ignore-scripts=false", "--foreground-scripts"], {
-    env: { ...env, npm_config_prefix: prefix, npm_config_ignore_scripts: "false" },
-  })
   const version = JSON.parse(fs.readFileSync(path.join(packageRoot, "package.json"), "utf8")).version
   if (!STRICT_VERSION.test(version)) throw new Error(`installed package has an invalid version: ${String(version)}`)
   return { packageRoot, cli, version }
