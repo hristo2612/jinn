@@ -47,8 +47,8 @@ export function PillButton({
       aria-label={ariaLabel}
       aria-expanded={ariaExpanded}
       className={cn(
-        // 36px tap target at base (Apple HIG floor); tighten to 32px on desktop.
-        "inline-flex size-9 lg:size-8 shrink-0 items-center justify-center rounded-full transition-colors",
+        // Mobile controls keep a 44px target; desktop retains its compact chrome.
+        "inline-flex size-11 lg:size-8 shrink-0 items-center justify-center rounded-full transition-colors",
         "text-[var(--text-secondary)]",
         "hover:bg-[var(--fill-secondary)] hover:text-foreground",
         className,

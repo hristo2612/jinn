@@ -814,7 +814,7 @@ function ChatPage() {
             escape over the thread, while the list itself reflows at a fixed
             width and never changes its internal measure during the fold.
             The sibling thread therefore owns the remaining width throughout. */}
-        <div className="group/sidebar hidden h-full shrink-0 lg:flex">
+        {!viewport.mobile && <div className="group/sidebar hidden h-full shrink-0 lg:flex">
           <NavRibbon listOpen={listOpen} onToggleList={toggleList} />
           {/* Fold the list by animating its width; the inner column keeps a fixed
               280px so its contents don't reflow mid-fold. */}
@@ -841,7 +841,7 @@ function ChatPage() {
               />
             </div>
           </div>
-        </div>
+        </div>}
 
         <div className="chat-pills-layout relative min-w-0 flex-1 flex-col overflow-hidden bg-background flex">
           {/* Single-pane content scrolls beneath the theme-aware header cloud. */}
@@ -867,7 +867,7 @@ function ChatPage() {
             hideDesktop={desktopMultiPane}
           />
 
-          <div className={mobileView === 'sidebar' ? 'flex-1 overflow-hidden lg:hidden' : 'hidden'}>
+          {viewport.mobile && <div className={mobileView === 'sidebar' ? 'flex-1 overflow-hidden lg:hidden' : 'hidden'}>
             {/* Mobile: the chat list is the full-width body; the bottom tab bar
                 (rendered below) is the persistent nav. */}
             <ChatSidebar
@@ -884,7 +884,7 @@ function ChatPage() {
               onOrderComputed={handleOrderComputed}
               onContactEmployee={contactEmployee}
             />
-          </div>
+          </div>}
 
           <div
             ref={paneSlotRef}

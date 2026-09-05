@@ -1578,7 +1578,7 @@ export function ChatSidebar({
               onClick={onNewChat}
               title="New chat"
               aria-label="New chat"
-              className="inline-flex size-9 shrink-0 items-center justify-center rounded-full text-[var(--text-secondary)] transition-colors hover:bg-[var(--fill-secondary)] hover:text-foreground"
+              className="inline-flex size-11 lg:size-9 shrink-0 items-center justify-center rounded-full text-[var(--text-secondary)] transition-colors hover:bg-[var(--fill-secondary)] hover:text-foreground"
             >
               <SquarePen className="size-[18px]" />
             </button>
@@ -1587,7 +1587,7 @@ export function ChatSidebar({
               onClick={() => setSearchOpen(true)}
               title="Search chats"
               aria-label="Search chats"
-              className="inline-flex size-9 shrink-0 items-center justify-center rounded-full text-[var(--text-secondary)] transition-colors hover:bg-[var(--fill-secondary)] hover:text-foreground"
+              className="inline-flex size-11 lg:size-9 shrink-0 items-center justify-center rounded-full text-[var(--text-secondary)] transition-colors hover:bg-[var(--fill-secondary)] hover:text-foreground"
             >
               <Search className="size-[18px]" />
             </button>

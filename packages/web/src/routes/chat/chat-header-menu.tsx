@@ -50,7 +50,7 @@ export function ChatHeaderMenu(props: ChatHeaderMenuProps) {
       <button
         onClick={() => onOpenChange(!open)}
         aria-label="More options"
-        className="inline-flex size-9 lg:size-8 shrink-0 items-center justify-center rounded-full text-[var(--text-secondary)] transition-colors hover:bg-[var(--fill-secondary)] hover:text-foreground"
+        className="inline-flex size-11 lg:size-8 shrink-0 items-center justify-center rounded-full text-[var(--text-secondary)] transition-colors hover:bg-[var(--fill-secondary)] hover:text-foreground"
       >
         <MoreHorizontal className="size-[18px]" />
       </button>

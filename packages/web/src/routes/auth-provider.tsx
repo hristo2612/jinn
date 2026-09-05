@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react"
+import { RouteFailure } from "@/components/route-failure"
 import { PairingScreen } from "@/components/auth/pairing-screen"
 import {
   bootstrapLocalAuth,
@@ -146,6 +147,7 @@ export function useAuth() {
 export function AuthGate({ children }: { children: ReactNode }) {
   const { status, authState, error, pair } = useAuth()
   if (status === "paired") return <>{children}</>
+  if (status === "failed") return <RouteFailure />
   if (status === "checking") {
     return (
       <div className="min-h-dvh bg-[var(--bg)] text-[var(--text-tertiary)] flex items-center justify-center text-[length:var(--text-footnote)]">

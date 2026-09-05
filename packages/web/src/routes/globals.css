@@ -657,14 +657,9 @@ html, body {
   overscroll-behavior: none;
 }
 
-/* No `touch-action` here, deliberately. It read as free — the 350ms double-tap
-   delay it was there to kill is already gone, because the page ships
-   `user-scalable=no` (see the viewport meta in index.html) and there is no zoom
-   left to wait for. What it cost was momentum: a non-`auto` touch-action on an
-   ancestor takes inertial scrolling away from every scroller below it in WebKit,
-   so a flick anywhere in the app stopped dead on finger-lift. The two gestures
-   that genuinely need a declared value keep their own — the edge-back gutter
-   (`touch-pan-y` in edge-back-layer.tsx) and the terminal (`.xterm` below). */
+/* Keep touch-action local to the gestures that need it. A root restriction
+   interferes with WebKit's inner momentum scrolling and browser pinch zoom.
+   The edge-back gutter and terminal declare their own touch behavior. */
 html {
   -webkit-tap-highlight-color: transparent;
 }

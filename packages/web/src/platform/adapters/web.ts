@@ -10,6 +10,7 @@ import type {
 interface ViewportLike {
   height: number
   offsetTop: number
+  scale?: number
   addEventListener(type: "resize" | "scroll", listener: () => void): void
   removeEventListener(type: "resize" | "scroll", listener: () => void): void
 }
@@ -222,7 +223,10 @@ function observeKeyboardInset(
   if (!viewport || !innerHeight) return null
 
   const update = () => {
-    const obscured = innerHeight() - viewport.height - viewport.offsetTop
+    // Pinch zoom shrinks the visual viewport without opening the keyboard.
+    const obscured = (viewport.scale ?? 1) === 1
+      ? innerHeight() - viewport.height - viewport.offsetTop
+      : 0
     listener({ kind: "viewport.keyboard-inset", inset: Math.max(0, Math.round(obscured)) })
   }
   update()

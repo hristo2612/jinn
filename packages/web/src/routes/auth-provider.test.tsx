@@ -238,3 +238,12 @@ describe("AuthProvider/AuthGate", () => {
     expect(screen.queryByText("Private App")).toBeNull()
   })
 })
+
+it("does not mistake an unreachable gateway for an unpaired browser", async () => {
+  getAuthState.mockRejectedValue(new TypeError("Failed to fetch"))
+  render(<AuthProvider><AuthGate><div>Private App</div></AuthGate></AuthProvider>)
+  expect(await screen.findByRole('heading', { name: 'This page could not load' })).toBeTruthy()
+  expect(screen.queryByText(/Pair This Browser/i)).toBeNull()
+  expect(screen.queryByText('Private App')).toBeNull()
+  expect(pairBrowser).not.toHaveBeenCalled()
+})

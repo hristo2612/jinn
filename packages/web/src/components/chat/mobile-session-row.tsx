@@ -164,7 +164,7 @@ function RowSurface({
         transitionProperty: "transform",
         transitionDuration: swipe.dragging ? "var(--duration-instant)" : "var(--duration-base)",
         transitionTimingFunction: "var(--ease-snappy)",
-        touchAction: "pan-y",
+        touchAction: "pan-y pinch-zoom",
       }}
       className={cn(
         "relative flex min-h-14 w-full items-center gap-3 px-4 py-2 text-left data-[pressed]:bg-[var(--fill-primary)]",

@@ -172,7 +172,7 @@ export function ChatHeaderPills({
                 aria-label={`Back to ${backTo.label}`}
                 title={`Back to ${backTo.label}`}
                 className={cn(
-                  'inline-flex h-9 shrink-0 items-center justify-self-start gap-0.5 rounded-full pl-1 pr-2.5 text-[var(--text-secondary)] transition-colors hover:bg-[var(--fill-secondary)] hover:text-[var(--text-primary)] active:bg-[var(--fill-secondary)]',
+                  'inline-flex h-11 shrink-0 items-center justify-self-start gap-0.5 rounded-full pl-1 pr-2.5 text-[var(--text-secondary)] transition-colors hover:bg-[var(--fill-secondary)] hover:text-[var(--text-primary)] active:bg-[var(--fill-secondary)]',
                   // Mirroring this control onto the right track spends its width
                   // twice, so the label yields when the chips hold the middle:
                   // four 36px chips plus their gaps need 156px, which 27vw a side
@@ -189,7 +189,7 @@ export function ChatHeaderPills({
                 onClick={onBack}
                 aria-label="Back to chats"
                 title="Back to chats"
-                className="inline-flex size-9 shrink-0 items-center justify-center justify-self-start rounded-full text-[var(--text-secondary)] transition-colors hover:bg-[var(--fill-secondary)] hover:text-[var(--text-primary)] active:bg-[var(--fill-secondary)]"
+                className="inline-flex size-11 shrink-0 items-center justify-center justify-self-start rounded-full text-[var(--text-secondary)] transition-colors hover:bg-[var(--fill-secondary)] hover:text-[var(--text-primary)] active:bg-[var(--fill-secondary)]"
               >
                 <ChevronLeft size={24} className="shrink-0" />
               </button>

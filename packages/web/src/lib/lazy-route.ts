@@ -53,6 +53,7 @@ export function lazyRoute<T extends ComponentType<any>>(
     } catch (error) {
       if (
         typeof window !== 'undefined' &&
+        navigator.onLine !== false &&
         isRecoverableDynamicImportError(error) &&
         consumeChunkReloadRetry(window.sessionStorage, retryKey(routeName))
       ) {
