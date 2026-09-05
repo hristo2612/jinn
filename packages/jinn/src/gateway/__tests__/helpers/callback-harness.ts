@@ -98,7 +98,13 @@ export function makeContext(engine: Engine, queue: {
 
 /** A queue that accepts an enqueue and never runs it — the pre-restart process. */
 export function acceptWithoutExecuting() {
-  return { clearCancelled: () => {}, enqueue: async () => {} };
+  return {
+    clearCancelled: () => {},
+    hasInFlightItem: () => false,
+    holdForCallbackDrain: () => {},
+    releaseCallbackDrain: () => {},
+    enqueue: async () => {},
+  };
 }
 
 export function createParent(suffix: string, source: "web" | "talk" = "web") {

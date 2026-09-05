@@ -50,6 +50,10 @@ export function postNotification(context: ApiContext, sessionId: string, message
   });
 }
 
+export function postUserMessage(context: ApiContext, sessionId: string, message: string) {
+  return postJson(context, `/api/sessions/${sessionId}/message`, { message });
+}
+
 export function postCallbackDelivery(context: ApiContext, sessionId: string, callbackDeliveryId: string) {
   return postJson(context, `/api/sessions/${sessionId}/message`, { callbackDeliveryId });
 }

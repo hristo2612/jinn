@@ -1,6 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
-import { getFile, getSession, getQueueItem, beginSessionAttempt } from "../sessions/registry.js";
+import {
+  getFile,
+  getSession,
+  getQueueItem,
+  beginSessionAttempt,
+  listReleasableParentCompletionQueuesForSource,
+} from "../sessions/registry.js";
 import { FILES_DIR } from "../shared/paths.js";
 import { settleTurn } from "../sessions/turn/completion.js";
 import { resolveTurnHierarchy } from "../sessions/turn/preflight.js";
@@ -142,6 +148,9 @@ export function dispatchWebSessionRun(
       // panel drains. Without this the panel only refreshes on enqueue and the
       // badge sticks at its peak. (queue.ts marks the DB row done in its finally.)
       if (opts?.queueItemId) context.emit("queue:updated", { sessionId: session.id, sessionKey });
+      for (const held of listReleasableParentCompletionQueuesForSource(session.id)) {
+        context.sessionManager.getQueue().releaseCallbackDrain(held.sessionKey, held.queueItemId);
+      }
     }
   };
 

@@ -2568,34 +2568,345 @@ export function recordSessionDeliveryFailure(
   return update();
 }
 
+const COMPLETION_BATCH_MAX_ITEMS = 32;
+const COMPLETION_BATCH_MAX_CHARS = 128_000;
+
+/**
+ * Build one engine-facing turn from immutable completion receipts that arrived
+ * while the target was already busy. The receipts and their transcript banners
+ * remain separate; only the expensive engine dispatch is shared.
+ */
+function completionBatchPrompt(deliveries: readonly SessionDelivery[]): string {
+  if (deliveries.length === 1) return deliveries[0]!.payload.message;
+  const updates = deliveries.map((delivery, index) =>
+    `--- Completion update ${index + 1} of ${deliveries.length} ---\n${delivery.payload.message}`,
+  );
+  return [
+    `📬 ${deliveries.length} durable completion updates accumulated while this session was busy. ` +
+      "Review every update below together; each original receipt and transcript message remains intact.",
+    ...updates,
+  ].join("\n\n");
+}
+
+function pendingCompletionBatch(
+  database: Database.Database,
+  delivery: SessionDelivery,
+  targetSessionId: string,
+  sessionKey: string,
+): { queueItemId: string; prompt: string } | undefined {
+  if (delivery.deliveryKind !== "parent-completion") return undefined;
+  // A newly accepted callback belongs at the tail. Only fold it into the
+  // existing tail row: reaching past an intervening operator/workflow turn
+  // would reorder work even though the queue positions stayed unchanged.
+  const candidate = database.prepare(`
+    SELECT q.id
+    FROM queue_items q
+    WHERE q.session_id = ?
+      AND q.session_key = ?
+      AND q.status = 'pending'
+    ORDER BY q.position DESC, q.created_at DESC, q.rowid DESC
+    LIMIT 1
+  `).get(targetSessionId, sessionKey) as { id: string } | undefined;
+  if (!candidate) return undefined;
+  const kinds = database.prepare(`
+    SELECT
+      COUNT(*) AS total,
+      SUM(CASE WHEN status = 'accepted' AND delivery_kind = 'parent-completion' THEN 1 ELSE 0 END) AS completions
+    FROM callback_deliveries
+    WHERE queue_item_id = ?
+  `).get(candidate.id) as { total: number; completions: number | null };
+  if (kinds.total === 0 || kinds.completions !== kinds.total) return undefined;
+  const rows = database.prepare(`
+    ${CALLBACK_DELIVERY_SELECT}
+    WHERE queue_item_id = ?
+      AND status = 'accepted'
+      AND delivery_kind = 'parent-completion'
+    ORDER BY (
+      SELECT m.rowid FROM messages m WHERE m.id = callback_deliveries.message_id
+    ), callback_deliveries.rowid
+  `).all(candidate.id) as SessionDeliveryRow[];
+  const existing = rows.map(sessionDeliveryFromRow);
+  if (existing.length >= COMPLETION_BATCH_MAX_ITEMS) return undefined;
+  // `delivery` is being accepted by this transaction now, so append it after
+  // every already-accepted row even when their wall-clock timestamps collide.
+  const prompt = completionBatchPrompt([...existing, delivery]);
+  return prompt.length <= COMPLETION_BATCH_MAX_CHARS
+    ? { queueItemId: candidate.id, prompt }
+    : undefined;
+}
+
+interface PendingQueueOrderRow {
+  id: string;
+  sessionId: string;
+  sessionKey: string;
+  position: number;
+  createdAt: string;
+  completionCount: number;
+  deliveryCount: number;
+}
+
+function packCompletionDeliveries(deliveries: readonly SessionDelivery[]): SessionDelivery[][] {
+  const batches: SessionDelivery[][] = [];
+  let current: SessionDelivery[] = [];
+  for (const delivery of deliveries) {
+    const candidate = [...current, delivery];
+    if (current.length > 0 && (
+      candidate.length > COMPLETION_BATCH_MAX_ITEMS
+      || completionBatchPrompt(candidate).length > COMPLETION_BATCH_MAX_CHARS
+    )) {
+      batches.push(current);
+      current = [delivery];
+    } else {
+      current = candidate;
+    }
+  }
+  if (current.length > 0) batches.push(current);
+  return batches;
+}
+
+/**
+ * Upgrade/restart repair for the pre-batching durable shape. Only contiguous
+ * pending completion rows are compacted, so an operator, workflow, approval or
+ * other callback row remains an ordering fence. Superseded queue rows are kept
+ * as cancelled evidence; every receipt and transcript message stays intact.
+ */
+export function coalescePendingParentCompletionQueueItems(): number {
+  const database = initDb();
+  return database.transaction(() => {
+    const rows = database.prepare(`
+      SELECT
+        q.id,
+        q.session_id AS sessionId,
+        q.session_key AS sessionKey,
+        q.position,
+        q.created_at AS createdAt,
+        COUNT(d.id) AS deliveryCount,
+        SUM(CASE WHEN d.status = 'accepted' AND d.delivery_kind = 'parent-completion' THEN 1 ELSE 0 END) AS completionCount
+      FROM queue_items q
+      LEFT JOIN callback_deliveries d ON d.queue_item_id = q.id
+      WHERE q.status = 'pending'
+      GROUP BY q.id
+      ORDER BY q.session_key, q.position, q.created_at, q.rowid
+    `).all() as PendingQueueOrderRow[];
+
+    let compacted = 0;
+    let run: PendingQueueOrderRow[] = [];
+    const flush = () => {
+      if (run.length < 2) {
+        run = [];
+        return;
+      }
+      const placeholders = run.map(() => "?").join(", ");
+      const orderedIds = database.prepare(`
+        SELECT d.id
+        FROM callback_deliveries d
+        JOIN queue_items q ON q.id = d.queue_item_id
+        LEFT JOIN messages m ON m.id = d.message_id
+        WHERE d.queue_item_id IN (${placeholders})
+          AND d.status = 'accepted'
+          AND d.delivery_kind = 'parent-completion'
+        ORDER BY q.position, q.created_at, q.rowid, m.rowid, d.rowid
+      `).all(...run.map((row) => row.id)) as Array<{ id: string }>;
+      const read = database.prepare(`${CALLBACK_DELIVERY_SELECT} WHERE id = ?`);
+      const deliveries = orderedIds.map(({ id }) =>
+        sessionDeliveryFromRow(read.get(id) as SessionDeliveryRow),
+      );
+      const batches = packCompletionDeliveries(deliveries);
+      // Every supported historical row held at least one delivery. Refuse an
+      // unexpected overfilled shape rather than deleting evidence to make room.
+      if (batches.length > run.length) {
+        run = [];
+        return;
+      }
+      const canonicalIds = new Set<string>();
+      for (const [index, batch] of batches.entries()) {
+        const canonicalId = run[index]!.id;
+        canonicalIds.add(canonicalId);
+        database.prepare("UPDATE queue_items SET prompt = ? WHERE id = ? AND status = 'pending'")
+          .run(completionBatchPrompt(batch), canonicalId);
+        const deliveryIds = batch.map((delivery) => delivery.id);
+        database.prepare(`
+          UPDATE callback_deliveries
+          SET queue_item_id = ?
+          WHERE id IN (${deliveryIds.map(() => "?").join(", ")})
+            AND status = 'accepted'
+        `).run(canonicalId, ...deliveryIds);
+      }
+      for (const row of run) {
+        if (canonicalIds.has(row.id)) continue;
+        compacted += database.prepare(
+          "UPDATE queue_items SET status = 'cancelled' WHERE id = ? AND status = 'pending'",
+        ).run(row.id).changes;
+      }
+      run = [];
+    };
+
+    for (const row of rows) {
+      const exactCompletion = row.deliveryCount > 0 && row.deliveryCount === row.completionCount;
+      const sameRun = run.length === 0
+        || (run[0]!.sessionId === row.sessionId && run[0]!.sessionKey === row.sessionKey);
+      if (!exactCompletion || !sameRun) flush();
+      if (exactCompletion) run.push(row);
+    }
+    flush();
+    return compacted;
+  }).immediate();
+}
+
+function nextPendingQueueItemIsParentCompletion(database: Database.Database, sessionId: string): boolean {
+  return Boolean(database.prepare(`
+    SELECT 1
+    FROM queue_items q
+    WHERE q.id = (
+      SELECT next.id
+      FROM queue_items next
+      WHERE next.session_id = ?
+        AND next.status = 'pending'
+      ORDER BY next.position, next.created_at, next.rowid
+      LIMIT 1
+    )
+      AND EXISTS (
+        SELECT 1 FROM callback_deliveries d
+        WHERE d.queue_item_id = q.id
+          AND d.status = 'accepted'
+          AND d.delivery_kind = 'parent-completion'
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM callback_deliveries d
+        WHERE d.queue_item_id = q.id
+          AND (d.status <> 'accepted' OR d.delivery_kind <> 'parent-completion')
+      )
+  `).get(sessionId));
+}
+
+function runningQueueItemIsParentCompletion(database: Database.Database, sessionId: string): boolean {
+  return Boolean(database.prepare(`
+    SELECT 1
+    FROM queue_items q
+    WHERE q.session_id = ?
+      AND q.status = 'running'
+      AND EXISTS (
+        SELECT 1 FROM callback_deliveries d
+        WHERE d.queue_item_id = q.id
+          AND d.status = 'accepted'
+          AND d.delivery_kind = 'parent-completion'
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM callback_deliveries d
+        WHERE d.queue_item_id = q.id
+          AND (d.status <> 'accepted' OR d.delivery_kind <> 'parent-completion')
+      )
+    LIMIT 1
+  `).get(sessionId));
+}
+
+function sourceCompletionIsDraining(
+  database: Database.Database,
+  sourceSessionId: string,
+  targetQueueItemId: string,
+): boolean {
+  if (nextPendingQueueItemIsParentCompletion(database, sourceSessionId)) return true;
+  if (!runningQueueItemIsParentCompletion(database, sourceSessionId)) return false;
+  const source = database.prepare(
+    "SELECT attempt_token AS attemptToken FROM sessions WHERE id = ?",
+  ).get(sourceSessionId) as { attemptToken: string | null } | undefined;
+  if (!source?.attemptToken) return true;
+  const currentTurnReported = database.prepare(`
+    SELECT 1
+    FROM callback_deliveries
+    WHERE queue_item_id = ?
+      AND status = 'accepted'
+      AND delivery_kind = 'parent-completion'
+      AND source_kind = 'session'
+      AND source_id = ?
+      AND source_attempt = ?
+    LIMIT 1
+  `).get(targetQueueItemId, sourceSessionId, source.attemptToken);
+  return !currentTurnReported;
+}
+
+/**
+ * Hold an accepted upstream completion batch while one of its source sessions
+ * has newer completion input durably next in line. The receipts are already
+ * accepted and visible; delaying only their engine dispatch lets the source's
+ * final drain-boundary result join the same lossless parent turn. A different
+ * queued work kind is a causal fence and never delays the relay.
+ */
+export function shouldHoldParentCompletionQueueDispatch(queueItemId: string): boolean {
+  const database = initDb();
+  const sources = database.prepare(`
+    SELECT DISTINCT source_id AS sourceId, source_outcome AS sourceOutcome
+    FROM callback_deliveries
+    WHERE queue_item_id = ?
+      AND status = 'accepted'
+      AND delivery_kind = 'parent-completion'
+      AND source_kind = 'session'
+  `).all(queueItemId) as Array<{ sourceId: string; sourceOutcome: string }>;
+  if (sources.some(({ sourceOutcome }) =>
+    sourceOutcome === "failed" || sourceOutcome === "error" || sourceOutcome === "interrupted",
+  )) return false;
+  return sources.some(({ sourceId }) =>
+    sourceCompletionIsDraining(database, sourceId, queueItemId),
+  );
+}
+
+export function listReleasableParentCompletionQueuesForSource(sourceSessionId: string): Array<{
+  queueItemId: string;
+  sessionKey: string;
+}> {
+  const database = initDb();
+  const rows = database.prepare(`
+    SELECT DISTINCT q.id AS queueItemId, q.session_key AS sessionKey
+    FROM queue_items q
+    JOIN callback_deliveries d ON d.queue_item_id = q.id
+    WHERE q.status = 'pending'
+      AND d.status = 'accepted'
+      AND d.delivery_kind = 'parent-completion'
+      AND d.source_kind = 'session'
+      AND d.source_id = ?
+    ORDER BY q.position, q.created_at, q.rowid
+  `).all(sourceSessionId) as Array<{ queueItemId: string; sessionKey: string }>;
+  return rows.filter(({ queueItemId }) => !shouldHoldParentCompletionQueueDispatch(queueItemId));
+}
+
 /** Atomically turn one pending outbox row into the parent notification message
  * and its restart-safe internal queue intent. Accepted retries return the same
- * ids without inserting, emitting, or waking anything again. */
+ * ids without inserting, emitting, or waking anything again. Completion
+ * receipts may share a bounded pending row: this preserves every receipt and
+ * banner while preventing a settled backlog from spawning one engine per row. */
 export function acceptSessionDelivery(
   deliveryId: string,
   targetSessionId: string,
   sessionKey: string,
-): { delivery: SessionDelivery; accepted: boolean } {
+): { delivery: SessionDelivery; accepted: boolean; queueCreated: boolean } {
   const database = initDb();
   const accept = database.transaction(() => {
     const row = database.prepare(`${CALLBACK_DELIVERY_SELECT} WHERE id = ?`).get(deliveryId) as SessionDeliveryRow | undefined;
     if (!row) throw new Error(`Callback delivery ${deliveryId} not found`);
     if (row.targetSessionId !== targetSessionId) throw new Error('Session delivery target mismatch');
-    if (row.status === 'accepted') return { delivery: sessionDeliveryFromRow(row), accepted: false };
+    if (row.status === 'accepted') return { delivery: sessionDeliveryFromRow(row), accepted: false, queueCreated: false };
     if (row.status === 'dead_letter') throw new Error(`Callback delivery ${deliveryId} is dead-lettered`);
 
     const delivery = sessionDeliveryFromRow(row);
-    const queueItemId = randomUUID();
+    const batch = pendingCompletionBatch(database, delivery, targetSessionId, sessionKey);
+    const queueItemId = batch?.queueItemId ?? randomUUID();
     const messageId = uuidv4();
     const now = new Date().toISOString();
-    const position = (database.prepare(
-      "SELECT COALESCE(MAX(position), 0) + 1 AS pos FROM queue_items WHERE session_key = ? AND status = 'pending'",
-    ).get(sessionKey) as { pos: number }).pos;
-    database.prepare(`
-      INSERT INTO queue_items (
-        id, session_id, session_key, prompt, status, internal, position, created_at
-      ) VALUES (?, ?, ?, ?, 'pending', 1, ?, ?)
-    `).run(queueItemId, targetSessionId, sessionKey, delivery.payload.message, position, now);
+    if (batch) {
+      const updated = database.prepare(
+        "UPDATE queue_items SET prompt = ? WHERE id = ? AND status = 'pending'",
+      ).run(batch.prompt, batch.queueItemId);
+      if (updated.changes !== 1) throw new Error(`Callback completion batch ${batch.queueItemId} lost its pending claim`);
+    } else {
+      const position = (database.prepare(
+        "SELECT COALESCE(MAX(position), 0) + 1 AS pos FROM queue_items WHERE session_key = ? AND status = 'pending'",
+      ).get(sessionKey) as { pos: number }).pos;
+      database.prepare(`
+        INSERT INTO queue_items (
+          id, session_id, session_key, prompt, status, internal, position, created_at
+        ) VALUES (?, ?, ?, ?, 'pending', 1, ?, ?)
+      `).run(queueItemId, targetSessionId, sessionKey, delivery.payload.message, position, now);
+    }
     database.prepare(`
       INSERT INTO messages (id, session_id, role, content, timestamp, meta)
       VALUES (?, ?, 'notification', ?, ?, ?)
@@ -2614,7 +2925,7 @@ export function acceptSessionDelivery(
       WHERE id = ? AND status = 'pending'
     `).run(messageId, queueItemId, now, deliveryId);
     if (updated.changes !== 1) throw new Error(`Callback delivery ${deliveryId} lost its pending claim`);
-    return { delivery: getSessionDelivery(deliveryId)!, accepted: true };
+    return { delivery: getSessionDelivery(deliveryId)!, accepted: true, queueCreated: !batch };
   });
   return accept();
 }

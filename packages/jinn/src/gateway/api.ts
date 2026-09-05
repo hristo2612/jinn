@@ -64,6 +64,9 @@ import {
   enqueueQueueItem,
   cancelQueueItem,
   markRunningQueueItemsCompletedForSession,
+  coalescePendingParentCompletionQueueItems,
+  shouldHoldParentCompletionQueueDispatch,
+  listReleasableParentCompletionQueuesForSource,
   listAllPendingQueueItems,
   getSessionDelivery,
   getSessionDeliveryByQueueItemId,
@@ -417,6 +420,7 @@ function preserveLinkedAttempt(
 }
 
 export function resumePendingWebQueueItems(context: ApiContext): void {
+  coalescePendingParentCompletionQueueItems();
   const pending = listAllPendingQueueItems();
   if (pending.length === 0) return;
 
@@ -425,6 +429,9 @@ export function resumePendingWebQueueItems(context: ApiContext): void {
     let session = getSession(item.sessionId);
     if (!session) {
       cancelQueueItem(item.id);
+      for (const held of listReleasableParentCompletionQueuesForSource(item.sessionId)) {
+        context.sessionManager.getQueue().releaseCallbackDrain(held.sessionKey, held.queueItemId);
+      }
       continue;
     }
     // Ordinary non-web queue ownership remains connector-specific. Callback
@@ -432,6 +439,9 @@ export function resumePendingWebQueueItems(context: ApiContext): void {
     // turn, so startup replay must finish it regardless of the parent's source.
     const callbackDelivery = getSessionDeliveryByQueueItemId(item.id);
     if (runtimeSessionSource(session.source) !== "web" && !callbackDelivery) continue;
+    if (callbackDelivery && shouldHoldParentCompletionQueueDispatch(item.id)) {
+      context.sessionManager.getQueue().holdForCallbackDrain(item.sessionKey, item.id);
+    }
     // Hot-reload calls this too: a row waiting its turn here is owned, not orphaned.
     if (context.sessionManager.getQueue().hasInFlightItem(item.id)) continue;
     session = maybeRevertEngineOverride(session);
@@ -4352,6 +4362,7 @@ export async function handleApiRequest(
       // still sees it. User messages retain their existing enqueue point below.
       let queueItemId: string | undefined;
       let incomingMessageId: string;
+      let callbackQueueNeedsDispatch = true;
       if (callbackDelivery) {
         const acceptance = acceptSessionDelivery(callbackDelivery.id, session.id, sessionKey);
         if (!acceptance.accepted) {
@@ -4365,6 +4376,22 @@ export async function handleApiRequest(
         }
         queueItemId = acceptance.delivery.queueItemId!;
         incomingMessageId = acceptance.delivery.messageId!;
+        // A completion accepted into an already-owned pending batch only updates
+        // that row's engine-facing payload. Enqueuing the alias would add a
+        // second promise-chain slot for the same durable work. An orphaned batch
+        // (for example after restart) is not owned and still needs dispatch.
+        const queue = context.sessionManager.getQueue();
+        if (shouldHoldParentCompletionQueueDispatch(queueItemId)) {
+          queue.holdForCallbackDrain(sessionKey, queueItemId);
+        } else {
+          queue.releaseCallbackDrain(sessionKey, queueItemId);
+        }
+        if (callbackDelivery.sourceKind === "session") {
+          for (const held of listReleasableParentCompletionQueuesForSource(callbackDelivery.sourceId)) {
+            queue.releaseCallbackDrain(held.sessionKey, held.queueItemId);
+          }
+        }
+        callbackQueueNeedsDispatch = !queue.hasInFlightItem(queueItemId);
       } else {
         const claim = claimIncomingTurn({
           sessionId: session.id, sessionKey, prompt, isNotification, role: messageRole, dedupeKey: lateralDedupeKey,
@@ -4496,7 +4523,9 @@ export async function handleApiRequest(
         context.emit("queue:updated", { sessionId: session.id, sessionKey });
       }
 
-      dispatchWebSessionRun(session, enginePrompt, engine, context, { queueItemId, attachments: attachmentPaths.length > 0 ? attachmentPaths : undefined });
+      if (!callbackDelivery || callbackQueueNeedsDispatch) {
+        dispatchWebSessionRun(session, enginePrompt, engine, context, { queueItemId, attachments: attachmentPaths.length > 0 ? attachmentPaths : undefined });
+      }
 
       return json(res, {
         status: "queued",

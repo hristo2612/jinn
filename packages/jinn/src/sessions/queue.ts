@@ -10,6 +10,9 @@ export class SessionQueue {
   private cancelled = new Set<string>();
   /** Track which session keys are paused - queued tasks wait until resumed. */
   private paused = new Set<string>();
+  /** Internal causal hold: a callback row owns the head, but waits for its
+   * source session's completion backlog to reach a drain boundary. */
+  private callbackDrainHeld = new Map<string, Set<string>>();
   /** Resolvers for tasks blocked on a paused session key, woken on resume. */
   private pauseWaiters = new Map<string, Array<() => void>>();
   /** Queue rows this process has already taken responsibility for. */
@@ -52,6 +55,8 @@ export class SessionQueue {
   clearQueue(sessionKey: string): void {
     this.cancelled.add(sessionKey);
     this.pending.delete(sessionKey);
+    this.callbackDrainHeld.delete(sessionKey);
+    this.wakePauseWaiters(sessionKey);
   }
 
   /**
@@ -68,15 +73,48 @@ export class SessionQueue {
 
   resumeQueue(sessionKey: string): void {
     this.paused.delete(sessionKey);
+    this.wakePauseWaiters(sessionKey);
+  }
+
+  private wakePauseWaiters(sessionKey: string): void {
     const waiters = this.pauseWaiters.get(sessionKey);
-    if (waiters) {
-      this.pauseWaiters.delete(sessionKey);
-      for (const wake of waiters) wake();
-    }
+    if (!waiters) return;
+    this.pauseWaiters.delete(sessionKey);
+    for (const wake of waiters) wake();
   }
 
   isPaused(sessionKey: string): boolean {
     return this.paused.has(sessionKey);
+  }
+
+  holdForCallbackDrain(sessionKey: string, queueItemId: string): void {
+    const held = this.callbackDrainHeld.get(sessionKey) ?? new Set<string>();
+    held.add(queueItemId);
+    this.callbackDrainHeld.set(sessionKey, held);
+  }
+
+  releaseCallbackDrain(sessionKey: string, queueItemId: string): void {
+    const held = this.callbackDrainHeld.get(sessionKey);
+    held?.delete(queueItemId);
+    if (held?.size === 0) this.callbackDrainHeld.delete(sessionKey);
+    this.wakePauseWaiters(sessionKey);
+  }
+
+  isCallbackDrainHeld(sessionKey: string, queueItemId?: string): boolean {
+    const held = this.callbackDrainHeld.get(sessionKey);
+    return queueItemId ? held?.has(queueItemId) === true : Boolean(held?.size);
+  }
+
+  private async waitUntilRunnable(sessionKey: string, queueItemId?: string): Promise<void> {
+    while (this.paused.has(sessionKey) || (
+      queueItemId !== undefined && this.isCallbackDrainHeld(sessionKey, queueItemId)
+    )) {
+      await new Promise<void>(resolve => {
+        const waiters = this.pauseWaiters.get(sessionKey) ?? [];
+        waiters.push(resolve);
+        this.pauseWaiters.set(sessionKey, waiters);
+      });
+    }
   }
 
   /**
@@ -91,13 +129,7 @@ export class SessionQueue {
       let queueItemStarted = false;
       try {
         // Wait while paused — blocks until resumeQueue() wakes us (no polling)
-        while (this.paused.has(sessionKey)) {
-          await new Promise<void>(resolve => {
-            const waiters = this.pauseWaiters.get(sessionKey) ?? [];
-            waiters.push(resolve);
-            this.pauseWaiters.set(sessionKey, waiters);
-          });
-        }
+        await this.waitUntilRunnable(sessionKey, queueItemId);
         if (queueItemId) {
           const item = getQueueItem(queueItemId);
           if (!item || (claimed ? item.status !== "running"

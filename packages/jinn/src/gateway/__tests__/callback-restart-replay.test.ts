@@ -3,6 +3,7 @@ import {
   acceptWithoutExecuting,
   api,
   createParent,
+  dbModule,
   eventually,
   makeContext,
   makeEngine,
@@ -199,5 +200,51 @@ describe("accepted callback queue intents survive a restart", () => {
       expect(seenPrompts).toEqual(["callback-survives-visible-clear"]);
       expect(registry.listAllPendingQueueItems()).toEqual([]);
     });
+  });
+
+  it("replays a durable completion backlog as one bounded turn while retaining every receipt", async () => {
+    const seenPrompts: string[] = [];
+    const engine = makeEngine(seenPrompts);
+    const parent = createParent("backlog-restart");
+    const deliveries = Array.from({ length: 12 }, (_, index) => registry.claimSessionDelivery({
+      targetSessionId: parent.id,
+      sourceKind: "session" as const,
+      sourceId: `restart-child-${index % 2}`,
+      sourceAttempt: `restart-attempt-${index}`,
+      sourceOutcome: index === 5 ? "failed" : "succeeded",
+      sourceVersion: index + 1,
+      deliveryKind: "parent-completion",
+      payload: {
+        message: index === 5 ? "restart backlog error" : `restart backlog result ${index}`,
+        displayMessage: `Restart update ${index}`,
+      },
+    }).delivery);
+
+    // Reproduce the durable shape written by releases before callback batching:
+    // every accepted receipt owns a separate pending queue row at boot.
+    for (const delivery of deliveries) {
+      const accepted = registry.acceptSessionDelivery(delivery.id, parent.id, parent.sessionKey);
+      registry.markQueueItemRunning(accepted.delivery.queueItemId!);
+    }
+    dbModule.initDb().prepare(
+      "UPDATE queue_items SET status = 'pending', started_at = NULL WHERE session_id = ?",
+    ).run(parent.id);
+
+    expect(registry.listAllPendingQueueItems()).toHaveLength(12);
+    expect(registry.getMessages(parent.id).filter((message) => message.role === "notification"))
+      .toHaveLength(12);
+    expect(dbModule.initDb().prepare("SELECT COUNT(*) AS n FROM callback_deliveries").get())
+      .toEqual({ n: 12 });
+
+    const postRestartQueue = new queueModule.SessionQueue();
+    api.resumePendingWebQueueItems(makeContext(engine, postRestartQueue));
+    await eventually(() => {
+      expect(postRestartQueue.isRunning(parent.sessionKey)).toBe(false);
+      expect(seenPrompts).toHaveLength(1);
+      expect(registry.listAllPendingQueueItems()).toEqual([]);
+    });
+    for (let index = 0; index < 12; index++) {
+      expect(seenPrompts[0]).toContain(index === 5 ? "restart backlog error" : `restart backlog result ${index}`);
+    }
   });
 });

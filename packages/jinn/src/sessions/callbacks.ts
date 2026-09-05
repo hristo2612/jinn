@@ -87,13 +87,24 @@ export function notifyManagerVisibility(
 /**
  * Notify the parent session that a child session has replied.
  * Sends an internal message to the parent via the local HTTP API.
- * Fire-and-forget — errors are logged but never rethrown.
+ * Fire-and-forget compatibility wrapper. Turn settlement uses the awaited
+ * variant below so a source-drain hold cannot release before the final durable
+ * callback is accepted.
  */
 export function notifyParentSession(
   childSession: Session,
   result: { result?: string | null; error?: string | null; cost?: number; durationMs?: number },
   options?: { alwaysNotify?: boolean },
 ): void {
+  void notifyParentSessionAndWait(childSession, result, options);
+}
+
+/** Awaitable parent notification for completion paths that need durable ordering. */
+export async function notifyParentSessionAndWait(
+  childSession: Session,
+  result: { result?: string | null; error?: string | null; cost?: number; durationMs?: number },
+  options?: { alwaysNotify?: boolean },
+): Promise<void> {
   if (!result.error && !hasMeaningfulReply(result.result)) return;
 
   if (!childSession.parentSessionId) return;
@@ -112,8 +123,7 @@ export function notifyParentSession(
     }
   }
 
-  // Run asynchronously — do not await in the caller
-  _sendNotification(childSession, result, options).catch((err) => {
+  await _sendNotification(childSession, result, options).catch((err) => {
     logger.warn(`[callbacks] Failed to notify parent session ${childSession.parentSessionId}: ${err instanceof Error ? err.message : String(err)}`);
   });
 }

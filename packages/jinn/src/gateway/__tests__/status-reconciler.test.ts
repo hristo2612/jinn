@@ -14,7 +14,11 @@ process.env.JINN_HOME = tmp;
 const notifyParentSession = vi.fn();
 vi.mock("../../sessions/callbacks.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../sessions/callbacks.js")>();
-  return { ...actual, notifyParentSession: (...args: unknown[]) => notifyParentSession(...args) };
+  return {
+    ...actual,
+    notifyParentSession: (...args: unknown[]) => notifyParentSession(...args),
+    notifyParentSessionAndWait: (...args: unknown[]) => notifyParentSession(...args),
+  };
 });
 
 type Reg = typeof import("../../sessions/registry.js");

@@ -28,6 +28,7 @@ vi.mock("../callbacks.js", async (importOriginal) => {
   return {
     ...actual,
     notifyParentSession: (...args: unknown[]) => notifyParentSession(...args),
+    notifyParentSessionAndWait: (...args: unknown[]) => notifyParentSession(...args),
     notifyOperatorChannel: () => {},
     notifyRateLimited: () => {},
     notifyRateLimitResumed: () => {},

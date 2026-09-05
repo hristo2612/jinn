@@ -60,6 +60,9 @@ const queueStub = {
   clearQueue: () => {},
   pauseQueue: () => {},
   resumeQueue: () => {},
+  holdForCallbackDrain: () => {},
+  releaseCallbackDrain: () => {},
+  hasInFlightItem: () => false,
   getPendingCount: () => 0,
   getTransportState: (_key: string, status: string) => status,
 };
