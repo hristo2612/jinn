@@ -177,7 +177,7 @@ function runCliWithLeak(t, assertionFailure) {
     };
   `)
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("JINN_")))
-  if (assertionFailure) env.UPGRADE_TEST_ASSERTION_FAILURE = "1"
+  if (assertionFailure) env.UPGRADE_TEST_ASSERTION_FAILURE = String(assertionFailure)
   const child = spawnSync(process.execPath, ["--import", preload, fileURLToPath(entrypoint), "--candidate-tarball", tarball], {
     env, encoding: "utf8", timeout: 30_000,
   })
@@ -203,7 +203,16 @@ test("a cleanup error preserves the original verification failure and nonzero ex
   const child = runCliWithLeak(t, true)
   assert.equal(child.status, 1, child.stderr)
   assert.match(child.stderr, /CLEANUP LEAK: disposable root /)
-  assert.match(child.stderr, /FAIL upgrade verification: injected upgrade assertion failure/)
+  assert.match(child.stderr, /FAIL upgrade verification: candidate rejection: candidate-first-boot failed: injected upgrade assertion failure/)
+  assert.doesNotMatch(child.stdout, /PASS published/)
+})
+
+test("a baseline boot failure identifies a harness/environment fault, not a candidate rejection", (t) => {
+  const child = runCliWithLeak(t, "baseline")
+  assert.equal(child.status, 1, child.stderr)
+  assert.match(child.stderr, /harness\/environment fault: published baseline could not complete boot; candidate not evaluated/)
+  assert.match(child.stderr, /published-latest gateway exited before readiness: missing native binding/)
+  assert.doesNotMatch(child.stderr, /candidate rejection/)
   assert.doesNotMatch(child.stdout, /PASS published/)
 })
 
