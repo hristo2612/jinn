@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { Check, LoaderCircle, Send, WandSparkles } from "lucide-react"
+import { Send, WandSparkles } from "lucide-react"
 import type { TodoCaptureAction } from "@/lib/api"
 import { TodoDialog } from "../todo-dialog"
 import { CaptureMic } from "./capture-mic"
@@ -44,7 +44,7 @@ function CaptureAction({
         ? "focus-ring inline-flex min-h-10 items-center justify-center gap-2 rounded-[var(--radius-md)] bg-[var(--accent)] py-2 pl-3.5 pr-4 text-[length:var(--text-subheadline)] font-[var(--weight-semibold)] text-[var(--accent-contrast)] shadow-[var(--shadow-ambient),var(--inset-shine)] outline-none transition-[scale,opacity] duration-150 active:scale-[0.96] disabled:opacity-40 motion-reduce:transition-none" // jinn-shell: ok quick-capture dialog submit, not page chrome
         : "focus-ring inline-flex min-h-10 items-center justify-center gap-2 rounded-[var(--radius-md)] bg-[var(--fill-secondary)] py-2 pl-3.5 pr-4 text-[length:var(--text-subheadline)] font-[var(--weight-semibold)] text-[var(--text-primary)] shadow-[var(--inset-shine)] outline-none transition-[scale,background-color,opacity] duration-150 hover:bg-[var(--bg-tertiary)] active:scale-[0.96] disabled:opacity-40 motion-reduce:transition-none"}
     >
-      {pending ? <LoaderCircle className="size-4 motion-safe:animate-spin" aria-hidden /> : <Icon className="size-4" aria-hidden />}
+      <Icon className="size-4" aria-hidden />
       <span>{label}</span>
     </button>
   )
@@ -166,10 +166,7 @@ function CaptureComposer({
 
 function CaptureAccepted() {
   return (
-    <div role="status" aria-live="polite" data-testid="capture-accepted" className="flex min-h-[148px] items-center justify-center gap-2.5 text-[var(--text-primary)]">
-      <span className="flex size-8 items-center justify-center rounded-full bg-[var(--fill-secondary)] text-[var(--system-green)] motion-safe:animate-capture-ack-icon">
-        <Check className="size-4" aria-hidden />
-      </span>
+    <div role="status" aria-live="polite" data-testid="capture-accepted" className="flex min-h-[148px] items-center justify-center text-[var(--text-primary)]">
       <span className="text-[length:var(--text-headline)] font-[var(--weight-semibold)] motion-safe:animate-capture-ack-label">Captured</span>
     </div>
   )

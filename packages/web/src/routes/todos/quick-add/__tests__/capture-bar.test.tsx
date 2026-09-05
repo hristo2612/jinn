@@ -129,7 +129,11 @@ describe("QuickCaptureBar", () => {
 
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Shape and dispatch" })) })
 
-    expect(screen.getByRole("status").textContent).toContain("Captured")
+    const acknowledgement = screen.getByRole("status")
+    expect(acknowledgement.textContent?.trim()).toBe("Captured")
+    expect(acknowledgement.querySelector("svg, ol, ul, progress, [aria-valuenow]")).toBeNull()
+    expect(screen.queryByTestId("capture-pipeline")).toBeNull()
+    expect(document.querySelector('[data-testid^="capture-step-"]')).toBeNull()
     expect(getTodoCapture).not.toHaveBeenCalled()
     expect(onClose).not.toHaveBeenCalled()
 
@@ -162,6 +166,10 @@ describe("QuickCaptureBar", () => {
     fireEvent.click(action)
     fireEvent.click(action)
     expect(startTodoCapture).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole("status")).toBeNull()
+    expect(screen.queryByRole("progressbar")).toBeNull()
+    expect(screen.queryByTestId("capture-pipeline")).toBeNull()
+    expect(document.querySelector('[data-testid^="capture-step-"]')).toBeNull()
 
     await act(async () => { accept(wire()) })
   })
