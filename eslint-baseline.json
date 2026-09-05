@@ -388,9 +388,6 @@
     "packages/jinn/src/shared/effort.ts": [
       "complexity"
     ],
-    "packages/jinn/src/shared/engine-limits-claude.ts": [
-      "complexity"
-    ],
     "packages/jinn/src/shared/engine-limits.ts": [
       "complexity",
       "max-depth",

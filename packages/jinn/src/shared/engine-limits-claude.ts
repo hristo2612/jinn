@@ -16,6 +16,8 @@ import type {
 import { CLAUDE_LIMITS_DIR } from "./paths.js";
 import { readClaudeOAuthToken } from "./claude-models.js";
 import { resolveBin } from "./resolve-bin.js";
+import { windowsFromClaudeUsage } from "./engine-limits-claude-usage.js";
+export { windowsFromClaudeUsage } from "./engine-limits-claude-usage.js";
 import {
   baseSnapshot,
   isoFromSeconds,
@@ -74,65 +76,8 @@ const CLAUDE_OAUTH_TIMEOUT_MS = 3500;
 // keep a private copy; the two drifted (only this one learned to read the macOS
 // Keychain), which broke Claude model discovery. One reader, no drift.
 
-/**
- * Map an OAuth usage-API response to display windows, generically: every entry
- * of the `limits` array with a numeric `percent` becomes a window, so buckets
- * added server-side in the future (new models, new scopes) appear without a
- * code change. Falls back to the top-level named buckets (`five_hour`,
- * `seven_day`, `seven_day_opus`, ...) when `limits` is absent.
- */
-export function windowsFromClaudeUsage(usage: JsonRecord): EngineLimitWindow[] {
-  const windows: EngineLimitWindow[] = [];
-  const seen = new Set<string>();
-  const push = (name: string, percent: number, resetsAtIso: string | undefined, durationMins?: number) => {
-    if (seen.has(name)) return;
-    seen.add(name);
-    const parsed = resetsAtIso ? Date.parse(resetsAtIso) : NaN;
-    const resetsAt = Number.isFinite(parsed) ? Math.floor(parsed / 1000) : undefined;
-    windows.push({
-      name,
-      usedPercent: Math.round(percent),
-      windowDurationMins: durationMins,
-      resetsAt,
-      resetsAtIso: resetsAt !== undefined ? resetsAtIso : undefined,
-    });
-  };
-
-  const limits = Array.isArray(usage.limits) ? usage.limits : [];
-  for (const item of limits) {
-    if (!isRecord(item)) continue;
-    const percent = num(item.percent);
-    if (percent === undefined) continue;
-    const kind = str(item.kind) ?? "limit";
-    const resetsAtIso = str(item.resets_at);
-    const scope = isRecord(item.scope) ? item.scope : undefined;
-    const model = scope && isRecord(scope.model) ? scope.model : undefined;
-    const modelName = model ? str(model.display_name) : undefined;
-    if (kind === "session") push("5h", percent, resetsAtIso, 300);
-    else if (kind === "weekly_all") push("7d", percent, resetsAtIso, 10_080);
-    // Scoped buckets keep the scope in the name (no duration, so the label
-    // renders the name verbatim instead of collapsing to a bare "7d").
-    else if (kind === "weekly_scoped") push(modelName ? `7d ${modelName}` : "7d (scoped)", percent, resetsAtIso);
-    else push(modelName ? `${kind} ${modelName}` : kind, percent, resetsAtIso);
-  }
-  if (windows.length > 0) return windows;
-
-  // Fallback: older response shape without a `limits` array — render every
-  // named bucket object that carries a numeric utilization.
-  for (const [key, value] of Object.entries(usage)) {
-    if (!isRecord(value)) continue;
-    const utilization = num(value.utilization);
-    if (utilization === undefined) continue;
-    const resetsAtIso = str(value.resets_at);
-    if (key === "five_hour") push("5h", utilization, resetsAtIso, 300);
-    else if (key === "seven_day") push("7d", utilization, resetsAtIso, 10_080);
-    else push(key.replace(/^seven_day_/, "7d "), utilization, resetsAtIso);
-  }
-  return windows;
-}
-
-export async function fetchClaudeOAuthUsage(): Promise<JsonRecord | undefined> {
-  if (process.env.JINN_CLAUDE_USAGE_API === "off") return undefined;
+export async function fetchClaudeOAuthUsage(env: NodeJS.ProcessEnv = process.env): Promise<JsonRecord | undefined> {
+  if (env.JINN_CLAUDE_USAGE_API === "off") return undefined;
   const token = await readClaudeOAuthToken();
   if (!token) return undefined;
   const controller = new AbortController();
