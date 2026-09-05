@@ -4,6 +4,7 @@ import net from "node:net"
 import os from "node:os"
 import path from "node:path"
 import { spawn, spawnSync } from "node:child_process"
+import { signalGatewayGroup, stopGatewayGroup } from "./upgrade-verify-process-group.mjs"
 
 export const NONCE_FILE = ".jinn-upgrade-verify-nonce"
 export const PROTECTED_PORTS = new Set([7777, 7801])
@@ -29,10 +30,27 @@ export function createDisposableRoot() {
   return fs.realpathSync(root)
 }
 
-export function removeDisposableRoot(root) {
+export async function removeDisposableRoot(root) {
   const resolved = fs.realpathSync(root)
-  if (!fs.existsSync(path.join(resolved, NONCE_FILE))) throw new Error(`refusing cleanup without ${NONCE_FILE}: ${resolved}`)
-  fs.rmSync(resolved, { recursive: true })
+  const marker = path.join(resolved, NONCE_FILE)
+  if (!fs.existsSync(marker) || !fs.lstatSync(marker).isFile()) throw new Error(`refusing cleanup without ${NONCE_FILE}: ${resolved}`)
+  const nonce = fs.readFileSync(marker)
+  // Engine CLI writers can outlive the gateway. Keep the ownership proof out of
+  // recursive removal so an exhausted retry still leaves a cleanable root.
+  for (let attempt = 0; ; attempt++) {
+    for (const name of fs.readdirSync(resolved).filter((name) => name !== NONCE_FILE)) {
+      await fs.promises.rm(path.join(resolved, name), { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    }
+    fs.unlinkSync(marker)
+    try {
+      await fs.promises.rmdir(resolved)
+      return
+    } catch (error) {
+      fs.writeFileSync(marker, nonce, { mode: 0o600, flag: "wx" })
+      if (error.code !== "ENOTEMPTY" || attempt >= 5) throw error
+      await sleep((attempt + 1) * 100)
+    }
+  }
 }
 
 export function deriveScenarioPort(root, scenario) {
@@ -230,8 +248,9 @@ export async function startGateway(cli, layout, port, label) {
     cwd: layout.env.HOME,
     env: layout.env,
     stdio: ["ignore", log, log],
+    detached: process.platform !== "win32",
   })
-  const handle = { child, log, logPath, port }
+  const handle = { child, log, logPath, port, processGroup: process.platform !== "win32" }
   try {
     await waitForGateway(handle, label)
     return handle
@@ -249,7 +268,8 @@ export async function stopGateway(handle) {
     while (!exited() && Date.now() < deadline) await sleep(50)
   }
   if (!exited()) {
-    handle.child.kill("SIGTERM")
+    if (handle.processGroup) signalGatewayGroup(handle, "SIGTERM")
+    else handle.child.kill("SIGTERM")
     await wait(5_000)
   }
   if (!exited()) {
@@ -257,5 +277,6 @@ export async function stopGateway(handle) {
     await wait(5_000)
   }
   if (!exited()) throw new Error(`upgrade-verifier PID ${handle.child.pid} survived SIGKILL`)
+  if (handle.processGroup) await stopGatewayGroup(handle)
   fs.closeSync(handle.log)
 }

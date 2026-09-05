@@ -212,8 +212,12 @@ export async function main(argv = process.argv.slice(2)) {
     for (const item of scenarios) console.log(`PASS ${item.scenario} port=${item.port} rewritten=${item.rewritten} added=${item.added.length} restoredMissing=${item.restoredMissing ?? "n/a"} retired=${item.retired.length} preservedModified=${item.preservedModified ?? "n/a"} backup=${item.backup}`)
     return result
   } finally {
-    removeDisposableRoot(root)
-    console.log(`CLEANUP removed disposable root ${root}; all started gateways stopped`)
+    try {
+      await removeDisposableRoot(root)
+      console.log(`CLEANUP removed disposable root ${root}`)
+    } catch (error) {
+      console.error(`CLEANUP LEAK: disposable root ${root}; ${error instanceof Error ? error.message : String(error)}; manual cleanup required; verification result unchanged`)
+    }
   }
 }
 

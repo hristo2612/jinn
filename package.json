@@ -14,7 +14,7 @@
     "typecheck": "turbo typecheck && pnpm typecheck:root",
     "typecheck:root": "tsc --noEmit -p tsconfig.e2e.json && tsc --noEmit -p tsconfig.scripts.json",
     "test": "turbo run test --concurrency=1 && pnpm test:node && pnpm test:node:posix",
-    "test:node": "node --test e2e/chat-grid-drop/verify-script.test.mjs scripts/__tests__/check-footguns.test.mjs scripts/__tests__/ci-workflow.test.mjs scripts/__tests__/publish-workflow.test.mjs scripts/__tests__/ratchet.test.mjs scripts/__tests__/reap-gateways.test.mjs scripts/__tests__/reap-orphan-workers.test.mjs scripts/__tests__/talk-driving-fixture.test.mjs scripts/__tests__/test-slot-gate.test.mjs scripts/__tests__/upgrade-verify.test.mjs scripts/__tests__/vitest-flaky-retry.test.mjs tools/prerelease-todo-converter/__tests__/boundary.test.mjs tools/prerelease-todo-converter/__tests__/inventory.test.mjs",
+    "test:node": "node --test e2e/chat-grid-drop/verify-script.test.mjs scripts/__tests__/check-footguns.test.mjs scripts/__tests__/ci-workflow.test.mjs scripts/__tests__/publish-workflow.test.mjs scripts/__tests__/ratchet.test.mjs scripts/__tests__/reap-gateways.test.mjs scripts/__tests__/reap-orphan-workers.test.mjs scripts/__tests__/talk-driving-fixture.test.mjs scripts/__tests__/test-slot-gate.test.mjs scripts/__tests__/upgrade-verify.test.mjs scripts/__tests__/upgrade-verify-cleanup.test.mjs scripts/__tests__/vitest-flaky-retry.test.mjs tools/prerelease-todo-converter/__tests__/boundary.test.mjs tools/prerelease-todo-converter/__tests__/inventory.test.mjs",
     "test:node:posix": "node scripts/run-posix-suites.mjs",
     "footguns": "node scripts/check-footguns.mjs",
     "ratchet": "node scripts/ratchet.mjs",
