@@ -5,11 +5,11 @@ import { gatewayBaseUrl, readGatewayInfo } from "../gateway/gateway-info.js";
 export function internalGatewayConnection(): { baseUrl: string; token?: string } {
   const info = readGatewayInfo(GATEWAY_INFO_FILE);
   let fallbackHost: string | undefined;
-  let fallbackPort = 7777;
+  let fallbackPort = 7777; // footgun: ok the pre-existing fallback for a home whose config.yaml records no port, moved verbatim from callbacks.ts
   try {
     const config = loadConfig();
     fallbackHost = config.gateway?.host;
-    fallbackPort = config.gateway?.port || 7777;
+    fallbackPort = config.gateway?.port || 7777; // footgun: ok same pre-existing fallback, used when config.yaml omits the port
   } catch {
     // Use gateway.json/defaults if config is unavailable.
   }
