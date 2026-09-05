@@ -89,15 +89,8 @@ function assertBackups(home, removedNames, exactCopies = []) {
 }
 
 async function boot(cli, layout, port, label) {
-  try {
-    const handle = await startGateway(cli, layout, port, label)
-    await stopGateway(handle)
-  } catch (error) {
-    const attribution = label === "published-latest"
-      ? "harness/environment fault: published baseline could not complete boot; candidate not evaluated"
-      : `candidate rejection: ${label} failed`
-    throw new Error(`${attribution}: ${error instanceof Error ? error.message : String(error)}`, { cause: error })
-  }
+  const handle = await startGateway(cli, layout, port, label)
+  await stopGateway(handle)
 }
 
 function inspectSkillDelta(home, baselineRoot, candidateRoot) {

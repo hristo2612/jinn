@@ -25,9 +25,6 @@ export function run(_command, _args, { env }) {
 }
 
 export function startGateway(cli, layout, _port, label) {
-  if (process.env.UPGRADE_TEST_ASSERTION_FAILURE === "baseline" && label === "published-latest") {
-    throw new Error("published-latest gateway exited before readiness: missing native binding")
-  }
   if (process.env.UPGRADE_TEST_ASSERTION_FAILURE && label === "candidate-first-boot") {
     throw new Error("injected upgrade assertion failure")
   }

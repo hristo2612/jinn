@@ -1,8 +1,6 @@
 # Changelog
 
-## [Unreleased]
-
-<!-- Carry this section into 0.33.1: the v0.33.0 tag is retained, but that version was never published. -->
+## [0.33.0] - 2026-09-05
 
 ### ✨ Features
 - **Todos are easier to scan and work through.** Board cards use a consistent four-row layout. Long descriptions and sub-task groups collapse, sub-tasks can be added inline, and empty sections stay out of the way. Runs and comments share one Activity stream, with threads ordered by their latest reply. Attach files from the paperclip row or drop them anywhere on the Todo view.
@@ -18,7 +16,6 @@
 - **Mobile chat and Todo controls remain reachable.** The chat list reserves the top safe area, the floating action button clears the tab bar once, and attachment controls and collapsed threads have larger tap targets. Long titles truncate within their header.
 - **Live status stops showing stale success or empty usage.** Employee chat previews reconcile against current activity, and an all-zero Claude usage API response no longer replaces the available statusline reading.
 - **Release verification exercises the installed upgrade.** The exact candidate tarball is checked against npm's published latest in stock and customized disposable homes, including skill changes, backups and an unchanged second boot. Cleanup stops owned background writers before removing the fixtures.
-- **Upgrade verification runs native install scripts on every platform.** Baseline and candidate packages use normal npm lifecycle scripts, including Linux source builds. A published-baseline boot failure is reported as a harness/environment fault rather than a candidate rejection.
 
 ## [0.32.0] - 2026-08-24
 
