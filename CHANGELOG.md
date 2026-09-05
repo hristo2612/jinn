@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.33.0] - 2026-09-05
+
+### ✨ Features
+- **Todos are easier to scan and work through.** Board cards use a consistent four-row layout. Long descriptions and sub-task groups collapse, sub-tasks can be added inline, and empty sections stay out of the way. Runs and comments share one Activity stream, with threads ordered by their latest reply. Attach files from the paperclip row or drop them anywhere on the Todo view.
+- **Upgrades refresh shipped skills automatically.** Startup syncs the installed templates, restores missing shipped skills and retires recognized obsolete ones, with backups and a version receipt. Operator-authored skills remain separate, and modified legacy skills without a receipt are preserved. The manual migration-prompt handoff is removed.
+- **Provider login is available through Telegram.** The owner can recover Claude and Codex authentication from Telegram using provider links, callback input and device codes. Prompts and authentication input are scoped to the owner's active flow.
+- **Dashboard controls stay in predictable places.** Shared page headers and sheets bring consistent titles, actions and scrolling across the dashboard. Chats can also be opened in a separate browser tab from their menu.
+- **Workflow landing approvals can be assigned to the COO.** A gate can explicitly allow the operator's portal session to decide it, while employee sessions remain excluded. Operator-only gates retain their existing authority boundary.
+
+### 🐛 Fixes
+- **Settings save as you change them.** Controls commit their edits without a separate Save Config button, show save status and discard superseded edits when configuration is reloaded.
+- **Interrupted work keeps its messages and completion signals.** Messages hidden by an interrupt remain available to the engine, orphaned threads are filed, and stale parent completion callbacks are coalesced. Talk session cleanup follows the owning lifecycle.
+- **Work status follows the actual result.** Cron history reads the settled session and preserves failure reasons. Workflow closure requires the declared delivery evidence, and built-in employees hand blocked Todos upward instead of leaving them at a dead end.
+- **Mobile chat and Todo controls remain reachable.** The chat list reserves the top safe area, the floating action button clears the tab bar once, and attachment controls and collapsed threads have larger tap targets. Long titles truncate within their header.
+- **Live status stops showing stale success or empty usage.** Employee chat previews reconcile against current activity, and an all-zero Claude usage API response no longer replaces the available statusline reading.
+- **Release verification exercises the installed upgrade.** The exact candidate tarball is checked against npm's published latest in stock and customized disposable homes, including skill changes, backups and an unchanged second boot. Cleanup stops owned background writers before removing the fixtures.
+
 ## [0.32.0] - 2026-08-24
 
 ### ✨ Features
