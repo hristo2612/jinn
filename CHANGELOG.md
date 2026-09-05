@@ -1,8 +1,6 @@
 # Changelog
 
-## [Unreleased]
-
-<!-- Carry this section into 0.33.1: the v0.33.0 tag is retained, but that version was never published. -->
+## [0.33.1] - 2026-09-06
 
 ### ✨ Features
 - **Todos are easier to scan and work through.** Board cards use a consistent four-row layout. Long descriptions and sub-task groups collapse, sub-tasks can be added inline, and empty sections stay out of the way. Runs and comments share one Activity stream, with threads ordered by their latest reply. Attach files from the paperclip row or drop them anywhere on the Todo view.
