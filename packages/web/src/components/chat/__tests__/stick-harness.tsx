@@ -1,4 +1,6 @@
+import { useCallback, useRef } from 'react'
 import { vi } from 'vitest'
+import { useTouchScrollPhase } from '@/components/chat/touch-scroll-phase'
 import { useStickToBottom } from '@/hooks/use-stick-to-bottom'
 
 /**
@@ -46,9 +48,18 @@ export interface HarnessProps {
 
 export function Harness(props: HarnessProps) {
   const { containerRef, showJump, unreadCount, scrollToBottom } = useStickToBottom(props)
+  // The transcript registers the touch phase on this same scroller (see
+  // useTranscriptVirtualizer), so the hook's touch gate is only ever exercised
+  // with it in place — the rig has to carry it too or the gate never sees a phase.
+  const scrollerRef = useRef<HTMLDivElement | null>(null)
+  useTouchScrollPhase(useCallback(() => scrollerRef.current, []))
+  const setScroller = useCallback((node: HTMLDivElement | null) => {
+    scrollerRef.current = node
+    containerRef(node)
+  }, [containerRef])
   return (
     <div>
-      <div data-testid="scroller" ref={containerRef}>
+      <div data-testid="scroller" ref={setScroller}>
         <div data-testid="content">content</div>
       </div>
       <span data-testid="jump">{showJump ? 'show' : 'hide'}</span>

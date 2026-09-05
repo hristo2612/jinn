@@ -1004,11 +1004,11 @@ export function ChatMessages({
   )
 
   // Windowing. The threshold counts ROWS, not groups: three groups can be 500
-  // rows. The footer branch stays plain — no room for a total-size spacer.
+  // rows. The footer does not choose the mode — sending answers that notice.
   const groupKeys = useMemo(() => renderGroups.map(groupKey), [renderGroups])
   const groupKeysRef = useRef(groupKeys)
   groupKeysRef.current = groupKeys
-  const virtualized = !footer && groupedMessages.length >= VIRTUALIZE_THRESHOLD
+  const virtualized = groupedMessages.length >= VIRTUALIZE_THRESHOLD
   const virtualizedRef = useRef(virtualized)
   virtualizedRef.current = virtualized
   // The block's offset goes back in as `scrollMargin`: it is the only way the
@@ -1227,7 +1227,7 @@ export function ChatMessages({
       {/* Not while hydrating: a transcript still on its way is not an empty one. */}
       {messages.length === 0 && !loading && !hydrating && <TranscriptEmptyState>{emptyState}</TranscriptEmptyState>}
       <div ref={setScrollContainerRef} style={{ overflowAnchor: 'auto' }} className="chat-messages-scroll h-full overflow-y-auto overflow-x-hidden bg-[var(--bg)] min-h-0">
-        <div className={`mx-auto w-full max-w-[var(--chat-measure)] pt-[72px] lg:pt-[88px] ${footer ? 'flex min-h-full flex-col justify-end pb-0' : 'pb-[var(--space-6)]'}`}>
+        <div className={`mx-auto w-full max-w-[var(--chat-measure)] pt-[72px] lg:pt-[88px] ${footer && !virtualized ? 'flex min-h-full flex-col justify-end pb-0' : 'pb-[var(--space-6)]'}`}>
           {hasOlderMessages && <OlderPageRow loading={loadingOlderMessages} error={olderMessagesError} />}
           {virtualized ? (
             <div ref={virtualBlockRef} style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>

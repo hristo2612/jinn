@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import {
   distanceFromBottom,
+  rememberScrollTop,
+  scrollTopToRemember,
   shouldFollow,
   unreadDelta,
   STICK_THRESHOLD_PX,
@@ -63,5 +65,36 @@ describe('unreadDelta', () => {
 
   it('never goes negative if the count somehow shrinks', () => {
     expect(unreadDelta(10, 12)).toBe(0)
+  })
+})
+
+describe('scrollTopToRemember', () => {
+  it('remembers nothing for a reader who left at the bottom', () => {
+    expect(scrollTopToRemember({ scrollHeight: 4000, scrollTop: 3800, clientHeight: 200 })).toBeUndefined()
+  })
+
+  it('remembers nothing inside the threshold band either', () => {
+    const scrollTop = 4000 - 200 - STICK_THRESHOLD_PX
+    expect(scrollTopToRemember({ scrollHeight: 4000, scrollTop, clientHeight: 200 })).toBeUndefined()
+  })
+
+  it('remembers a genuine scrolled-up position', () => {
+    const justPast = 4000 - 200 - (STICK_THRESHOLD_PX + 1)
+    expect(scrollTopToRemember({ scrollHeight: 4000, scrollTop: justPast, clientHeight: 200 })).toBe(justPast)
+    expect(scrollTopToRemember({ scrollHeight: 4000, scrollTop: 900, clientHeight: 200 })).toBe(900)
+  })
+})
+
+describe('rememberScrollTop', () => {
+  it('forgets a stored position when the reader left at the bottom', () => {
+    const store = new Map<string, number>([['s1', 900]])
+    rememberScrollTop(store, 's1', { scrollHeight: 4000, scrollTop: 3800, clientHeight: 200 })
+    expect(store.has('s1')).toBe(false)
+  })
+
+  it('records a genuine scrolled-up position', () => {
+    const store = new Map<string, number>()
+    rememberScrollTop(store, 's1', { scrollHeight: 4000, scrollTop: 900, clientHeight: 200 })
+    expect(store.get('s1')).toBe(900)
   })
 })
