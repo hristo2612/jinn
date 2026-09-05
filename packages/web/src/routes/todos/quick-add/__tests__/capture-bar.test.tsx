@@ -96,6 +96,14 @@ describe("QuickCaptureBar", () => {
     for (const action of actions) expect(action.querySelector("svg")).toBeTruthy()
   })
 
+  it("keeps the multiline field borderless at rest and visible on keyboard focus", () => {
+    renderBar()
+
+    const textarea = screen.getByTestId("quick-capture-input")
+    expect(textarea.className).not.toContain("shadow-[inset_0_0_0_1px_var(--separator)]")
+    expect(textarea.className).toContain("focus-visible:shadow-[inset_0_0_0_1.5px_var(--accent)]")
+  })
+
   it("hands Shape to the shaping-only capture path", async () => {
     renderBar()
     draft("shape this, but leave it unassigned")

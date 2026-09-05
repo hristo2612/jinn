@@ -79,7 +79,7 @@ function CaptureTextarea({
         aria-label="Capture"
         data-testid="quick-capture-input"
         placeholder="What's on your mind?"
-        className="min-h-[76px] min-w-0 flex-1 resize-none rounded-[var(--radius-md)] bg-[var(--fill-quaternary)] px-3 py-2.5 text-[length:var(--text-body)] leading-relaxed text-[var(--text-primary)] shadow-[inset_0_0_0_1px_var(--separator)] outline-none transition-[box-shadow,opacity] duration-150 placeholder:text-[var(--text-tertiary)] focus:shadow-[inset_0_0_0_1.5px_var(--accent)] disabled:opacity-60 motion-reduce:transition-none"
+        className="min-h-[76px] min-w-0 flex-1 resize-none rounded-[var(--radius-md)] bg-[var(--fill-quaternary)] px-3 py-2.5 text-[length:var(--text-body)] leading-relaxed text-[var(--text-primary)] outline-none transition-[box-shadow,opacity] duration-150 placeholder:text-[var(--text-tertiary)] focus-visible:shadow-[inset_0_0_0_1.5px_var(--accent)] disabled:opacity-60 motion-reduce:transition-none"
       />
       {!pending && <CaptureMic onTranscript={onTranscript} />}
     </div>
