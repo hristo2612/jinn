@@ -5,7 +5,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 import { createDisposableRoot, NONCE_FILE, removeDisposableRoot, stopGateway } from "../upgrade-verify-lib.mjs"
 
 const library = new URL("../upgrade-verify-lib.mjs", import.meta.url).href
@@ -178,7 +178,7 @@ function runCliWithLeak(t, assertionFailure) {
   `)
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("JINN_")))
   if (assertionFailure) env.UPGRADE_TEST_ASSERTION_FAILURE = String(assertionFailure)
-  const child = spawnSync(process.execPath, ["--import", preload, fileURLToPath(entrypoint), "--candidate-tarball", tarball], {
+  const child = spawnSync(process.execPath, ["--import", pathToFileURL(preload).href, fileURLToPath(entrypoint), "--candidate-tarball", tarball], {
     env, encoding: "utf8", timeout: 30_000,
   })
   const leaked = /disposable root ([^;\n]+)/.exec(child.stderr)?.[1] ?? /'(.*jinn-upgrade-verify-[^']*)'/.exec(child.stderr)?.[1]
