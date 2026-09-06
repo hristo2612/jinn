@@ -1,3 +1,5 @@
+import { extractCodexContextTokens, extractCodexTokenUsage, codexUsageDelta, lastCodexTranscriptContextTokens, type CodexTokenUsage } from './codex-usage.js';
+export { extractCodexContextTokens, extractCodexTokenUsage, codexUsageDelta, lastCodexTranscriptContextTokens, type CodexTokenUsage } from './codex-usage.js';
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -7,12 +9,12 @@ import { logger } from "../shared/logger.js";
 import { resolveBin } from "../shared/resolve-bin.js";
 import { CODEX_HOMES_DIR } from "../shared/paths.js";
 import { buildEngineChildEnv } from "../shared/child-env.js";
-import { costOfUsage, type ModelUsage } from "../shared/model-pricing.js";
+import { costOfUsage } from "../shared/model-pricing.js";
 import { buildPromptWithPlatformContext } from "./platform-context.js";
+import { CodexNativeAgents } from "./codex-native-agents.js";
 import {
   CODEX_SESSIONS_DIR,
   codexRateLimitFor,
-  forEachCodexTokenCount,
 } from "./codex-transcript.js";
 
 
@@ -471,74 +473,6 @@ export function codexChildEnv(
 }
 
 
-/**
- * Most-recent-turn input-context size from a codex per-turn usage object.
- * codex's `cached_input_tokens` is a SUBSET of `input_tokens` (OpenAI semantics),
- * so the window fill is `input_tokens` alone — summing would double-count.
- * Best-effort: returns undefined on any shape mismatch.
- */
-export function extractCodexContextTokens(usage: unknown): number | undefined {
-  if (!usage || typeof usage !== "object") return undefined;
-  const last = (usage as Record<string, unknown>).last_token_usage;
-  if (last && typeof last === "object") {
-    const n = Number((last as Record<string, unknown>).input_tokens ?? 0);
-    return Number.isFinite(n) && n > 0 ? n : undefined;
-  }
-  const n = Number((usage as Record<string, unknown>).input_tokens ?? 0);
-  // Some Codex CLI builds report cumulative/billed input tokens here, not the
-  // active context window. A value above any supported Codex window is unusable
-  // for the UI context meter, so omit it instead of showing impossible values
-  // like 9282k/272k.
-  if (n > 1_000_000) return undefined;
-  return Number.isFinite(n) && n > 0 ? n : undefined;
-}
-
-export interface CodexTokenUsage {
-  inputTokens: number;
-  cachedInputTokens: number;
-  outputTokens: number;
-}
-
-export function extractCodexTokenUsage(usage: unknown): CodexTokenUsage | undefined {
-  if (!usage || typeof usage !== "object") return undefined;
-  const record = usage as Record<string, unknown>;
-  const inputTokens = Number(record.input_tokens ?? 0);
-  const cachedInputTokens = Number(record.cached_input_tokens ?? 0);
-  const outputTokens = Number(record.output_tokens ?? 0);
-  if (![inputTokens, cachedInputTokens, outputTokens].every(Number.isFinite)) return undefined;
-  return {
-    inputTokens: Math.max(0, inputTokens),
-    cachedInputTokens: Math.max(0, cachedInputTokens),
-    outputTokens: Math.max(0, outputTokens),
-  };
-}
-
-export function codexUsageDelta(start: CodexTokenUsage, end: CodexTokenUsage): ModelUsage {
-  const inputTokens = Math.max(0, end.inputTokens - start.inputTokens);
-  const cachedInputTokens = Math.min(
-    inputTokens,
-    Math.max(0, end.cachedInputTokens - start.cachedInputTokens),
-  );
-  return {
-    inputTokens: inputTokens - cachedInputTokens,
-    cachedInputTokens,
-    outputTokens: Math.max(0, end.outputTokens - start.outputTokens),
-  };
-}
-
-
-
-
-
-export function lastCodexTranscriptContextTokens(sessionId: string, root = CODEX_SESSIONS_DIR): number | undefined {
-  let last: number | undefined;
-  forEachCodexTokenCount(sessionId, root, (payload) => {
-    const ctx = extractCodexContextTokens(payload.info?.last_token_usage);
-    if (ctx) last = ctx;
-  });
-  return last;
-}
-
 export class CodexEngine implements InterruptibleEngine {
   name = "codex" as const;
   private liveProcesses = new Map<string, LiveProcess>();
@@ -604,6 +538,7 @@ export class CodexEngine implements InterruptibleEngine {
     );
 
     const cleanEnv = this.buildCleanEnv(sessionId, sessionHome?.home);
+    const nativeAgents = new CodexNativeAgents(transcriptSessionsDir, opts.resumeSessionId);
 
     return new Promise((resolve, reject) => {
       const proc = spawn(bin, args, {
@@ -623,6 +558,7 @@ export class CodexEngine implements InterruptibleEngine {
       let threadId = "";
       let resultText = "";
       let numTurns = 0;
+      let terminalSeen = false;
       let turnError: string | null = null;
       let lastContextTokens: number | undefined;
       const usageAtTurnStart = this.totalUsage.get(sessionId)
@@ -631,6 +567,8 @@ export class CodexEngine implements InterruptibleEngine {
       let lineBuf = "";
       let hardTimeout: NodeJS.Timeout | undefined;
       let terminalSettleTimer: NodeJS.Timeout | undefined;
+      let nativeAgentTimer: NodeJS.Timeout | undefined;
+      let nativeInterrupted = false;
       const onStream = opts.onStream || null;
       let lastStreamedTextBlock: string | null = null;
       const STDERR_MAX = 10 * 1024; // 10KB rolling window for error reporting
@@ -638,6 +576,7 @@ export class CodexEngine implements InterruptibleEngine {
       const clearTimers = () => {
         if (hardTimeout) { clearTimeout(hardTimeout); hardTimeout = undefined; }
         if (terminalSettleTimer) { clearTimeout(terminalSettleTimer); terminalSettleTimer = undefined; }
+        if (nativeAgentTimer) { clearInterval(nativeAgentTimer); nativeAgentTimer = undefined; }
       };
       const resetTextBlockRun = () => { lastStreamedTextBlock = null; };
       const turnCost = (): number | undefined => {
@@ -663,8 +602,14 @@ export class CodexEngine implements InterruptibleEngine {
       // fixed for grok in 94a50cc). Mirrors GrokEngine.settleOnTerminal / PiEngine.
       const settleOnTerminal = () => {
         if (settled) return;
+        flushNativeAgents();
+        if (nativeAgents.active) {
+          onStream?.({ type: "status", content: `Waiting for ${nativeAgents.active} native Codex agent(s)` });
+          return;
+        }
         settled = true;
         clearTimers();
+        const terminationReason = this.liveProcesses.get(sessionId)?.terminationReason;
         this.liveProcesses.delete(sessionId);
         // Detached child has signalled turn end and will exit; don't let its (or a
         // lingering grandchild's) open stdout pipe keep the event loop busy.
@@ -681,7 +626,7 @@ export class CodexEngine implements InterruptibleEngine {
 
         logger.info(`Codex turn settled on terminal event (thread: ${threadId || "none"}, turns: ${numTurns})`);
         const cost = turnCost();
-        const settledError = resultText.trim() ? undefined : (turnError ?? undefined);
+        const settledError = terminationReason || (nativeInterrupted ? "Native agent work stopped before completion" : resultText.trim() ? undefined : (turnError ?? undefined));
         resolve({
           sessionId: resolvedThreadId,
           result: resultText,
@@ -699,9 +644,24 @@ export class CodexEngine implements InterruptibleEngine {
       // the turn when `close` never comes (held-pipe hang).
       const scheduleTerminalSettle = () => {
         if (settled || terminalSettleTimer) return;
-        terminalSettleTimer = setTimeout(settleOnTerminal, 0);
+        terminalSettleTimer = setTimeout(() => { terminalSettleTimer = undefined; settleOnTerminal(); }, 0);
         terminalSettleTimer.unref?.();
       };
+
+      const flushNativeAgents = () => {
+        const delta = nativeAgents.read();
+        if (delta) onStream?.(delta);
+      };
+      const stopNativeAgents = () => {
+        flushNativeAgents();
+        const delta = nativeAgents.stop();
+        if (delta) { nativeInterrupted = true; onStream?.(delta); }
+      };
+      nativeAgentTimer = setInterval(() => {
+        flushNativeAgents();
+        if (terminalSeen && !nativeAgents.active) scheduleTerminalSettle();
+      }, 500);
+      nativeAgentTimer.unref?.();
 
       hardTimeout = setTimeout(() => {
         if (settled) return;
@@ -728,6 +688,8 @@ export class CodexEngine implements InterruptibleEngine {
           switch (parsed.type) {
             case "thread_id":
               threadId = parsed.threadId;
+              nativeAgents.bind(threadId);
+              flushNativeAgents();
               logger.info(`Codex session got thread ID: ${threadId}`);
               break;
             case "tool_start":
@@ -753,6 +715,7 @@ export class CodexEngine implements InterruptibleEngine {
               if (onStream) onStream({ type: "error", content: parsed.message });
               break;
             case "usage":
+              terminalSeen = true;
               resetTextBlockRun();
               numTurns++;
               if (parsed.contextTokens) lastContextTokens = parsed.contextTokens;
@@ -760,6 +723,7 @@ export class CodexEngine implements InterruptibleEngine {
               scheduleTerminalSettle(); // turn.completed = end of turn
               break;
             case "turn_failed":
+              terminalSeen = true;
               resetTextBlockRun();
               turnError = parsed.message;
               if (onStream) onStream({ type: "error", content: parsed.message });
@@ -783,8 +747,17 @@ export class CodexEngine implements InterruptibleEngine {
 
       proc.stdin.end();
 
+      // exit does not wait for inherited stdout pipes. It is also the end of
+      // the native runtime, even if an agent never produced a completion item.
+      proc.on("exit", () => {
+        if (settled) return;
+        stopNativeAgents();
+        if (terminalSeen) scheduleTerminalSettle();
+      });
+
       proc.on("close", (code) => {
         if (settled) return;
+        stopNativeAgents();
         settled = true;
         clearTimers();
 
@@ -843,7 +816,7 @@ export class CodexEngine implements InterruptibleEngine {
           // surface a transient/benign error item (e.g. the `web_search_request`
           // deprecation notice that codex emits before the answer) as a failure.
           const cost = turnCost();
-          const settledError = resultText.trim() ? undefined : (turnError ?? undefined);
+          const settledError = nativeInterrupted ? "Native agent work stopped before completion" : resultText.trim() ? undefined : (turnError ?? undefined);
           resolve({
             sessionId: resolvedThreadId,
             result: resultText,

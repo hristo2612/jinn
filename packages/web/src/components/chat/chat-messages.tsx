@@ -1,5 +1,7 @@
+import { isAnswerMessage, messageMedia, finalAnswerIndices, settledDurationMs } from './final-answers'
+export { finalAnswerIndices } from './final-answers'
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { parseMedia, stripAttachedFilesBlock, type MediaAttachment, type Message } from '@/lib/conversations'
+import { stripAttachedFilesBlock, type MediaAttachment, type Message } from '@/lib/conversations'
 import { copyText } from '@/platform'
 import { MessageMedia } from './message-media'
 import { useStickToBottom } from '@/hooks/use-stick-to-bottom'
@@ -37,7 +39,7 @@ import {
 import { OlderPageRow } from './older-page-row'
 import { useVirtualBlockOffset } from './virtual-block-offset'
 import { captureVisibleAnchor, OLDER_LOAD_THRESHOLD_PX, type ScrollAnchor } from '@/lib/scroll-anchor'
-import { formatTimestamp, shouldShowTimestamp, TimestampDivider, validTimestamp } from './message-timestamps'
+import { formatTimestamp, shouldShowTimestamp, TimestampDivider } from './message-timestamps'
 
 export { formatMessage, isFilePath, parseFenceLang } from './message-markdown'
 export { TimestampDivider } from './message-timestamps'
@@ -246,25 +248,11 @@ export function groupMessages(messages: Message[]): MessageItem[] {
 
 /* ── The post-turn fold — partitioning ──────────────────── */
 
-/** The turn's final answer: an assistant prose message. Tool calls are not
- *  answers, and neither is any block-carrying message — blocks render as
- *  cards/objects (handoffs, dispatches, task lists), not the turn's prose.
- *  Conservative on purpose: when in doubt the evidence stays visible. */
-function isAnswerMessage(msg: Message): boolean {
-  if (msg.role !== 'assistant' || msg.toolCall) return false
-  if (msg.blocks?.length) return false
-  return Boolean((msg.content || '').trim())
-}
-
 /** A centered bell banner: a notification that is neither a callback nor a
  *  relay. Banners stay OUTSIDE the fold (they're addressed to the user, not
  *  part of the model's work) — a mid-turn banner splits the region. */
 function isSystemBanner(msg: Message): boolean {
   return msg.role === 'notification' && !parseTeammateReply(msg) && !parseAgentRelay(msg)
-}
-
-function messageMedia(msg: Message) {
-  return msg.media?.length ? msg.media : parseMedia(msg.content)
 }
 
 function itemHasAssistantMedia(item: MessageItem): boolean {
@@ -274,63 +262,6 @@ function itemHasAssistantMedia(item: MessageItem): boolean {
       ? item.entries.map((entry) => entry.msg)
       : [item.msg]
   return messages.some((message) => message.role === 'assistant' && messageMedia(message).length > 0)
-}
-
-/** A child callback ("dev replied") or an agent relay ("From dev [hop N]"): an
- *  injected notification that RE-INVOKES the model, starting a fresh engine turn
- *  inside the same logical (user) turn. It closes the previous segment so the
- *  earlier reply stays visible, and folds into the engine turn it triggers. */
-function isReinvocationBoundary(msg: Message): boolean {
-  return msg.role === 'notification' && Boolean(parseTeammateReply(msg) || parseAgentRelay(msg))
-}
-
-/**
- * For each raw message index, the index of the answer that closes ITS engine-turn
- * segment — the last non-partial assistant prose message in the run of work that
- * ends at the next user message OR the next child re-invocation (callback/relay).
- * -1 while that segment has produced no answer yet.
- *
- * One logical (user) turn can hold several engine turns: the model replies and
- * stops, a child callback re-invokes it, it replies again. Each engine turn keeps
- * its OWN closing answer, so the fold before it is scoped to just that segment's
- * work — the earlier reply and its "Worked for" fold are preserved rather than
- * swallowed by one region reaching the turn's very last block. Interim prose
- * WITHIN one engine turn still folds; only the segment's last answer is a boundary.
- * Exported for tests.
- */
-export function finalAnswerIndices(messages: Message[]): number[] {
-  const out = new Array<number>(messages.length).fill(-1)
-  let nextReply = -1
-  // After a re-invocation boundary the NEXT prose above it closes a fresh
-  // segment — a preserved reply. But a segment that produced NO prose (pure tool
-  // work before a callback) must keep folding toward the downstream reply, so we
-  // only re-point `nextReply` when that armed prose actually appears; tools-only
-  // work therefore stays in one fold instead of orphaning as bare rows.
-  let armed = false
-  for (let j = messages.length - 1; j >= 0; j--) {
-    if (messages[j].role === 'user') {
-      nextReply = -1
-      armed = false
-      out[j] = -1
-      continue
-    }
-    if (isReinvocationBoundary(messages[j])) {
-      // The trigger folds into the engine turn it started (the segment below),
-      // and arms the next prose above it as that turn's preserved reply.
-      out[j] = nextReply
-      armed = true
-      continue
-    }
-    // A restored `partial` prose row is still middle evidence. The first
-    // non-partial prose after a boundary (or the turn's first) is a preserved
-    // reply; later prose in the same engine turn is interim and folds toward it.
-    if (!messages[j].partial && isAnswerMessage(messages[j]) && (nextReply === -1 || armed)) {
-      nextReply = j
-      armed = false
-    }
-    out[j] = nextReply
-  }
-  return out
 }
 
 function itemFirstMsg(item: MessageItem): Message {
@@ -358,81 +289,15 @@ function itemHasActiveDelegation(item: MessageItem): boolean {
       ? item.entries.map((entry) => entry.msg)
       : [item.msg]
   return rows.some((message) => message.blocks?.some((block) =>
-    block.type === 'delegation' && isActiveDelegationStatus(block.status),
+    (block.type === 'delegation' || block.payload.kind === 'native-agents') && isActiveDelegationStatus(block.status),
   ))
-}
-
-/** Locate the durable start of the engine segment closed by `answerIndex`.
- * The initiating user starts the first segment. After a completed reply, a
- * callback/relay starts the next one; callbacks that arrive before any reply
- * remain evidence inside the still-open initial segment. */
-function settledSegmentStartIndex(messages: Message[], answerIndex: number): number {
-  let userIndex = -1
-  for (let index = answerIndex - 1; index >= 0; index--) {
-    if (messages[index].role === 'user') {
-      userIndex = index
-      break
-    }
-  }
-
-  let startIndex = userIndex
-  let completedReply = false
-  for (let index = userIndex + 1; index < answerIndex; index++) {
-    const message = messages[index]
-    if (isReinvocationBoundary(message)) {
-      if (completedReply) {
-        startIndex = index
-        completedReply = false
-      }
-      continue
-    }
-    if (!message.partial && isAnswerMessage(message)) completedReply = true
-  }
-  return startIndex
-}
-
-/** A settled fold measures one durable engine segment: initiating user or
- * callback/relay boundary → canonical final assistant row. Legacy rows may lack
- * one boundary; in that case, recover only from timestamped evidence inside
- * the same segment. A single evidence row cannot establish an interval. */
-function settledDurationMs(messages: Message[], answerIndex: number): number | null {
-  if (answerIndex < 0 || answerIndex >= messages.length) return null
-
-  const segmentStartIndex = settledSegmentStartIndex(messages, answerIndex)
-  let startIndex = segmentStartIndex
-  let start = segmentStartIndex >= 0 ? validTimestamp(messages[segmentStartIndex].timestamp) : null
-  if (start === null) {
-    startIndex = -1
-    for (let index = segmentStartIndex + 1; index < answerIndex; index++) {
-      const timestamp = validTimestamp(messages[index].timestamp)
-      if (timestamp === null) continue
-      start = timestamp
-      startIndex = index
-      break
-    }
-  }
-
-  let endIndex = answerIndex
-  let end = validTimestamp(messages[answerIndex].timestamp)
-  if (end === null) {
-    endIndex = -1
-    for (let index = answerIndex - 1; index > segmentStartIndex; index--) {
-      const timestamp = validTimestamp(messages[index].timestamp)
-      if (timestamp === null) continue
-      end = timestamp
-      endIndex = index
-      break
-    }
-  }
-
-  if (start === null || end === null || startIndex === endIndex || end < start) return null
-  return end - start
 }
 
 export function buildFoldSummary(run: MessageItem[], messages: Message[], answerIndex: number): FoldSummaryData {
   let tools = 0
   let updates = 0
   const teammates = new Set<string>()
+  const nativeAgents = new Set<string>()
   for (const item of run) {
     if (item.kind === 'tool-group') {
       tools += item.msgs.length
@@ -465,13 +330,18 @@ export function buildFoldSummary(run: MessageItem[], messages: Message[], answer
     // Interim prose the model wrote on the way to the answer.
     if (isAnswerMessage(msg) && messageMedia(msg).length === 0) updates += 1
     for (const block of msg.blocks || []) {
+      if (block.payload.kind === 'native-agents' && Array.isArray(block.payload.items)) {
+        for (const agent of block.payload.items) {
+          if (agent && typeof agent === 'object' && !Array.isArray(agent) && typeof agent.id === 'string') nativeAgents.add(agent.id)
+        }
+      }
       const employee = block.payload?.employee
       if (typeof employee === 'string' && employee) {
         teammates.add(employee)
       }
     }
   }
-  return { durationMs: settledDurationMs(messages, answerIndex), tools, teammates: teammates.size, updates }
+  return { durationMs: settledDurationMs(messages, answerIndex), tools, teammates: teammates.size, updates, ...(nativeAgents.size ? { nativeAgents: nativeAgents.size } : {}) }
 }
 
 export type RenderGroup =
@@ -700,7 +570,8 @@ export function buildRowMeta(messages: Message[], pendingTurnId: string | null):
       showTimestamp: shouldShowTimestamp(messages, i),
       prevRole: i > 0 ? messages[i - 1].role : null,
       prevUserText: lastUserText,
-      isFinalAnswer: answers[i] === i && turnIds[i] !== pendingTurnId && !openTurns.has(turnIds[i]),
+      isFinalAnswer: answers[i] === i && (msg.meta?.assistantPhase === 'final'
+        || (turnIds[i] !== pendingTurnId && !openTurns.has(turnIds[i]))),
     }
     if (msg.role === 'user' && msg.content.trim()) lastUserText = msg.content
     return meta
@@ -772,7 +643,7 @@ const MessageRow = React.memo(function MessageRow({ msg, index: i, showTimestamp
   const formattedTimestamp = useMemo(() => formatTimestamp(msg.timestamp), [msg.timestamp])
 
   return (
-    <div key={msg.id || i} data-message-id={msg.id || `idx-${i}`}>
+    <div key={msg.id || i} data-message-id={msg.id || `idx-${i}`} data-final-answer={isFinalAnswer || undefined}>
       {/* Timestamp divider */}
       {showTimestamp && <TimestampDivider label={formattedTimestamp} />}
 
@@ -858,12 +729,15 @@ const MessageRow = React.memo(function MessageRow({ msg, index: i, showTimestamp
               away reserves no band for one it never shows. A turn still
               running has no answer yet, so none of its rows carries it. */}
           {textContent && isFinalAnswer && (
-            <MessageActions
+            <div>
+              <div className="mt-2 text-[length:var(--text-caption1)] text-[var(--text-secondary)]">{msg.meta?.turnOutcome === 'error' ? 'Turn failed' : 'Final answer'}</div>
+              <MessageActions
               id={msg.id || `idx-${i}`}
               text={textContent}
               onRetry={onRetry && prevUserText ? () => onRetry(prevUserText) : undefined}
               retryDisabled={loading}
-            />
+              />
+            </div>
           )}
         </AssistantRowShell>
       )}

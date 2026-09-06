@@ -1,3 +1,5 @@
+import { reconcileCompletedTurnMessages } from './completed-turn-messages'
+export { reconcileCompletedTurnMessages } from './completed-turn-messages'
 /**
  * useLiveSession — the live read pipeline for one gateway session.
  *
@@ -329,6 +331,7 @@ function hasFinalAssistantAfterLastUser(messages: Message[]): boolean {
   return messages.slice(userIndex + 1).some((message) =>
     message.role === 'assistant'
     && !message.partial
+    && message.meta?.assistantPhase !== 'commentary'
     && !message.toolCall
     && !message.blocks?.length
     && Boolean(message.content.trim()),
@@ -337,37 +340,6 @@ function hasFinalAssistantAfterLastUser(messages: Message[]): boolean {
 
 function formatTerminalAssistantError(error: unknown): string {
   return `Error: ${String(error)}`
-}
-
-export function reconcileCompletedTurnMessages(args: {
-  messages: Message[]
-  turnStart: number
-  finalMessage: Message
-  exactResult?: string
-}): Message[] {
-  const turnStart = args.turnStart >= 0
-    ? Math.min(args.turnStart, args.messages.length)
-    : args.messages.length
-  const exactResult = args.exactResult?.trim() ?? ''
-  const preserved = args.messages.slice(turnStart)
-    .filter((message) =>
-      message.role === 'user'
-      || Boolean(message.media?.length)
-      || Boolean(message.toolCall)
-      || message.role === 'notification'
-      || Boolean(message.blocks?.some((block) => block.type === 'delegation' || block.type === 'dispatch'))
-      || (message.role === 'assistant' && !message.blocks?.length
-        && Boolean(message.content.trim())
-        && (!exactResult || message.content.trim() !== exactResult)))
-    .map((message) => message.toolCall && !message.content.startsWith('Used ')
-      ? { ...message, content: `Used ${message.toolCall}` }
-      : message)
-
-  return [
-    ...args.messages.slice(0, turnStart),
-    ...preserved,
-    args.finalMessage,
-  ]
 }
 
 function isPersistedTerminalAssistantError(message: Message | undefined, error: unknown): boolean {
@@ -949,6 +921,7 @@ export function useLiveSession(
               role: 'assistant' as const,
               content: resultStr,
               timestamp: Date.now(),
+              meta: { turnOutcome: p.error ? 'error' : 'complete', ...(typeof p.durationMs === 'number' ? { turnStartedAt: Date.now() - p.durationMs } : {}) },
             },
           }))
         }
@@ -964,6 +937,7 @@ export function useLiveSession(
               role: 'assistant' as const,
               content: formatTerminalAssistantError(p.error),
               timestamp: Date.now(),
+              meta: { turnOutcome: 'error' },
             },
           }))
         }
