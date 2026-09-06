@@ -1,3 +1,5 @@
+import { parseBlocksColumn, parseMetaColumn, rowToMessage, type MessageRow, type MessageMedia, type SessionMessage, type MessagePage, type MessagePageOptions } from './message-row.js';
+export type { MessageMedia, SessionMessage, MessagePage, MessagePageOptions } from './message-row.js';
 import { CALLBACK_DELIVERY_SELECT } from "./callback-delivery-query.js";
 import { pendingCompletionBatch } from "./completion-batching.js";
 export { coalescePendingParentCompletionQueueItems } from "./completion-batching.js";
@@ -1751,114 +1753,6 @@ export function deleteSessions(ids: string[]): number {
   return result.changes;
 }
 
-/** Attachment descriptor stored alongside a message and rendered by the web UI. */
-export interface MessageMedia {
-  type: 'image' | 'audio' | 'video' | 'file';
-  url: string;
-  name?: string;
-  mimeType?: string;
-  size?: number;
-  /** Displayed pixel size of an image, so the client can reserve its box before
-   * the bytes arrive. Absent when nothing measured it. */
-  width?: number;
-  height?: number;
-}
-
-export interface SessionMessage {
-  id: string;
-  role: string;
-  content: string;
-  timestamp: number;
-  /** Parsed from the `media` JSON column; undefined when the message has no attachments. */
-  media?: MessageMedia[];
-  /** True for a live mid-turn block. Most engines replace these at turn end. */
-  partial?: boolean;
-  /** Tool name when this block is a tool call — lets a reloaded block render as a tool card. */
-  toolCall?: string;
-  /** Native engine call id used to correlate interleaved tool results. */
-  toolId?: string;
-  /** Structured Chat Mode blocks rendered by the web UI. */
-  blocks?: ChatBlock[];
-  /** Safe structured UI metadata, used for reload-stable callback attribution. */
-  meta?: JsonObject;
-}
-
-interface MessageRow {
-  rowid: number;
-  id: string;
-  role: string;
-  content: string;
-  timestamp: number;
-  media: string | null;
-  partial: number | null;
-  seq: number | null;
-  tool_call: string | null;
-  tool_id: string | null;
-  blocks: string | null;
-  meta: string | null;
-}
-
-export interface MessagePage {
-  messages: SessionMessage[];
-  hasOlder: boolean;
-}
-
-export interface MessagePageOptions {
-  /** Fetch messages strictly older than this message id. Omit for the newest tail. */
-  before?: string;
-  /** Number of messages to return. Clamped to a bounded positive page size. */
-  limit?: number;
-}
-
-function parseMediaColumn(value: unknown): MessageMedia[] | undefined {
-  if (typeof value !== 'string' || !value.trim()) return undefined;
-  try {
-    const parsed = JSON.parse(value);
-    return Array.isArray(parsed) && parsed.length > 0 ? (parsed as MessageMedia[]) : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function parseBlocksColumn(value: unknown): ChatBlock[] | undefined {
-  if (typeof value !== 'string' || !value.trim()) return undefined;
-  try {
-    const parsed = JSON.parse(value);
-    if (!Array.isArray(parsed)) return undefined;
-    const blocks = parsed.flatMap((block) => {
-      const result = validateBlockEnvelope({ op: "put", block });
-      return result.ok ? [result.envelope.block] : [];
-    });
-    return blocks.length > 0 ? blocks : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function parseMetaColumn(value: unknown): JsonObject | undefined {
-  if (typeof value !== 'string' || !value.trim()) return undefined;
-  try {
-    const parsed = JSON.parse(value);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as JsonObject : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function rowToMessage(r: MessageRow): SessionMessage {
-  const msg: SessionMessage = { id: r.id, role: r.role, content: r.content, timestamp: r.timestamp };
-  const media = parseMediaColumn(r.media);
-  const blocks = parseBlocksColumn(r.blocks);
-  const meta = parseMetaColumn(r.meta);
-  if (media) msg.media = media;
-  if (blocks) msg.blocks = blocks;
-  if (meta) msg.meta = meta;
-  if (r.partial) msg.partial = true;
-  if (r.tool_call) msg.toolCall = r.tool_call;
-  if (r.tool_id) msg.toolId = r.tool_id;
-  return msg;
-}
-
 function normalizeMessagePageLimit(limit: number | undefined): number {
   if (!Number.isFinite(limit) || !limit || limit < 1) return 100;
   return Math.min(500, Math.max(1, Math.floor(limit)));
@@ -1920,14 +1814,15 @@ export function insertMessageAfter(
   afterTimestamp: number,
   media?: MessageMedia[],
   blocks?: ChatBlock[],
+  meta?: JsonObject,
 ): string {
   const db = initDb();
   const id = uuidv4();
   const mediaJson = media && media.length > 0 ? JSON.stringify(media) : null;
   const blocksJson = blocks && blocks.length > 0 ? JSON.stringify(blocks) : null;
   const timestamp = Math.max(Date.now(), Math.floor(afterTimestamp) + 1);
-  db.prepare('INSERT INTO messages (id, session_id, role, content, timestamp, media, blocks) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
-    id, sessionId, role, content, timestamp, mediaJson, blocksJson,
+  db.prepare('INSERT INTO messages (id, session_id, role, content, timestamp, media, blocks, meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(
+    id, sessionId, role, content, timestamp, mediaJson, blocksJson, meta ? JSON.stringify(meta) : null,
   );
   return id;
 }

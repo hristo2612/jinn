@@ -4,7 +4,7 @@ export interface StreamedBlockForPersistence {
   content: string;
   toolCall?: string;
   media?: unknown[];
-  blocks?: Array<{ type: string }>;
+  blocks?: Array<{ type: string; payload?: { kind?: unknown } }>;
 }
 
 export function shouldPreserveStreamedBlocks(args: {
@@ -34,7 +34,7 @@ export function completedStreamedBlockIds(args: {
   return new Set(args.streamedBlocks.flatMap((message) => {
     if (!message.id) return [];
     const durableBlock = message.blocks?.some((block) =>
-      block.type === "delegation" || block.type === "dispatch",
+      block.type === "delegation" || block.type === "dispatch" || block.payload?.kind === "native-agents",
     );
     const plainInterimProse =
       (message.role === undefined || message.role === "assistant")
