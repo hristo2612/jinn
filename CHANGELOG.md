@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.33.3] - 2026-09-06
+
+### 🐛 Fixes
+- **Chat drafts survive navigation and reloads in the same tab.** Draft text stays with its chat and gateway, remains available when sending fails, and clears only after the message is accepted without erasing newer edits.
+- **Failed routes recover more reliably in WebKit.** Recovery refreshes preloaded dashboard assets before reloading the page, while normal navigation keeps its existing cache behavior.
+- **Phone controls are easier to tap.** Chat, navigation, settings, Todo filters and workflow controls have larger tap targets. Rows in More can wrap when text needs extra room.
+
 ## [0.33.2] - 2026-09-06
 
 ### ⚡ Performance
