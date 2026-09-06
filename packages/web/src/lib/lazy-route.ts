@@ -1,4 +1,5 @@
 import { lazy, type ComponentType, type LazyExoticComponent } from 'react'
+import { reloadRoute } from './reload-route'
 
 const RECOVERABLE_IMPORT_PATTERNS = [
   /failed to fetch dynamically imported module/i,
@@ -57,7 +58,7 @@ export function lazyRoute<T extends ComponentType<any>>(
         isRecoverableDynamicImportError(error) &&
         consumeChunkReloadRetry(window.sessionStorage, retryKey(routeName))
       ) {
-        window.location.reload()
+        await reloadRoute()
         return new Promise<{ default: T }>(() => {})
       }
       throw error

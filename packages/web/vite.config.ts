@@ -135,13 +135,6 @@ export default defineConfig(() => {
       },
     },
     build: {
-      modulePreload: {
-        // Failed dynamic modulepreloads remain poisoned across reload in WebKit
-        // (270357). Native imports can retry; keep entry and stylesheet hints.
-        resolveDependencies: (_url, dependencies, context) => context.hostType === 'js'
-          ? dependencies.filter((dependency) => dependency.endsWith('.css'))
-          : dependencies,
-      },
       outDir: 'out',
       emptyOutDir: true,
       sourcemap: false,

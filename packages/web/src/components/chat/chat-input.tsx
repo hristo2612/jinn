@@ -493,10 +493,8 @@ export function ChatInput({
         speechRef.current = nextSpeechProvenance(speechRef.current, { type: 'send' })
         if (textareaRef.current) textareaRef.current.style.height = 'auto'
       }
-      if (pendingAttachmentsRef.current === media) {
-        pendingAttachmentsRef.current = []
-        setPendingAttachments([])
-      }
+      pendingAttachmentsRef.current = pendingAttachmentsRef.current.filter(attachment => !media.includes(attachment))
+      setPendingAttachments(current => current.filter(attachment => !media.includes(attachment)))
       return true
     } catch {
       if (valueRef.current === rawText) speechRef.current = speech

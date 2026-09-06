@@ -48,7 +48,7 @@ it('does not erase a newer draft when an earlier send completes', async () => {
 
 it('carries a new-chat draft into its assigned session and preserves later typing', async () => {
   let accept!: (value: boolean) => void
-  const onSend = vi.fn(() => new Promise<boolean>(r => { accept = r }))
+  const onSend = vi.fn((_text: string, _attachments?: { name?: string }[]) => new Promise<boolean>(r => { accept = r }))
   const view = render(<ChatInput {...props} sessionId={null} onSend={onSend} />)
   fireEvent.change(screen.getByRole('textbox'), { target: { value: 'First message' } })
   fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
@@ -70,4 +70,55 @@ it('still accepts and clears a send when browser storage is unavailable', async 
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
     await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe(''))
   } finally { read.mockRestore(); write.mockRestore() }
+})
+
+it('clears the currently remounted composer when its original send is acknowledged', async () => {
+  let accept!: (value: boolean) => void
+  const onSend = vi.fn(() => new Promise<boolean>(r => { accept = r }))
+  const first = render(<ChatInput {...props} sessionId="alpha" onSend={onSend} />)
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'First message' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+  first.unmount()
+  render(<ChatInput {...props} sessionId="alpha" onSend={onSend} />)
+  await act(async () => accept(true))
+  expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('')
+})
+
+it('preserves a changed remounted composer after an old acknowledgment', async () => {
+  let accept!: (value: boolean) => void
+  const onSend = vi.fn(() => new Promise<boolean>(r => { accept = r }))
+  const first = render(<ChatInput {...props} sessionId="alpha" onSend={onSend} />)
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'First message' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+  first.unmount()
+  render(<ChatInput {...props} sessionId="alpha" onSend={onSend} />)
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Next draft' } })
+  await act(async () => accept(true))
+  expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('Next draft')
+})
+
+it('removes acknowledged attachments while keeping files added during the request', async () => {
+  let accept!: (value: boolean) => void
+  const onSend = vi.fn((_text: string, _attachments?: { name?: string }[]) => new Promise<boolean>(r => { accept = r }))
+  const view = render(<ChatInput {...props} sessionId="alpha" onSend={onSend} />)
+  const fileInput = view.container.querySelector('input[type="file"]')!
+  fireEvent.change(fileInput, { target: { files: [new File(['first'], 'first.txt', {type:'text/plain'})] } })
+  await waitFor(() => expect(screen.getAllByRole('button', {name:'Remove attachment'})).toHaveLength(1))
+  fireEvent.click(screen.getByRole('button', {name:'Send message'}))
+  fireEvent.change(fileInput, { target: { files: [new File(['second'], 'second.txt', {type:'text/plain'})] } })
+  await waitFor(() => expect(screen.getAllByRole('button', {name:'Remove attachment'})).toHaveLength(2))
+  await act(async () => accept(true))
+  expect.soft(screen.getAllByRole('button', {name:'Remove attachment'})).toHaveLength(1)
+  fireEvent.click(screen.getByRole('button', {name:'Send message'}))
+  expect(onSend.mock.calls[1][1]?.map(a => a.name)).toEqual(['second.txt'])
+})
+
+it('clears an accepted draft when storage quota prevented saving its text', async () => {
+  const write = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('quota') })
+  try {
+    render(<ChatInput {...props} sessionId="quota" onSend={vi.fn().mockResolvedValue(true)} />)
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Accepted despite quota' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+    await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe(''))
+  } finally { write.mockRestore() }
 })
