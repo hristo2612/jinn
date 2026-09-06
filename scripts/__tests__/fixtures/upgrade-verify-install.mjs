@@ -33,7 +33,7 @@ export function startGateway(cli, layout, _port, label) {
   }
   if (!cli.endsWith("candidate") || label !== "candidate-first-boot") return
   const home = layout.home
-  const backup = path.join(home, ".migration-backups", "first")
+  const backup = path.join(home, ".migration-backups", "1.0.1-2026-01-01T00-00-01-000Z")
   fs.mkdirSync(backup, { recursive: true })
   fs.copyFileSync(path.join(home, "config.yaml"), path.join(backup, "config.yaml"))
   fs.cpSync(path.join(home, "skills"), path.join(backup, "skills"), { recursive: true })

@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 🐛 Fixes
+- **Upgrade verification distinguishes baseline and candidate backups.** A published baseline's boot-sync backup no longer rejects a valid upgrade; the gate still requires exactly one candidate backup with the pre-upgrade contents.
 - **Releases recover from delayed registry and Actions visibility.** Publishing waits for the exact npm version and workflow run, and completion can resume the same tag through GitHub Release, Homebrew, and announcement retries.
 
 ## [0.33.1] - 2026-09-06

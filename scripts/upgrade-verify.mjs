@@ -71,11 +71,15 @@ function assertReceipt(home, version, skills) {
   }
 }
 
-function assertBackups(home, removedNames, exactCopies = []) {
+export function assertBackups(home, candidateVersion, removedNames, exactCopies = []) {
   const root = path.join(home, ".migration-backups")
   const backups = fs.readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name)
-  if (backups.length !== 1) throw new Error(`expected one first-boot backup, found ${backups.length}`)
-  const backup = path.join(root, backups[0])
+  // Published baselines since 0.33.1 can create their own boot-sync backup (PLA-394).
+  const candidateBackups = backups.filter((name) => name.startsWith(`${candidateVersion}-`))
+  if (candidateBackups.length !== 1) {
+    throw new Error(`expected one first-boot backup for candidate ${candidateVersion}, found ${candidateBackups.length}; backups: ${backups.join(", ")}`)
+  }
+  const backup = path.join(root, candidateBackups[0])
   for (const { file, bytes } of exactCopies) {
     const copy = path.join(backup, path.relative(home, file))
     if (!fs.existsSync(copy) || !fs.readFileSync(copy).equals(bytes)) {
@@ -192,7 +196,7 @@ async function verifyScenario({ scenario, root, baseline, candidate }) {
   const removed = assertRetiredRemoved(layout.home, delta.retired, fixture?.preservedRetired)
   assertReceipt(layout.home, candidateInstall.version, delta.candidateSkills)
   assertVersionStamped(layout.home, candidateInstall.version)
-  const backup = assertBackups(layout.home, removed, exactBackupCopies(layout.home, configBefore, fixture))
+  const backup = assertBackups(layout.home, candidateInstall.version, removed, exactBackupCopies(layout.home, configBefore, fixture))
 
   const firstBootSurface = hashUpgradeSurface(layout.home)
   await boot(candidateInstall.cli, layout, port, "candidate-second-boot")
