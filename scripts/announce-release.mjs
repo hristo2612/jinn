@@ -17,7 +17,7 @@ export function slackClient(token) {
   }
 }
 
-async function findAnnouncement({ channel, releaseUrl, oldest, user }, api) {
+export async function findAnnouncement({ channel, releaseUrl, oldest, user }, api) {
   let cursor = ""
   do {
     const page = await api("conversations.history", { channel, oldest, cursor, limit: 100 })

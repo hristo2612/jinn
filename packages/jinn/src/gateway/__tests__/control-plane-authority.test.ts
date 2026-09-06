@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, it } from "vitest";
+import "./helpers/stub-callback-recovery.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -9,8 +10,7 @@ import {
   CALLER_SESSION_CAPABILITY_HEADER,
   CALLER_SESSION_HEADER,
   TOOL_CALL_HEADER,
-  TOOL_CALL_HEADER_VALUE,
-  ensureSessionCapability,
+  TOOL_CALL_HEADER_VALUE, ensureSessionCapability,
 } from "../../mcp/identity.js";
 
 const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "jinn-control-plane-"));

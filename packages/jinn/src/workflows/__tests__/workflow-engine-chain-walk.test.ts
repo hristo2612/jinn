@@ -139,6 +139,19 @@ function attempts(workflowId: string, runId: string) {
 }
 
 describe("an Employee node whose engine runs out of allowance", () => {
+  it("finishes on another engine after the selected model is at capacity", async () => {
+    const definition = definitionWith("capacity", { fallback: ["claude"],
+      retry: { attempts: 3, delaySeconds: 60, backoff: "exponential" } });
+    const run = await service.startManual({ workflowId: definition.id, input: {} });
+    await executor.failTurn("work", "Selected model is at capacity. Please try a different model.");
+    await service.recover(new Date(now.getTime() + 60000).toISOString());
+
+    expect(executor.enginesFor("work")).toEqual(["codex", "claude"]);
+    expect(attempts(definition.id, run.id).at(-1)!.resolvedConfig.model).toBe("opus");
+    await service.submitAttemptOutput({ sessionId: "session:work:2", outcome: "success", summary: "Resumed." });
+    expect(service.getRun(definition.id, run.id)!.status).toBe("completed");
+  });
+
   it("re-dispatches on the chain engine and the run completes", async () => {
     const { workflowId, runId } = await quotaFailedRun("chain-walk");
 

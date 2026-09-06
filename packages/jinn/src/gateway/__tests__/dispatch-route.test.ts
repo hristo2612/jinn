@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -12,6 +12,12 @@ import {
   TOOL_CALL_HEADER_VALUE,
   ensureSessionCapability,
 } from "../../mcp/identity.js";
+
+// Stub engines still settle real turns; their parent notifications must stay inside this fixture.
+vi.mock("../../sessions/callbacks.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../sessions/callbacks.js")>()),
+  notifyParentSessionAndWait: vi.fn(async () => {}),
+}));
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "jinn-dispatch-route-"));
 process.env.JINN_HOME = home;

@@ -115,6 +115,9 @@ function req(method: string, pathAndQuery: string, headers: Record<string, strin
 
 const apiCtx = {
   getConfig: () => ({ gateway: {}, engines: { default: "codex" }, sessions: {}, portal: { portalName: "Jinn" } }),
+  // Capability checks must not discover or probe gateways from the machine's instance registry.
+  loadWorkspaceInstances: () => [],
+  readWorkspaceAccessMappings: async () => [],
   connectors: new Map(),
   startTime: Date.now(),
   emit: () => {},

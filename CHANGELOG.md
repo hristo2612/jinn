@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 🐛 Fixes
+- **Release automation recovers from provider capacity and stranded publication.** Release probes identify incomplete versions before quiet-week checks, gates run at an isolated commit, and bounded repairs preserve existing tests and gate policies before a fresh independent sweep.
 - **Release tests isolate their databases and clean up virtualized scrolling.** Each gateway test file gets a private home before imports, and virtualizer scroll callbacks are cancelled when their observer disconnects.
 
 ## [0.33.3] - 2026-09-06

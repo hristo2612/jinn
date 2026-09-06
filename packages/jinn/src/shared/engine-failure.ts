@@ -51,6 +51,7 @@ const RATE_LIMIT_SIGNATURES: readonly RegExp[] = [
 const PROVIDER_OUTAGE_SIGNATURES: readonly RegExp[] = [
   /\b(?:server_error|api_error)\b/i,
   /overloaded/i,
+  /\bselected model is at capacity\b/i,
   // HTTP 5xx, but only in status context — a bare "503" in a diagnostic is not a
   // status code, and matching one would misread a genuine failure as an outage.
   /\b(?:HTTP|status)(?:\s+code)?\s*[:=]?\s*5\d\d\b/i,
