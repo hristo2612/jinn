@@ -174,7 +174,7 @@
       ]
     },
     "packages/jinn/src/engines/codex.ts": {
-      "lines": 1065,
+      "lines": 1038,
       "exempt": [
         "complexity",
         "max-depth",
@@ -690,7 +690,7 @@
       ]
     },
     "packages/jinn/src/sessions/registry.ts": {
-      "lines": 2625,
+      "lines": 2520,
       "exempt": [
         "complexity",
         "max-depth",
@@ -1093,7 +1093,7 @@
       ]
     },
     "packages/web/src/components/chat/chat-messages.tsx": {
-      "lines": 1334,
+      "lines": 1208,
       "exempt": [
         "complexity",
         "max-depth",
@@ -1365,7 +1365,7 @@
       ]
     },
     "packages/web/src/hooks/__tests__/use-live-session.test.ts": {
-      "lines": 2103
+      "lines": 2021
     },
     "packages/web/src/hooks/use-chat-tabs.ts": {
       "lines": 337,
@@ -1385,7 +1385,7 @@
       ]
     },
     "packages/web/src/hooks/use-live-session.ts": {
-      "lines": 1428,
+      "lines": 1402,
       "exempt": [
         "@typescript-eslint/no-floating-promises",
         "complexity",

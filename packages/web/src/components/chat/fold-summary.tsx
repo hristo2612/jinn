@@ -15,6 +15,7 @@ export interface FoldSummaryData {
   durationMs: number | null
   tools: number
   teammates: number
+  nativeAgents?: number
   /** Interim prose messages the model wrote on the way to the answer. */
   updates: number
 }
@@ -35,8 +36,13 @@ export function foldSummaryWords(summary: FoldSummaryData): string[] {
   const words = duration ? [`Worked for ${duration}`] : []
   if (summary.tools > 0) words.push(`${summary.tools} tool${summary.tools === 1 ? '' : 's'}`)
   if (summary.teammates > 0) words.push(`${summary.teammates} teammate${summary.teammates === 1 ? '' : 's'}`)
+  if (summary.nativeAgents) words.push(nativeAgentCount(summary.nativeAgents))
   if (summary.updates > 0) words.push(`${summary.updates} update${summary.updates === 1 ? '' : 's'}`)
   return words
+}
+
+function nativeAgentCount(count: number): string {
+  return `${count} native agent${count === 1 ? '' : 's'}`
 }
 
 interface FoldSummaryLineProps {
@@ -70,7 +76,7 @@ export function FoldSummaryLine({ summary, closed, arriving, onToggle }: FoldSum
           className="-ml-1.5 flex min-h-8 w-full cursor-pointer items-center gap-[var(--space-2)] rounded-[8px] border-none bg-transparent py-[3px] pl-1.5 pr-2 text-left font-[inherit] text-[length:var(--text-caption1)] font-[var(--weight-medium)] text-[var(--text-tertiary)] transition-colors duration-150 ease-[var(--ease-smooth)] hover:bg-[var(--fill-quaternary)] hover:text-[var(--text-secondary)]"
         >
           <Settings size={13} strokeWidth={2} aria-hidden="true" className="shrink-0 text-[var(--text-quaternary)]" />
-          <span className="flex min-w-0 items-center gap-[7px]">
+          <span className="flex min-w-0 flex-wrap items-center gap-[7px]">
             {words.map((word, index) => (
               <Fragment key={index}>
                 {index > 0 && (
