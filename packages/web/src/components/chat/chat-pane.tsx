@@ -286,7 +286,6 @@ export function ChatPane({
     }
   }, [selector, currentSession?.engine, currentSession?.engineSessionId])
 
-
   const handleInterrupt = useCallback(async () => {
     if (!sessionId) return
     try {
@@ -310,7 +309,6 @@ export function ChatPane({
       answerStaleChatBySending()
 
       try {
-        // Upload any attached files to the server in parallel and collect file IDs
         let attachmentIds: string[] | undefined
         if (media && media.length > 0) {
           const uploadedMedia = await Promise.all(media.map(async (att) => {

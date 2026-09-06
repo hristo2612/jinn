@@ -1,23 +1,10 @@
 /**
- * useLiveSession — the live read pipeline for one gateway session.
+ * Live messages, streaming events and history reconciliation for one session.
+ * Shared by ChatPane and the read-only Talk child-session modal.
  *
- * Extracted verbatim from ChatPane so it can be reused read-only by the Talk
- * child-session modal (which previously only refetched on terminal events and
- * thus never showed live streaming or live media). It owns:
- *   - the message list + the optimistic streaming-text bubble
- *   - the full WS event set (session:delta text/tool/context, :notification,
- *     :attachment, :interrupted, :stopped, :completed)
- *   - server load + reconcile (lib/conversations.reconcileMessages)
- *   - reconnect (connectionSeq) backfill + the dropped-completion watchdog
- *
- * ChatPane consumes the SAME hook for its read side and keeps its composer/send
- * on top, driving the optimistic write path through the small write API
- * (beginSend/failSend/appendLocal/reset). The modal passes `readOnly: true`,
- * which seeds `loading` from the session's running state and skips the
- * localStorage intermediate cache (that cache belongs to the editable pane).
- *
- * Behaviour for the editable (ChatPane) path is intended to be byte-for-byte
- * identical to the previous inline implementation.
+ * ChatPane drives optimistic sends through the write API, including uploaded
+ * media identities before dispatch. Read-only consumers seed loading from the
+ * server and skip the editable pane's localStorage intermediate cache.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '@/lib/api'

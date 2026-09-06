@@ -1385,7 +1385,7 @@
       ]
     },
     "packages/web/src/hooks/use-live-session.ts": {
-      "lines": 1428,
+      "lines": 1425,
       "exempt": [
         "@typescript-eslint/no-floating-promises",
         "complexity",
