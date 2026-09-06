@@ -54,17 +54,15 @@ export interface Message {
 /**
  * Content-identity key for a message, independent of its id. Used to recognise a
  * locally-appended optimistic message and its server-persisted twin as the SAME
- * message even though their ids differ. The media fingerprint keys on the file
- * NAME (stable across the optimistic base64-url copy and the server /api/files
- * copy) falling back to type, so it is robust to the url differing and to any
- * media type (image, audio, video → 'file', etc.).
+ * message even though their ids differ. Upload IDs survive the local preview →
+ * stored URL transition. Other attachments use their full URL: filenames are
+ * display labels and collide across distinct uploads (PLA-393).
  */
 export function messageIdentityKey(m: Message): string {
   const sep = '\u0000'
-  const mediaFp = (m.media || [])
-    .map((x) => x.name || x.type || x.url)
-    .sort()
-    .join('|')
+  const mediaFp = JSON.stringify((m.media || [])
+    .map((x) => x.fileId ? `/api/files/${x.fileId}` : x.url)
+    .sort())
   const blockFp = (m.blocks || [])
     .map((x) => `${x.id}:${x.type}:${x.version}`)
     .sort()

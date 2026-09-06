@@ -138,6 +138,7 @@ export function ChatPane({
     blockAnnouncement,
     loadOlderMessages,
     beginSend,
+    updateSendMedia,
     failSend,
     appendLocal,
     reset: resetPane,
@@ -312,13 +313,14 @@ export function ChatPane({
         // Upload any attached files to the server in parallel and collect file IDs
         let attachmentIds: string[] | undefined
         if (media && media.length > 0) {
-          const uploadPromises = media
-            .filter((att) => att.file)
-            .map((att) => api.uploadFile(att.file!, sessionIdRef.current || undefined))
-          if (uploadPromises.length > 0) {
-            const uploaded = await Promise.all(uploadPromises)
-            attachmentIds = uploaded.map((u) => u.id)
-          }
+          const uploadedMedia = await Promise.all(media.map(async (att) => {
+            if (!att.file) return att
+            const uploaded = await api.uploadFile(att.file, sessionIdRef.current || undefined)
+            return { ...att, fileId: uploaded.id }
+          }))
+          attachmentIds = uploadedMedia.flatMap((att) => att.fileId ? [att.fileId] : [])
+          userMsg.media = uploadedMedia
+          updateSendMedia(userMsg.id, uploadedMedia)
         }
 
         let sid = sessionId
@@ -355,7 +357,7 @@ export function ChatPane({
       }
     },
     // Keep viewMode and stale-notice handling fresh across chat↔CLI sends.
-    [sessionId, selectedEmployee, onSessionCreated, onRefresh, viewMode, selector, currentSession?.engine, engineRegistry, beginSend, failSend, answerStaleChatBySending, sessionQueue]
+    [sessionId, selectedEmployee, onSessionCreated, onRefresh, viewMode, selector, currentSession?.engine, engineRegistry, beginSend, updateSendMedia, failSend, answerStaleChatBySending, sessionQueue]
   )
 
   const handleStatusRequest = useCallback(async () => {

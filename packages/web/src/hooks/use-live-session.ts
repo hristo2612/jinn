@@ -138,6 +138,8 @@ export interface UseLiveSessionResult {
   // --- write API (editable pane only) ---
   /** Optimistically append the user message + arm loading for a send. */
   beginSend: (userMsg: Message) => void
+  /** Associate uploaded file identities with the optimistic row before dispatch. */
+  updateSendMedia: (messageId: string, media: MediaAttachment[]) => void
   /** A send failed: clear loading + mark that user message failed. */
   failSend: (reason: string) => void
   /** Append a local-only message (status replies, etc.). */
@@ -1334,6 +1336,13 @@ export function useLiveSession(
     lastDeltaAtRef.current = Date.now()
   }, [])
 
+  const updateSendMedia = useCallback((messageId: string, media: MediaAttachment[]) => {
+    if (pendingUserMessageRef.current?.id === messageId) {
+      pendingUserMessageRef.current = { ...pendingUserMessageRef.current, media }
+    }
+    setMessages((prev) => prev.map((message) => message.id === messageId ? { ...message, media } : message))
+  }, [])
+
   const failSend = useCallback((reason: string) => {
     const failed = pendingUserMessageRef.current
     pendingUserMessageRef.current = null
@@ -1421,6 +1430,7 @@ export function useLiveSession(
     reload: loadSession,
     loadOlderMessages,
     beginSend,
+    updateSendMedia,
     failSend,
     appendLocal,
     reset,

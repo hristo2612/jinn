@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import type React from 'react'
+import type { MediaAttachment, Message } from '@/lib/conversations'
+import { reconcileMessages } from '@/lib/conversations'
 import { ChatPane } from '../chat-pane'
 import type { GatewayEvent } from '@jinn/gateway-events'
 import { CHAT_SESSION_DND_MIME } from '@/routes/chat/chat-session-dnd'
@@ -11,15 +13,18 @@ let featuresState = {
 }
 
 const apiMocks = vi.hoisted(() => ({
+  uploadFile: vi.fn(),
+  createSession: vi.fn(),
   updateSession: vi.fn(() => Promise.resolve({})),
-  sendMessage: vi.fn(() => Promise.resolve({})),
+  sendMessage: vi.fn<(id: string, body: unknown) => Promise<Record<string, unknown>>>(() => Promise.resolve({})),
 }))
 
 vi.mock('@/lib/api', () => ({ api: apiMocks }))
 
-vi.mock('@/hooks/use-employees', () => ({
-  useOrg: () => ({ data: { employees: [{ name: 'platform-lead', displayName: 'Platform Lead' }] } }),
-}))
+vi.mock('@/hooks/use-employees', () => {
+  const result = { data: { employees: [{ name: 'platform-lead', displayName: 'Platform Lead' }] } }
+  return { useOrg: () => result }
+})
 
 vi.mock('@/hooks/use-features', () => ({
   useFeatures: () => ({ data: featuresState, isPending: false }),
@@ -36,6 +41,7 @@ interface LiveSessionMockState {
   backgroundActivity: unknown
   reload: ReturnType<typeof vi.fn>
   beginSend: ReturnType<typeof vi.fn>
+  updateSendMedia: ReturnType<typeof vi.fn>
   failSend: ReturnType<typeof vi.fn>
   appendLocal: ReturnType<typeof vi.fn>
   reset: ReturnType<typeof vi.fn>
@@ -52,13 +58,14 @@ const liveSessionDefaults: LiveSessionMockState = {
   backgroundActivity: null,
   reload: vi.fn(),
   beginSend: vi.fn(),
+  updateSendMedia: vi.fn(),
   failSend: vi.fn(),
   appendLocal: vi.fn(),
   reset: vi.fn(),
 }
 
 let liveSessionState: LiveSessionMockState
-let composerOnSend: ((message: string) => Promise<boolean>) | null
+let composerOnSend: ((message: string, media?: MediaAttachment[]) => Promise<boolean>) | null
 let messagesOnRetry: ((message: string) => void) | null
 let composerActive: boolean | undefined
 
@@ -70,7 +77,7 @@ vi.mock('@/components/chat/chat-input', () => ({
   ChatInput: ({ selectorSlot, statusSlot, onSend, isActive }: {
     selectorSlot?: React.ReactNode
     statusSlot?: React.ReactNode
-    onSend: (message: string) => Promise<boolean>
+    onSend: (message: string, media?: MediaAttachment[]) => Promise<boolean>
     isActive?: boolean
   }) => {
     composerOnSend = onSend
@@ -132,7 +139,7 @@ function renderPane(props: Partial<React.ComponentProps<typeof ChatPane>> = {}) 
 
 describe('ChatPane', () => {
   beforeEach(() => {
-    liveSessionState = { ...liveSessionDefaults }
+    liveSessionState = { ...liveSessionDefaults, beginSend: vi.fn(), updateSendMedia: vi.fn() }
     featuresState = {
       notesEnabled: false,
       staleChat: { enabled: true, tokenThreshold: 300_000, staleAfterMinutes: 60 },
@@ -144,6 +151,43 @@ describe('ChatPane', () => {
     messagesOnRetry = null
     composerActive = undefined
     localStorage.clear()
+  })
+
+  it.each(['s1', null])('associates same-named uploads before dispatch and new-session handoff (%s)', async (sessionId) => {
+    const media: MediaAttachment[] = ['a', 'b'].map((id) => ({
+      type: 'video', url: `blob:${id}`, name: 'capture.mp4',
+      file: new File([id], 'capture.mp4', { type: 'video/mp4' }),
+    }))
+    apiMocks.uploadFile.mockReset().mockResolvedValueOnce({ id: 'a' }).mockResolvedValueOnce({ id: 'b' })
+    const onSessionCreated = vi.fn()
+    let optimistic: Message | undefined
+    liveSessionState.beginSend.mockImplementation((message: Message) => { optimistic = { ...message } })
+    liveSessionState.updateSendMedia.mockImplementation((id: string, uploaded: MediaAttachment[]) => {
+      expect(id).toBe(optimistic?.id)
+      optimistic = { ...optimistic!, media: uploaded }
+    })
+    const persisted = (): Message => ({
+      id: 'server', role: 'user', content: 'compare', timestamp: Date.now(),
+      media: ['a', 'b'].map((id) => ({ type: 'video', name: 'capture.mp4', url: `/api/files/${id}` })),
+    })
+    const dispatch = async () => {
+      const merged = reconcileMessages([optimistic!], [persisted()])
+      expect(merged).toHaveLength(1)
+      expect(merged[0].id).toBe(optimistic?.id)
+      return { id: 'new-session' }
+    }
+    apiMocks.sendMessage.mockImplementation(dispatch)
+    apiMocks.createSession.mockImplementation(dispatch)
+    renderPane({ sessionId, onSessionCreated })
+
+    await act(async () => { expect(await composerOnSend?.('compare', media)).toBe(true) })
+
+    expect(optimistic?.media?.map((item) => item.fileId)).toEqual(['a', 'b'])
+    const call = sessionId ? apiMocks.sendMessage.mock.calls[0]?.[1] : apiMocks.createSession.mock.calls[0]?.[0]
+    expect(call).toMatchObject({ attachments: ['a', 'b'] })
+    if (!sessionId) {
+      expect(onSessionCreated).toHaveBeenCalledWith('new-session', expect.objectContaining({ media: optimistic?.media }))
+    }
   })
 
   it('makes focus state real at the pane and composer boundaries', () => {

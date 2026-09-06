@@ -51,6 +51,32 @@ describe("useLiveSession send lifecycle", () => {
     expect(result.current.loading).toBe(true)
   })
 
+  it("retains uploaded identities through stale history and matches the persisted twin", async () => {
+    getSession.mockResolvedValue({ status: "idle", messages: [] })
+    const { subscribe } = makeBus()
+    const { result } = renderHook(() => useLiveSession("s1", { subscribe }))
+    await act(async () => { await Promise.resolve() })
+    const timestamp = Date.now()
+    act(() => {
+      result.current.beginSend({ id: "local", role: "user", content: "compare", timestamp,
+        media: [{ type: "video", name: "capture.mp4", url: "blob:preview" }] })
+    })
+    act(() => {
+      result.current.updateSendMedia("local", [{ type: "video", name: "capture.mp4", url: "blob:preview", fileId: "uploaded" }])
+    })
+    await act(async () => { await result.current.reload("s1") })
+    expect(result.current.messages[0].media?.[0].fileId).toBe("uploaded")
+    expect(result.current.messages[0].sendState).toBe("pending")
+
+    getSession.mockResolvedValue({ status: "idle", messages: [{
+      id: "server", role: "user", content: "compare", timestamp,
+      media: [{ type: "video", name: "capture.mp4", url: "/api/files/uploaded" }],
+    }] })
+    await act(async () => { await result.current.reload("s1") })
+    expect(result.current.messages).toHaveLength(1)
+    expect(result.current.messages[0]).toMatchObject({ id: "local", media: [{ url: "/api/files/uploaded" }] })
+  })
+
   it("settles the pending bubble on the first frame of the turn", async () => {
     getSession.mockResolvedValue({ status: "idle", messages: [] })
     const { subscribe, emit } = makeBus()
