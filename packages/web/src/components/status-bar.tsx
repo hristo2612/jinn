@@ -8,10 +8,9 @@ import { Slot } from "@/contrib/slot"
 import { AREAS } from "@/contrib/types"
 import { cn } from "@/lib/utils"
 
-// 34px is the tap-target floor. The bar is quiet chrome, so its controls sit at
-// the floor rather than at the 44px the nav rail uses for its primary targets.
+// Keep compact desktop chrome while giving phone controls room to tap.
 const CONTROL_CLASS =
-  "flex size-[34px] shrink-0 items-center justify-center rounded-[var(--radius-md)] " +
+  "flex size-[40px] md:size-[34px] shrink-0 items-center justify-center rounded-[var(--radius-md)] " +
   "text-[var(--text-tertiary)] transition-colors duration-150 " +
   "[transition-timing-function:var(--ease-smooth)] " +
   "hover:bg-[var(--fill-secondary)] hover:text-[var(--text-primary)]"

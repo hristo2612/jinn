@@ -611,8 +611,8 @@ export function AssistantRowShell({ transcript, entering, children }: { transcri
 /* ── MessageActions — subtle copy/retry row under a message ─ */
 
 const ACTION_BTN =
-  'inline-flex h-[26px] w-[26px] items-center justify-center rounded-[7px] border-none bg-transparent text-[var(--text-quaternary)] transition-colors hover:bg-[var(--fill-tertiary)] hover:text-[var(--text-secondary)] cursor-pointer disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-[var(--text-quaternary)]'
-const MESSAGE_ACTIONS_ROW = 'msg-actions mt-0.5 -ml-1 flex h-[26px] items-center gap-0.5'
+  'inline-flex h-[40px] w-[40px] md:h-[26px] md:w-[26px] items-center justify-center rounded-[7px] border-none bg-transparent text-[var(--text-quaternary)] transition-colors hover:bg-[var(--fill-tertiary)] hover:text-[var(--text-secondary)] cursor-pointer disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-[var(--text-quaternary)]'
+const MESSAGE_ACTIONS_ROW = 'msg-actions mt-0.5 -ml-1 flex h-[40px] md:h-[26px] items-center gap-0.5'
 
 function MessageActions({ id, text, onRetry, retryDisabled }: { id: string; text: string; onRetry?: () => void; retryDisabled?: boolean }) {
   const [copied, setCopied] = useState(false)

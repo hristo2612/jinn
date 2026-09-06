@@ -31,7 +31,7 @@ export function Section({
 // --fill-tertiary well, no border at rest, accent focus ring (mirrors
 // .apple-input, sized for dense form rows).
 export const CONTROL_CLASS =
-  "w-full rounded-[10px] border-none bg-[var(--fill-tertiary)] px-[12px] py-[7px] " +
+  "min-h-[40px] md:min-h-0 w-full rounded-[10px] border-none bg-[var(--fill-tertiary)] px-[12px] py-[7px] " +
   "text-[length:var(--text-footnote)] text-[var(--text-primary)] outline-none " +
   "placeholder:text-[var(--text-tertiary)] transition-[box-shadow] duration-150 " +
   "focus:shadow-[0_0_0_3px_var(--accent-fill)]"
@@ -130,7 +130,7 @@ export function ToggleSwitch({
       aria-checked={checked}
       aria-label={ariaLabel}
       onClick={() => onChange(!checked)}
-      className="relative h-[34px] w-[44px] shrink-0 cursor-pointer rounded-[17px] border-none bg-transparent"
+      className="relative h-[40px] md:h-[34px] w-[44px] shrink-0 cursor-pointer rounded-[17px] border-none bg-transparent"
     >
       <span
         aria-hidden="true"

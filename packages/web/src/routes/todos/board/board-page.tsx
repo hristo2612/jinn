@@ -591,7 +591,7 @@ export default function TodoBoardPage() {
               type="button"
               data-testid="todo-mobile-filters"
               onClick={() => setMobileFilterOpen(true)}
-              className="focus-ring flex h-[34px] flex-none items-center gap-[7px] rounded-[17px] bg-[var(--bg-secondary)] px-3.5 text-[14px] font-semibold text-[var(--text-primary)] outline-none"
+              className="focus-ring flex h-[40px] flex-none items-center gap-[7px] rounded-[17px] bg-[var(--bg-secondary)] px-3.5 text-[14px] font-semibold text-[var(--text-primary)] outline-none"
               style={{ boxShadow: "var(--shadow-ambient), var(--shadow-subtle), var(--inset-shine)" }}
             >
               <ListFilter

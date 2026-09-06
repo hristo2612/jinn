@@ -137,6 +137,7 @@ async function call(name: typeof CURRENT_CHAT_TOOLS[number], message?: string) {
 }
 
 beforeEach(() => {
+  sessionStorage.clear()
   vi.clearAllMocks()
   resetPageContext()
   selectChat()

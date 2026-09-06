@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 const hoisted = vi.hoisted(() => ({
   // Captured second arg of useStt(events, onTranscript) — lets the test land a
   // transcript through the same choke point production uses, no media mocks.
+  state: "idle",
   landTranscript: null as null | ((text: string) => void),
   // Stable references: returning fresh objects each render would retrigger the
   // org/skills effects and loop the component.
@@ -28,7 +29,7 @@ vi.mock("@/hooks/use-stt", () => ({
   useStt: (_events: unknown, onTranscript: (text: string) => void) => {
     hoisted.landTranscript = onTranscript
     return {
-      state: "idle",
+      state: hoisted.state,
       available: true,
       error: null,
       analyser: null,
@@ -80,6 +81,8 @@ function lastSpeechFlag(onSend: ReturnType<typeof vi.fn>): boolean {
 
 beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn()
+  sessionStorage.clear()
+  hoisted.state = "idle"
   hoisted.landTranscript = null
 })
 
@@ -142,4 +145,14 @@ describe("speech-to-text provenance on send", () => {
     expect(onSend.mock.calls[1][0]).toBe("second typed")
     expect(lastSpeechFlag(onSend)).toBe(false)
   })
+})
+
+it("retains armed dictation after a refused send", async () => {
+  hoisted.state = "recording"
+  const { onSend, input } = renderInput()
+  onSend.mockResolvedValue(false)
+  fireEvent.click(screen.getByRole("button", { name: "Send when transcription lands" }))
+  await act(async () => { hoisted.landTranscript?.("Keep this dictated draft") })
+  expect(onSend).toHaveBeenCalledTimes(1)
+  expect(input.value).toBe("Keep this dictated draft")
 })

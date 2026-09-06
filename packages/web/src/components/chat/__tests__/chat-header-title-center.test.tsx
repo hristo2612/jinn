@@ -188,6 +188,6 @@ describe('mobile chat header title centring', () => {
     const compact = row.querySelector('[data-mobile-working-set-active="false"]')
     expect(active?.className).toContain('max-w-[132px]')
     expect(active?.textContent).toContain('Chat 1')
-    if (count > 1) expect(compact?.className).toContain('w-9')
+    if (count > 1) expect(compact?.className).toContain('w-[40px]')
   })
 })

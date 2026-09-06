@@ -487,7 +487,7 @@ export function ModelSelectorRow({ mode, value, onChange, pendingNote, errorNote
           type="button"
           disabled={disabled}
           aria-label={`Model and effort: ${modelLabel}${effort ? ` · ${effortLabelOf(effort)}` : ''}`}
-          className="group inline-flex max-w-full items-center gap-1.5 rounded-lg border-none bg-transparent px-1.5 py-1 text-[length:var(--text-footnote)] transition-colors hover:bg-[var(--fill-secondary)] disabled:cursor-default disabled:opacity-60 cursor-pointer"
+          className="group inline-flex min-h-[40px] md:min-h-0 max-w-full items-center gap-1.5 rounded-lg border-none bg-transparent px-1.5 py-1 text-[length:var(--text-footnote)] transition-colors hover:bg-[var(--fill-secondary)] disabled:cursor-default disabled:opacity-60 cursor-pointer"
         >
           <span aria-hidden className="shrink-0 text-[var(--accent)] text-[11px] leading-none">✦</span>
           <span className="truncate font-[var(--weight-semibold)] tracking-[-0.2px] text-[var(--text-secondary)] group-hover:text-[var(--text-primary)] transition-colors">{modelLabel}</span>

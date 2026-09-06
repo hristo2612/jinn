@@ -132,7 +132,7 @@ export default function WorkflowListPage() {
                 type="button"
                 aria-pressed={shelf === id}
                 onClick={() => { setNotice(null); setShelf(id) }}
-                className={`inline-flex h-[34px] items-center rounded-full px-[13px] text-[length:var(--text-footnote)] transition-colors ${
+                className={`inline-flex h-[40px] md:h-[34px] items-center rounded-full px-[13px] text-[length:var(--text-footnote)] transition-colors ${
                   shelf === id
                     ? "bg-[var(--accent-fill)] font-semibold text-[var(--accent)]"
                     : "bg-[var(--fill-tertiary)] font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)]"

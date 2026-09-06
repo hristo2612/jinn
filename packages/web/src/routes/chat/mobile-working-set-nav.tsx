@@ -30,8 +30,8 @@ function WorkingSetChip({
       data-mobile-working-set-active={active ? 'true' : 'false'}
       onClick={() => onSelect(item.id)}
       className={cn(
-        'relative inline-flex h-9 min-w-9 items-center justify-center rounded-full text-left transition-[width,background-color] duration-[var(--duration-base)] [transition-timing-function:var(--ease-smooth)] motion-reduce:transition-none',
-        active ? 'max-w-[132px] gap-1.5 bg-[var(--fill-secondary)] px-2' : 'w-9 bg-[var(--fill-tertiary)] px-1',
+        'relative inline-flex h-[40px] min-w-[40px] items-center justify-center rounded-full text-left transition-[width,background-color] duration-[var(--duration-base)] [transition-timing-function:var(--ease-smooth)] motion-reduce:transition-none',
+        active ? 'max-w-[132px] gap-1.5 bg-[var(--fill-secondary)] px-2' : 'w-[40px] shrink-0 bg-[var(--fill-tertiary)] px-1',
       )}
     >
       <EmployeeAvatar name={item.employee || 'jimbo'} size={24} fontSize={14} />

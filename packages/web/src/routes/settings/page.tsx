@@ -260,7 +260,7 @@ export default function SettingsPage() {
                     aria-label={preset.label}
                     aria-pressed={isActive}
                     title={preset.label}
-                    className="flex h-[30px] w-[30px] cursor-pointer items-center justify-center rounded-full border-none transition-transform duration-100 ease-[var(--ease-smooth)] hover:scale-105"
+                    className="flex h-[40px] w-[40px] md:h-[30px] md:w-[30px] cursor-pointer items-center justify-center rounded-full border-none transition-transform duration-100 ease-[var(--ease-smooth)] hover:scale-105"
                     style={{
                       background: preset.value,
                       // Selection ring floats off the swatch on a bg-colored gap —
@@ -290,11 +290,12 @@ export default function SettingsPage() {
                   type="color"
                   value={settings.accentColor ?? "#3B82F6"}
                   onChange={(e) => setAccentColor(e.target.value)}
-                  className="w-[28px] h-[28px] border-none rounded-full cursor-pointer bg-transparent p-0"
+                  className="w-[40px] h-[40px] md:w-[28px] md:h-[28px] border-none rounded-full cursor-pointer bg-transparent p-0"
                 />
               </label>
               <input
                 type="text"
+                aria-label="Custom accent hex color"
                 placeholder="#3B82F6"
                 value={customHex}
                 onChange={(e) => {

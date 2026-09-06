@@ -9,6 +9,7 @@ import { MicWaveform } from './mic-waveform'
 import { EmployeeAvatar } from '@/components/ui/employee-avatar'
 import { useChatComposerControl } from './chat-composer-control'
 import { composerCardPresentation } from './chat-composer-presentation'
+import { useChatDraft } from './use-chat-draft'
 import { resolveSendTap, resolveTranscriptLanding } from './armed-send'
 
 export { resolveSendTap, resolveTranscriptLanding } from './armed-send'
@@ -192,7 +193,7 @@ export function ChatInput({
   statusSlot,
   terminalActionsSlot,
 }: ChatInputProps) {
-  const [value, setValue] = useState('')
+  const { value, setValue, pendingSend } = useChatDraft(sessionId)
   const [employees, setEmployees] = useState<Employee[]>([])
   const [showMentions, setShowMentions] = useState(false)
   const [mentionFilter, setMentionFilter] = useState('')
@@ -442,8 +443,8 @@ export function ChatInput({
     }
   }
 
-  // Send core — resolves client-only commands, otherwise clears the composer and
-  // hands text + media to onSend. Shared by the Enter/tap path (handleSubmit) and
+  // Send core — resolves client-only commands, otherwise keeps the draft until
+  // onSend acknowledges it. Shared by the Enter/tap path (handleSubmit) and
   // the STT auto-send path (applyTranscript), so both behave identically.
   async function sendText(rawText: string, media: MediaAttachment[]): Promise<boolean> {
     const trimmed = rawText.trim()
@@ -455,7 +456,7 @@ export function ChatInput({
     // Capture provenance before any reset, then consume it — this message's
     // speech-derived state must not bleed into the next one.
     const speech = speechRef.current
-    speechRef.current = nextSpeechProvenance(speechRef.current, { type: 'send' })
+    speechRef.current = false
 
     const command = resolveClientCommand(trimmed)
     if (command === 'new') {
@@ -475,22 +476,31 @@ export function ChatInput({
       return true
     }
     const mediaToSend = hasMedia ? [...media] : undefined
-    valueRef.current = ''
-    pendingAttachmentsRef.current = []
-    setValue('')
-    setPendingAttachments([])
+    const acknowledgeDraft = pendingSend()
     setSendArmed(false)
     setShowMentions(false)
     setShowCommands(false)
-
-    // Reset textarea height
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto'
-    }
     try {
       const sending = onSend(trimmed, mediaToSend, false, speech)
-      if (typeof sending === 'boolean') return sending
-      return sending ? (await sending) !== false : true
+      const accepted = typeof sending === 'boolean' ? sending : sending ? (await sending) !== false : true
+      if (!accepted) {
+        if (valueRef.current === rawText) speechRef.current = speech
+        return false
+      }
+      acknowledgeDraft()
+      if (valueRef.current === rawText) {
+        valueRef.current = ''
+        speechRef.current = nextSpeechProvenance(speechRef.current, { type: 'send' })
+        if (textareaRef.current) textareaRef.current.style.height = 'auto'
+      }
+      if (pendingAttachmentsRef.current === media) {
+        pendingAttachmentsRef.current = []
+        setPendingAttachments([])
+      }
+      return true
+    } catch {
+      if (valueRef.current === rawText) speechRef.current = speech
+      return false
     } finally {
       submittingRef.current = false
     }
@@ -557,9 +567,11 @@ export function ChatInput({
     const prev = valueRef.current
     const merged = prev ? prev + ' ' + text : text
     if (action === 'send') {
-      // Armed + real words → fire the combined message now, then clear + disarm.
+      // Keep the complete dictated draft available if delivery is refused.
       // Dictated words landed, so this send is speech-derived.
       speechRef.current = nextSpeechProvenance(speechRef.current, { type: 'transcript' })
+      valueRef.current = merged
+      setValue(merged)
       void sendText(merged, pendingAttachmentsRef.current)
       return
     }
@@ -823,7 +835,7 @@ export function ChatInput({
             title="Attach file"
             onPointerDown={(e) => e.stopPropagation()}
             onClick={() => fileInputRef.current?.click()}
-            className="w-[36px] h-[36px] shrink-0 rounded-full flex items-center justify-center bg-transparent border-none cursor-pointer text-[var(--text-secondary)] hover:bg-[var(--fill-secondary)] hover:text-[var(--text-primary)] transition-colors"
+            className="w-[40px] h-[40px] md:w-[36px] md:h-[36px] shrink-0 rounded-full flex items-center justify-center bg-transparent border-none cursor-pointer text-[var(--text-secondary)] hover:bg-[var(--fill-secondary)] hover:text-[var(--text-primary)] transition-colors"
           >
             <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M12 5v14M5 12h14" />
@@ -889,7 +901,7 @@ export function ChatInput({
             onPointerUp={handleMicPointerUp}
             onPointerCancel={handleMicPointerCancel}
             disabled={stt.state === 'transcribing'}
-            className={`w-[36px] h-[36px] shrink-0 rounded-full flex items-center justify-center border-none transition-[scale,background-color,color] duration-150 ease-in-out active:scale-[0.96] touch-none select-none ${stt.state === 'recording' ? 'bg-[var(--system-red)] text-white cursor-pointer' : stt.state === 'starting' ? 'bg-[var(--accent-fill)] text-[var(--accent)] cursor-pointer' : `bg-transparent text-[var(--text-secondary)] hover:bg-[var(--fill-secondary)] hover:text-[var(--text-primary)] ${stt.state === 'transcribing' ? 'cursor-wait' : 'cursor-pointer'}`}`}
+            className={`w-[40px] h-[40px] md:w-[36px] md:h-[36px] shrink-0 rounded-full flex items-center justify-center border-none transition-[scale,background-color,color] duration-150 ease-in-out active:scale-[0.96] touch-none select-none ${stt.state === 'recording' ? 'bg-[var(--system-red)] text-white cursor-pointer' : stt.state === 'starting' ? 'bg-[var(--accent-fill)] text-[var(--accent)] cursor-pointer' : `bg-transparent text-[var(--text-secondary)] hover:bg-[var(--fill-secondary)] hover:text-[var(--text-primary)] ${stt.state === 'transcribing' ? 'cursor-wait' : 'cursor-pointer'}`}`}
             title={
               stt.state === 'recording' ? 'Stop recording'
               : stt.state === 'transcribing' ? 'Transcribing…'
@@ -961,7 +973,7 @@ export function ChatInput({
                 disabled={isDisabled}
                 aria-label={label}
                 title={label}
-                className={`relative w-[38px] h-[38px] rounded-full border-none flex items-center justify-center shrink-0 transition-all duration-200 ease-in-out ${
+                className={`relative w-[40px] h-[40px] md:w-[38px] md:h-[38px] rounded-full border-none flex items-center justify-center shrink-0 transition-[background-color,color,opacity] duration-200 ease-in-out ${
                   mode === 'stop'
                     ? 'bg-[var(--system-red)] text-white cursor-pointer'
                     : mode === 'armed' || mode === 'ready'
