@@ -3,6 +3,12 @@ name: Bump Homebrew Formula
 on:
   release:
     types: [published]
+  workflow_dispatch:
+
+# Recovery and the release event may overlap; formula pushes must serialize.
+concurrency:
+  group: homebrew-formula
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -16,24 +22,33 @@ jobs:
           ref: main
 
       - name: Extract version from tag
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_ENV"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ "$GITHUB_REF" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+          TAG="${GITHUB_REF#refs/tags/}"
+          gh release view "$TAG" --json tagName,isDraft --jq 'select(.isDraft == false) | .tagName' | grep -Fx "$TAG"
+          echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
 
       - name: Wait for npm tarball
         run: |
           for i in {1..30}; do
-            if curl -sI "https://registry.npmjs.org/jinn-cli/-/jinn-cli-${VERSION}.tgz" | grep -q "200"; then
+            if curl --fail --silent --show-error --head --max-time 5 \
+              -H 'Cache-Control: no-cache' \
+              "https://registry.npmjs.org/jinn-cli/-/jinn-cli-${VERSION}.tgz?release-check=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${i}" >/dev/null; then
               echo "Tarball available"
               exit 0
             fi
             echo "Waiting for npm publish... (attempt $i/30)"
             sleep 10
           done
-          echo "Tarball not found after 5 minutes"
+          echo "Tarball not yet reachable after 30 attempts"
           exit 1
 
       - name: Update formula
+        shell: bash
         run: |
-          SHA=$(curl -sL "https://registry.npmjs.org/jinn-cli/-/jinn-cli-${VERSION}.tgz" | shasum -a 256 | cut -d' ' -f1)
+          SHA=$(curl --fail --show-error --silent --location --max-time 60 "https://registry.npmjs.org/jinn-cli/-/jinn-cli-${VERSION}.tgz" | shasum -a 256 | cut -d' ' -f1)
           sed -i "s|jinn-cli-.*\.tgz|jinn-cli-${VERSION}.tgz|" Formula/jinn.rb
           sed -i "s|sha256 \".*\"|sha256 \"${SHA}\"|" Formula/jinn.rb
 
