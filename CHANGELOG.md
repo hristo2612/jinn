@@ -1,10 +1,15 @@
 # Changelog
 
-## [Unreleased]
+## [0.33.2] - 2026-09-06
+
+### ⚡ Performance
+- **Dashboard startup avoids unnecessary page downloads.** Chat and Todo routes no longer prefetch unconditionally while the browser is idle.
 
 ### 🐛 Fixes
-- **Upgrade verification distinguishes baseline and candidate backups.** A published baseline's boot-sync backup no longer rejects a valid upgrade; the gate still requires exactly one candidate backup with the pre-upgrade contents.
+- **Failed pages offer a clear way back.** Route failures explain when the browser is offline and enable Refresh once connectivity returns, without consuming the automatic stale-deploy retry while offline.
+- **Mobile chat is easier to navigate and read.** Chat controls have larger tap targets, pinch-to-zoom remains available, and the chat sidebar follows the visible viewport when the keyboard opens.
 - **Releases recover from delayed registry and Actions visibility.** Publishing waits for the exact npm version and workflow run, and completion can resume the same tag through GitHub Release, Homebrew, and announcement retries.
+- **Upgrade verification accepts backups from the previous version.** The gate checks the candidate's backup separately and still requires exactly one candidate backup containing the pre-upgrade files.
 
 ## [0.33.1] - 2026-09-06
 
