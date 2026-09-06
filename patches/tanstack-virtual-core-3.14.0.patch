@@ -1,0 +1,245 @@
+diff --git a/dist/cjs/index.cjs b/dist/cjs/index.cjs
+index 41c6abc69eca1d5940d06b85fd37aff3bb75aaff..ccbf7d440e27fb4ab34b677b9b1771f245ac9b5d 100644
+--- a/dist/cjs/index.cjs
++++ b/dist/cjs/index.cjs
+@@ -80,7 +80,7 @@ const observeElementOffset = (instance, cb) => {
+     return;
+   }
+   let offset = 0;
+-  const fallback = instance.options.useScrollendEvent && supportsScrollend ? () => void 0 : utils.debounce(
++  const fallback = instance.options.useScrollendEvent && supportsScrollend ? null : utils.debounce(
+     targetWindow,
+     () => {
+       cb(offset, false);
+@@ -90,7 +90,7 @@ const observeElementOffset = (instance, cb) => {
+   const createHandler = (isScrolling) => () => {
+     const { horizontal, isRtl } = instance.options;
+     offset = horizontal ? element["scrollLeft"] * (isRtl && -1 || 1) : element["scrollTop"];
+-    fallback();
++    fallback?.();
+     cb(offset, isScrolling);
+   };
+   const handler = createHandler(true);
+@@ -101,6 +101,7 @@ const observeElementOffset = (instance, cb) => {
+     element.addEventListener("scrollend", endHandler, addEventListenerOptions);
+   }
+   return () => {
++    fallback?.cancel();
+     element.removeEventListener("scroll", handler);
+     if (registerScrollendEvent) {
+       element.removeEventListener("scrollend", endHandler);
+@@ -117,7 +118,7 @@ const observeWindowOffset = (instance, cb) => {
+     return;
+   }
+   let offset = 0;
+-  const fallback = instance.options.useScrollendEvent && supportsScrollend ? () => void 0 : utils.debounce(
++  const fallback = instance.options.useScrollendEvent && supportsScrollend ? null : utils.debounce(
+     targetWindow,
+     () => {
+       cb(offset, false);
+@@ -126,7 +127,7 @@ const observeWindowOffset = (instance, cb) => {
+   );
+   const createHandler = (isScrolling) => () => {
+     offset = element[instance.options.horizontal ? "scrollX" : "scrollY"];
+-    fallback();
++    fallback?.();
+     cb(offset, isScrolling);
+   };
+   const handler = createHandler(true);
+@@ -137,6 +138,7 @@ const observeWindowOffset = (instance, cb) => {
+     element.addEventListener("scrollend", endHandler, addEventListenerOptions);
+   }
+   return () => {
++    fallback?.cancel();
+     element.removeEventListener("scroll", handler);
+     if (registerScrollendEvent) {
+       element.removeEventListener("scrollend", endHandler);
+diff --git a/dist/cjs/utils.cjs b/dist/cjs/utils.cjs
+index 53ae1103a061eb8d7ab145249c0b87df9abea08d..12c4716e222001fc5aedb35b1bc30be63a441595 100644
+--- a/dist/cjs/utils.cjs
++++ b/dist/cjs/utils.cjs
+@@ -61,10 +61,12 @@ function notUndefined(value, msg) {
+ const approxEqual = (a, b) => Math.abs(a - b) < 1.01;
+ const debounce = (targetWindow, fn, ms) => {
+   let timeoutId;
+-  return function(...args) {
++  const debounced = function(...args) {
+     targetWindow.clearTimeout(timeoutId);
+     timeoutId = targetWindow.setTimeout(() => fn.apply(this, args), ms);
+   };
++  debounced.cancel = () => targetWindow.clearTimeout(timeoutId);
++  return debounced;
+ };
+ exports.approxEqual = approxEqual;
+ exports.debounce = debounce;
+diff --git a/dist/cjs/utils.d.cts b/dist/cjs/utils.d.cts
+index 8af53b8d393dad4705e07f35dba3f0749beae6a5..e0c7de127bcd788580068d76eaac23f605bc14ac 100644
+--- a/dist/cjs/utils.d.cts
++++ b/dist/cjs/utils.d.cts
+@@ -12,4 +12,7 @@ export declare function memo<TDeps extends ReadonlyArray<any>, TResult>(getDeps:
+ };
+ export declare function notUndefined<T>(value: T | undefined, msg?: string): T;
+ export declare const approxEqual: (a: number, b: number) => boolean;
+-export declare const debounce: (targetWindow: Window & typeof globalThis, fn: Function, ms: number) => (this: any, ...args: Array<any>) => void;
++export declare const debounce: (targetWindow: Window & typeof globalThis, fn: Function, ms: number) => {
++    (this: any, ...args: Array<any>): void;
++    cancel: () => void;
++};
+diff --git a/dist/esm/index.js b/dist/esm/index.js
+index 11426132b1b5c6361f92ac519a7e131cd58712da..2e6420c4919f01c331fa5315b294ef5d02aa5727 100644
+--- a/dist/esm/index.js
++++ b/dist/esm/index.js
+@@ -78,7 +78,7 @@ const observeElementOffset = (instance, cb) => {
+     return;
+   }
+   let offset = 0;
+-  const fallback = instance.options.useScrollendEvent && supportsScrollend ? () => void 0 : debounce(
++  const fallback = instance.options.useScrollendEvent && supportsScrollend ? null : debounce(
+     targetWindow,
+     () => {
+       cb(offset, false);
+@@ -88,7 +88,7 @@ const observeElementOffset = (instance, cb) => {
+   const createHandler = (isScrolling) => () => {
+     const { horizontal, isRtl } = instance.options;
+     offset = horizontal ? element["scrollLeft"] * (isRtl && -1 || 1) : element["scrollTop"];
+-    fallback();
++    fallback?.();
+     cb(offset, isScrolling);
+   };
+   const handler = createHandler(true);
+@@ -99,6 +99,7 @@ const observeElementOffset = (instance, cb) => {
+     element.addEventListener("scrollend", endHandler, addEventListenerOptions);
+   }
+   return () => {
++    fallback?.cancel();
+     element.removeEventListener("scroll", handler);
+     if (registerScrollendEvent) {
+       element.removeEventListener("scrollend", endHandler);
+@@ -115,7 +116,7 @@ const observeWindowOffset = (instance, cb) => {
+     return;
+   }
+   let offset = 0;
+-  const fallback = instance.options.useScrollendEvent && supportsScrollend ? () => void 0 : debounce(
++  const fallback = instance.options.useScrollendEvent && supportsScrollend ? null : debounce(
+     targetWindow,
+     () => {
+       cb(offset, false);
+@@ -124,7 +125,7 @@ const observeWindowOffset = (instance, cb) => {
+   );
+   const createHandler = (isScrolling) => () => {
+     offset = element[instance.options.horizontal ? "scrollX" : "scrollY"];
+-    fallback();
++    fallback?.();
+     cb(offset, isScrolling);
+   };
+   const handler = createHandler(true);
+@@ -135,6 +136,7 @@ const observeWindowOffset = (instance, cb) => {
+     element.addEventListener("scrollend", endHandler, addEventListenerOptions);
+   }
+   return () => {
++    fallback?.cancel();
+     element.removeEventListener("scroll", handler);
+     if (registerScrollendEvent) {
+       element.removeEventListener("scrollend", endHandler);
+diff --git a/dist/esm/utils.d.ts b/dist/esm/utils.d.ts
+index 8af53b8d393dad4705e07f35dba3f0749beae6a5..e0c7de127bcd788580068d76eaac23f605bc14ac 100644
+--- a/dist/esm/utils.d.ts
++++ b/dist/esm/utils.d.ts
+@@ -12,4 +12,7 @@ export declare function memo<TDeps extends ReadonlyArray<any>, TResult>(getDeps:
+ };
+ export declare function notUndefined<T>(value: T | undefined, msg?: string): T;
+ export declare const approxEqual: (a: number, b: number) => boolean;
+-export declare const debounce: (targetWindow: Window & typeof globalThis, fn: Function, ms: number) => (this: any, ...args: Array<any>) => void;
++export declare const debounce: (targetWindow: Window & typeof globalThis, fn: Function, ms: number) => {
++    (this: any, ...args: Array<any>): void;
++    cancel: () => void;
++};
+diff --git a/dist/esm/utils.js b/dist/esm/utils.js
+index 96034fae3af0dff0794f297fb58ab11f4bfa2d70..a3f182b7cf2306a88e822664687ab1beb4f7f38e 100644
+--- a/dist/esm/utils.js
++++ b/dist/esm/utils.js
+@@ -59,10 +59,12 @@ function notUndefined(value, msg) {
+ const approxEqual = (a, b) => Math.abs(a - b) < 1.01;
+ const debounce = (targetWindow, fn, ms) => {
+   let timeoutId;
+-  return function(...args) {
++  const debounced = function(...args) {
+     targetWindow.clearTimeout(timeoutId);
+     timeoutId = targetWindow.setTimeout(() => fn.apply(this, args), ms);
+   };
++  debounced.cancel = () => targetWindow.clearTimeout(timeoutId);
++  return debounced;
+ };
+ export {
+   approxEqual,
+diff --git a/src/index.ts b/src/index.ts
+index 75dcbdb7571f54e62389a2460356bf8831d6836c..6751d1c59e41c3a0bf99b47413c9117318cd7694 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -159,7 +159,7 @@ export const observeElementOffset = <T extends Element>(
+   let offset = 0
+   const fallback =
+     instance.options.useScrollendEvent && supportsScrollend
+-      ? () => undefined
++      ? null
+       : debounce(
+           targetWindow,
+           () => {
+@@ -173,7 +173,7 @@ export const observeElementOffset = <T extends Element>(
+     offset = horizontal
+       ? element['scrollLeft'] * ((isRtl && -1) || 1)
+       : element['scrollTop']
+-    fallback()
++    fallback?.()
+     cb(offset, isScrolling)
+   }
+   const handler = createHandler(true)
+@@ -186,6 +186,7 @@ export const observeElementOffset = <T extends Element>(
+     element.addEventListener('scrollend', endHandler, addEventListenerOptions)
+   }
+   return () => {
++    fallback?.cancel()
+     element.removeEventListener('scroll', handler)
+     if (registerScrollendEvent) {
+       element.removeEventListener('scrollend', endHandler)
+@@ -209,7 +210,7 @@ export const observeWindowOffset = (
+   let offset = 0
+   const fallback =
+     instance.options.useScrollendEvent && supportsScrollend
+-      ? () => undefined
++      ? null
+       : debounce(
+           targetWindow,
+           () => {
+@@ -221,6 +222,6 @@ export const observeWindowOffset = (
+   const createHandler = (isScrolling: boolean) => () => {
+     offset = element[instance.options.horizontal ? 'scrollX' : 'scrollY']
+-    fallback()
++    fallback?.()
+     cb(offset, isScrolling)
+   }
+   const handler = createHandler(true)
+@@ -233,6 +234,7 @@ export const observeWindowOffset = (
+     element.addEventListener('scrollend', endHandler, addEventListenerOptions)
+   }
+   return () => {
++    fallback?.cancel()
+     element.removeEventListener('scroll', handler)
+     if (registerScrollendEvent) {
+       element.removeEventListener('scrollend', endHandler)
+diff --git a/src/utils.ts b/src/utils.ts
+index 4d824b8d9296c752596191898f613c72f72c3934..fd5be75a072f486e2f02355250566962168a064b 100644
+--- a/src/utils.ts
++++ b/src/utils.ts
+@@ -97,8 +97,10 @@ export const debounce = (
+   ms: number,
+ ) => {
+   let timeoutId: number
+-  return function (this: any, ...args: Array<any>) {
++  const debounced = function (this: any, ...args: Array<any>) {
+     targetWindow.clearTimeout(timeoutId)
+     timeoutId = targetWindow.setTimeout(() => fn.apply(this, args), ms)
+   }
++  debounced.cancel = () => targetWindow.clearTimeout(timeoutId)
++  return debounced
+ }

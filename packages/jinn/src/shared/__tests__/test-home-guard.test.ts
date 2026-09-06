@@ -1,10 +1,12 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   assertIsolatedTestHome,
   canonicalPath,
+  createIsolatedTestFileHome,
   ensureIsolatedTestHome,
   isTempPath,
 } from '../../../vitest.test-home.js';
@@ -71,6 +73,31 @@ describe('Vitest JINN_HOME guard', () => {
     expect(result.created).toBe(true);
     expect(env.JINN_HOME).toBe(result.home);
     expect(isTempPath(result.home)).toBe(true);
+  });
+
+  it('opens a file-owned registry instead of the inherited run registry', () => {
+    const runHome = process.env.JINN_VITEST_RUN_HOME!;
+    expect(runHome).toBeTruthy();
+    expect(JINN_HOME).not.toBe(runHome);
+    expect(initDb().name).not.toBe(path.join(runHome, 'sessions', 'registry.db'));
+  });
+
+  it('isolates registry state even when files inherit the same run environment', () => {
+    const inherited = { ...process.env };
+    const first = createIsolatedTestFileHome({ ...inherited });
+    const second = createIsolatedTestFileHome({ ...inherited });
+    createdHomes.push(first, second);
+    const writer = new Database(path.join(first, 'registry.db'));
+    const reader = new Database(path.join(second, 'registry.db'));
+    try {
+      writer.exec("CREATE TABLE fixture_state (value TEXT); INSERT INTO fixture_state VALUES ('first')");
+      expect(reader.prepare("SELECT name FROM sqlite_master WHERE name = 'fixture_state'").get())
+        .toBeUndefined();
+      expect(initDb().name).toBe(path.join(process.env.JINN_HOME!, 'sessions', 'registry.db'));
+    } finally {
+      writer.close();
+      reader.close();
+    }
   });
 
   it('routes generic test temp fixtures beneath the cleanup-owned home', () => {

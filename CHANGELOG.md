@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### 🐛 Fixes
+- **Release tests isolate their databases and clean up virtualized scrolling.** Each gateway test file gets a private home before imports, and virtualizer scroll callbacks are cancelled when their observer disconnects.
+
 ## [0.33.3] - 2026-09-06
 
 ### 🐛 Fixes

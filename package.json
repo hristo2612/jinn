@@ -38,7 +38,10 @@
       "better-sqlite3",
       "classic-level",
       "node-pty"
-    ]
+    ],
+    "patchedDependencies": {
+      "@tanstack/virtual-core@3.14.0": "patches/tanstack-virtual-core-3.14.0.patch"
+    }
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",

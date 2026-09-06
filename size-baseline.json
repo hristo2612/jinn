@@ -1085,7 +1085,7 @@
       ]
     },
     "packages/web/src/components/chat/chat-input.tsx": {
-      "lines": 1046,
+      "lines": 1039,
       "exempt": [
         "@typescript-eslint/no-floating-promises",
         "complexity",
@@ -1568,7 +1568,7 @@
       ]
     },
     "packages/web/src/routes/settings/page.tsx": {
-      "lines": 1427,
+      "lines": 1395,
       "exempt": [
         "complexity",
         "max-lines-per-function"

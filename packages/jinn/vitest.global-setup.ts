@@ -66,9 +66,11 @@ export default function setup(): () => void {
     TEMP_ENV_KEYS.map((key) => [key, process.env[key]]),
   ) as Record<(typeof TEMP_ENV_KEYS)[number], string | undefined>;
   const previousSystemTempRoot = process.env.JINN_VITEST_SYSTEM_TEMP_ROOT;
+  const previousRunHome = process.env.JINN_VITEST_RUN_HOME;
   const previousSttModelsDir = process.env.JINN_STT_MODELS_DIR;
 
   process.env.JINN_VITEST_SYSTEM_TEMP_ROOT = systemTempRoot;
+  process.env.JINN_VITEST_RUN_HOME = result.home;
   process.env.JINN_STT_MODELS_DIR = path.join(runTempRoot, 'models', 'whisper');
   for (const key of TEMP_ENV_KEYS) process.env[key] = runTempRoot;
 
@@ -86,6 +88,8 @@ export default function setup(): () => void {
       if (previous === undefined) delete process.env[key];
       else process.env[key] = previous;
     }
+    if (previousRunHome === undefined) delete process.env.JINN_VITEST_RUN_HOME;
+    else process.env.JINN_VITEST_RUN_HOME = previousRunHome;
     if (previousSystemTempRoot === undefined) {
       delete process.env.JINN_VITEST_SYSTEM_TEMP_ROOT;
     } else {

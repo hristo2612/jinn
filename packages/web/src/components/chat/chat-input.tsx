@@ -10,27 +10,10 @@ import { EmployeeAvatar } from '@/components/ui/employee-avatar'
 import { useChatComposerControl } from './chat-composer-control'
 import { composerCardPresentation } from './chat-composer-presentation'
 import { useChatDraft } from './use-chat-draft'
-import { resolveSendTap, resolveTranscriptLanding } from './armed-send'
+import { classifyMicGesture, MIC_HOLD_THRESHOLD_MS, resolveSendTap, resolveTranscriptLanding } from './armed-send'
 
-export { resolveSendTap, resolveTranscriptLanding } from './armed-send'
-
-/** Hold threshold (ms) that separates a quick tap from a tap-and-hold. */
-export const MIC_HOLD_THRESHOLD_MS = 250
-
-export type MicGesture = 'hold' | 'tap'
-
-/**
- * Pure classifier for the mic button gesture. A press held for at least
- * `threshold` ms is a push-to-talk hold; anything shorter is a quick tap.
- * Exported for unit testing.
- */
-export function classifyMicGesture(
-  downAt: number,
-  upAt: number,
-  threshold: number = MIC_HOLD_THRESHOLD_MS,
-): MicGesture {
-  return upAt - downAt >= threshold ? 'hold' : 'tap'
-}
+export { classifyMicGesture, MIC_HOLD_THRESHOLD_MS, resolveSendTap, resolveTranscriptLanding } from './armed-send'
+export type { MicGesture } from './armed-send'
 
 interface Employee {
   name: string

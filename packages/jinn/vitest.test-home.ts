@@ -85,3 +85,16 @@ export function ensureIsolatedTestHome(
   assertIsolatedTestHome(env.JINN_HOME);
   return { home, created: true };
 }
+
+/** Allocate before a file's static imports; the run cleanup owns this subtree. */
+export function createIsolatedTestFileHome(env: NodeJS.ProcessEnv = process.env): string {
+  assertIsolatedTestHome(env.JINN_HOME);
+  const root = env.TMPDIR ?? env.TEMP ?? env.TMP ?? os.tmpdir();
+  assertIsolatedTestHome(root);
+  const home = fs.mkdtempSync(path.join(root, 'jinn-vitest-file-'));
+  const temp = path.join(home, 'tmp');
+  fs.mkdirSync(temp);
+  env.JINN_HOME = home;
+  for (const key of ['TMPDIR', 'TMP', 'TEMP']) env[key] = temp;
+  return home;
+}

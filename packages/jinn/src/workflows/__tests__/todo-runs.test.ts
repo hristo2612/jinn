@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type Database from "better-sqlite3";
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type {
   Employee,
   ModelRegistry,
@@ -24,10 +24,8 @@ import { todoRunOutcome } from "../todo-run-ledger.js";
  * runner and the row never reaching the table would look identical from a
  * recording fake. */
 
-// The registry DB resolves from JINN_HOME at module load, so it is pointed at a
-// throwaway home before the work-item modules are imported.
-const home = fs.mkdtempSync(path.join(os.tmpdir(), "jinn-workflow-todo-runs-"));
-process.env.JINN_HOME = home;
+// vitest.setup owns this file's home before any static runtime import.
+const home = process.env.JINN_HOME!;
 
 type Store = typeof import("../../work-items/store.js");
 type Runs = typeof import("../../work-items/runs.js");
@@ -146,6 +144,10 @@ beforeAll(async () => {
   surface = await import("../../gateway/workflow-todo-runs.js");
 });
 
+afterAll(async () => {
+  (await import("../../shared/db.js")).__closeDbForTest();
+});
+
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "jinn-workflow-runs-"));
   database = openWorkflowDatabase(path.join(root, "workflows.db"));
@@ -163,6 +165,11 @@ afterEach(() => {
   service.dispose();
   database.close();
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+it("opens the Todo registry in the fixture home", async () => {
+  const db = (await import("../../shared/db.js")).initDb();
+  expect(db.name).toBe(path.join(home, "sessions", "registry.db"));
 });
 
 describe("the outcome a terminal attempt reads as", () => {

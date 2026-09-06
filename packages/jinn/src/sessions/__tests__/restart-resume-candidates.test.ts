@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -10,17 +10,25 @@ const gatewayConfig: { resumeInterruptedSessions?: boolean } = {};
 vi.mock("../../shared/config.js", () => ({
   loadConfig: vi.fn(() => ({ gateway: gatewayConfig })),
 }));
+vi.mock("../callback-connection.js", () => ({
+  internalGatewayConnection: () => ({ baseUrl: "http://restart-fixture.invalid" }),
+  internalGatewayHeaders: () => ({ "Content-Type": "application/json" }),
+}));
 
 type Registry = typeof import("../registry.js");
 type RestartResume = typeof import("../restart-resume.js");
 let registry: Registry;
 let restartResume: RestartResume;
 let db: import("better-sqlite3").Database;
+let callbacks: typeof import("../callbacks.js");
+const attempts: Promise<unknown>[] = [];
+const respond: Array<() => void> = [];
 
 beforeAll(async () => {
   registry = await import("../registry.js");
   restartResume = await import("../restart-resume.js");
   db = (await import("../../shared/db.js")).initDb();
+  callbacks = await import("../callbacks.js");
 });
 
 beforeEach(() => {
@@ -30,10 +38,38 @@ beforeEach(() => {
   db.prepare("DELETE FROM sessions").run();
   delete gatewayConfig.resumeInterruptedSessions;
   vi.restoreAllMocks();
+  vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => {
+    respond.push(() => resolve(new Response(null, { status: 204 })));
+  })));
+  const deliver = callbacks.deliverClaimedSessionDelivery;
+  vi.spyOn(callbacks, "deliverClaimedSessionDelivery").mockImplementation((id) => {
+    const pending = deliver(id);
+    attempts.push(pending);
+    return pending;
+  });
 });
 
-afterEach(() => {
-  vi.useRealTimers();
+// The nudge API returns its claim before the transport finishes. Releasing the
+// fixture first used to leave real HTTP responses logging after worker teardown.
+afterEach(async () => {
+  respond.splice(0).forEach((resolve) => resolve());
+  try {
+    const settled = await Promise.allSettled(attempts);
+    const failures = settled.filter((result) => result.status === "rejected");
+    if (failures.length) {
+      throw new AggregateError(failures.map((result) => result.reason), "Restart delivery fixture failed");
+    }
+  } finally {
+    attempts.length = 0;
+    callbacks.__resetCallbackRetrySweepForTest();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  }
+});
+
+afterAll(() => {
+  db.close();
+  fs.rmSync(home, { recursive: true, force: true });
 });
 
 function session(status: string, overrides: Record<string, unknown> = {}) {

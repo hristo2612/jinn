@@ -1,8 +1,11 @@
-import { assertIsolatedTestHome } from './vitest.test-home.js';
+import { assertIsolatedTestHome, createIsolatedTestFileHome } from './vitest.test-home.js';
 
 // setupFiles execute inside each worker before its test module is evaluated.
 // Abort loudly if the pre-worker global setup ever stops propagating its home.
 assertIsolatedTestHome(process.env.JINN_HOME);
+// A safe run-level home still shares SQLite state across forks. Allocate before
+// static imports freeze paths; global teardown removes every file subtree.
+createIsolatedTestFileHome();
 
 /**
  * Scrub gateway/engine env that leaks in when the suite runs from inside a live
@@ -14,8 +17,8 @@ assertIsolatedTestHome(process.env.JINN_HOME);
  * it broke claude-interactive-compact-window.test.ts, whose "no proxy → no
  * first-party assertion" case failed on an inherited '1' from the enclosing PTY.
  *
- * JINN_HOME is deliberately NOT listed: global setup owns it, and it has
- * already been asserted above.
+ * JINN_HOME is deliberately NOT listed: setup owns the per-file home, and it
+ * has already been asserted above.
  */
 const LEAKY_ENV_VARS = [
   // Claude Code PTY env injected by the gateway (engines/claude-interactive.ts).

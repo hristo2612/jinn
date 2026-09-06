@@ -1,11 +1,12 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { openWorkflowDatabase } from "../../workflows/repository-migrations.js";
-import { WorkflowRepository } from "../../workflows/repository.js";
+import Database from "better-sqlite3";
+import type { WorkflowRepository } from "../../workflows/repository.js";
 import type { WorkflowDefinition, WorkflowNode } from "../../workflows/model.js";
 
+const inheritedHome = process.env.JINN_HOME!;
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jinn-gw-todo-recovery-"));
 process.env.JINN_HOME = tmp;
 
@@ -31,6 +32,8 @@ let workflowDb: import("better-sqlite3").Database;
 let workflowRepository: WorkflowRepository;
 
 beforeAll(async () => {
+  const { openWorkflowDatabase } = await import("../../workflows/repository-migrations.js");
+  const { WorkflowRepository } = await import("../../workflows/repository.js");
   store = await import("../../work-items/store.js");
   runs = await import("../../work-items/runs.js");
   approvals = await import("../../work-items/approvals.js");
@@ -42,6 +45,12 @@ beforeAll(async () => {
   db = (await import("../../shared/db.js")).initDb();
   workflowDb = openWorkflowDatabase(path.join(tmp, "workflows.db"));
   workflowRepository = new WorkflowRepository(workflowDb);
+});
+
+afterAll(async () => {
+  workflowDb?.close();
+  (await import("../../shared/db.js")).__closeDbForTest();
+  fs.rmSync(tmp, { recursive: true, force: true });
 });
 
 function edge(id: string, from: string, port: string, to: string) {
@@ -94,6 +103,34 @@ function tick(mode: "classify-only" | "auto" = "classify-only"): void {
     approvedLandingComplete: (todoId) => recovery.approvedLandingComplete(todoId, workflowRepository),
     closeApprovedLanded: (todoId) => recovery.closeApprovedLanded(todoId, workflowRepository) });
 }
+
+describe("recovery fixture isolation", () => {
+  it("opens the registry in its own home", () => {
+    expect(db.name).toBe(path.join(tmp, "sessions", "registry.db"));
+  });
+
+  it("keeps approval writes independent of another fixture's commit", () => {
+    const item = store.createWorkItem({ title: "isolated approval" });
+    const peerPath = path.join(inheritedHome, "sessions", "registry.db");
+    fs.mkdirSync(path.dirname(peerPath), { recursive: true });
+    const peer = new Database(peerPath);
+    peer.pragma("journal_mode = WAL");
+    peer.exec("CREATE TABLE IF NOT EXISTS isolation_probe (value TEXT)");
+    try {
+      db.transaction(() => {
+        db.prepare("SELECT id FROM work_items WHERE id = ?").get(item.id);
+        // Reproduce a competing fixture committing after the reader's snapshot.
+        peer.prepare("INSERT INTO isolation_probe VALUES (?)").run("peer commit");
+        approvals.requestApproval(item.id, { request: "Approve isolated work?" });
+      })();
+      expect(store.getWorkItem(item.id)!.approvalState).toBe("pending");
+      expect(peer.prepare("SELECT name FROM sqlite_master WHERE name = 'work_items'").get())
+        .toBeUndefined();
+    } finally {
+      peer.close();
+    }
+  });
+});
 
 describe("closeApprovedLanded", () => {
   it("closes only when the exact approved Workflow run completed its success End", () => {
