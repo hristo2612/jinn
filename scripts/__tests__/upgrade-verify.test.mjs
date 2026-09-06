@@ -4,7 +4,7 @@ import os from "node:os"
 import path from "node:path"
 import test from "node:test"
 import { fileURLToPath } from "node:url"
-import { parseArgs } from "../upgrade-verify.mjs"
+import { assertBackups, parseArgs } from "../upgrade-verify.mjs"
 import {
   NONCE_FILE,
   PROTECTED_PORTS,
@@ -23,6 +23,31 @@ function temporaryRoot(t) {
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
   return root
 }
+
+test("candidate backup validation ignores baseline backups but requires one complete candidate backup", (t) => {
+  const home = temporaryRoot(t)
+  const root = path.join(home, ".migration-backups")
+  const baseline = path.join(root, "1.0.0-2026-01-01T00-00-00-000Z")
+  const candidate = path.join(root, "1.0.1-2026-01-01T00-00-01-000Z")
+  const bytes = Buffer.from("pre-upgrade config\n")
+  const copies = [{ file: path.join(home, "config.yaml"), bytes }]
+  fs.mkdirSync(baseline, { recursive: true })
+  fs.writeFileSync(path.join(baseline, "config.yaml"), bytes)
+  assert.throws(() => assertBackups(home, "1.0.1", [], copies), /candidate 1\.0\.1, found 0/)
+
+  fs.mkdirSync(candidate)
+  assert.throws(() => assertBackups(home, "1.0.1", [], copies), /pre-upgrade bytes for config.yaml/)
+  fs.writeFileSync(path.join(candidate, "config.yaml"), "wrong bytes")
+  assert.throws(() => assertBackups(home, "1.0.1", [], copies), /pre-upgrade bytes for config.yaml/)
+  fs.writeFileSync(path.join(candidate, "config.yaml"), bytes)
+  assert.throws(() => assertBackups(home, "1.0.1", ["retired"], copies), /missing retired skill retired/)
+  fs.mkdirSync(path.join(candidate, "skills", "retired"), { recursive: true })
+  fs.writeFileSync(path.join(candidate, "skills", "retired", "SKILL.md"), "old skill")
+  assert.equal(assertBackups(home, "1.0.1", ["retired"], copies), candidate)
+
+  fs.mkdirSync(path.join(root, "1.0.1-2026-01-01T00-00-02-000Z"))
+  assert.throws(() => assertBackups(home, "1.0.1", [], copies), /candidate 1\.0\.1, found 2/)
+})
 
 test("tarball installs run lifecycle scripts even when the caller disables them", { skip: process.platform === "win32" }, (t) => {
   const root = temporaryRoot(t)
