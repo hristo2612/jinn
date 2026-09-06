@@ -15,6 +15,8 @@ export type TodoCaptureStageWire =
   | "landed"
   | "failed"
 
+export type TodoCaptureAction = "shape" | "shape-and-dispatch"
+
 export type TodoCaptureRouteWire =
   | { kind: "workflow"; workflowId: string; workflowName: string | null; runId: string | null }
   | { kind: "employee"; employee: string; sessionId: string }
@@ -46,7 +48,7 @@ export interface TodoCaptureHttp {
 /** The quick-capture slice of the `api` object. */
 export function createTodoCaptureApi({ get, post }: TodoCaptureHttp) {
   return {
-    startTodoCapture: (input: { text: string; speechDerived?: boolean }) =>
+    startTodoCapture: (input: { text: string; speechDerived?: boolean; action: TodoCaptureAction }) =>
       post<TodoCaptureWire>("/api/todo-captures", input),
     getTodoCapture: (captureId: string) =>
       get<TodoCaptureWire>(`/api/todo-captures/${encodeURIComponent(captureId)}`),

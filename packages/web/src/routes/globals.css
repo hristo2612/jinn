@@ -287,7 +287,7 @@
   --animate-sheet-out: jinn-sheet-out var(--duration-base) var(--ease-snappy) both;
   --animate-rail-in: jinn-rail-in var(--duration-base) var(--ease-snappy) both;
   --animate-rail-out: jinn-rail-out var(--duration-fast) var(--ease-snappy) both;
-  --animate-capture-step-in: jinn-capture-step-in var(--duration-base) var(--ease-snappy) both;
+  --animate-capture-ack-label: jinn-capture-ack-label var(--duration-base) var(--ease-snappy) 70ms both;
 }
 
 /* ============================================
@@ -827,7 +827,7 @@ h1, h2, h3, h4, h5, h6 {
 @keyframes jinn-sheet-out { to { translate: 0 100%; } }
 @keyframes jinn-rail-in { from { opacity: 0; translate: 16px 0; } }
 @keyframes jinn-rail-out { to { opacity: 0; translate: 16px 0; } }
-@keyframes jinn-capture-step-in { from { opacity: 0; translate: 0 4px; } }
+@keyframes jinn-capture-ack-label { from { opacity: 0; translate: 0 4px; } }
 
 /* Route changes. React Router drives the native View Transition; all we own is
    its timing, so the cross-fade is the same length as everything else. */

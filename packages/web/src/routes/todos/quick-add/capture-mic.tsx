@@ -96,10 +96,10 @@ export function CaptureMic({ onTranscript }: { onTranscript: (text: string) => v
         disabled={stt.state === "transcribing"}
         {...gesture}
         className={cn(
-          "focus-ring flex h-[34px] shrink-0 select-none items-center justify-center rounded-full outline-none transition-[width,scale,background-color,color] duration-150 touch-none [transition-timing-function:var(--ease-snappy)] active:scale-[0.96] motion-reduce:transition-none",
+          "focus-ring flex h-10 shrink-0 select-none items-center justify-center rounded-full outline-none transition-[width,scale,background-color,color] duration-150 touch-none [transition-timing-function:var(--ease-snappy)] active:scale-[0.96] motion-reduce:transition-none",
           recording
             ? "w-[104px] gap-2 bg-[var(--system-red)] px-3 text-[var(--bg-secondary)]"
-            : "size-[34px] bg-[var(--fill-secondary)] text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]",
+            : "size-10 bg-[var(--fill-secondary)] text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]",
           stt.state === "transcribing" && "cursor-wait",
         )}
       >
