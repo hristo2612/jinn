@@ -65,15 +65,15 @@ describe('reconcileMessages — attachment disappear regression', () => {
 
 describe('reconcileMessages — inbound user-message duplicate regression (v0.16.0)', () => {
   // Optimistic user message with image + video, appended with a CLIENT random id
-  // and base64 preview urls.
+  // and base64 preview urls, with IDs returned by the completed uploads.
   const optimisticUserMsg: Message = {
     id: 'client-random-uuid',
     role: 'user',
     content: 'what you see here?',
     timestamp: 5000,
     media: [
-      { type: 'image', url: 'data:image/jpeg;base64,AAAA', name: 'chest-front.jpg' },
-      { type: 'file', url: 'data:video/mp4;base64,BBBB', name: 'clip.mp4' },
+      { type: 'image', url: 'data:image/jpeg;base64,AAAA', fileId: 'img-id', name: 'chest-front.jpg' },
+      { type: 'file', url: 'data:video/mp4;base64,BBBB', fileId: 'vid-id', name: 'clip.mp4' },
     ],
   }
   // Server-persisted twin: DIFFERENT (canonical) id, /api/files urls, same names.
@@ -107,7 +107,7 @@ describe('reconcileMessages — inbound user-message duplicate regression (v0.16
       role: 'user',
       content: 'check the document',
       timestamp: 6000,
-      media: [{ type: 'file', url: 'blob:local-preview', name: filename }],
+      media: [{ type: 'file', url: 'blob:local-preview', fileId: 'file-id', name: filename }],
     }
     const persisted: Message = {
       id: 'server-unicode-id',
