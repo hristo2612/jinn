@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### 🐛 Fixes
+- **Releases recover from delayed registry and Actions visibility.** Publishing waits for the exact npm version and workflow run, and completion can resume the same tag through GitHub Release, Homebrew, and announcement retries.
+
 ## [0.33.1] - 2026-09-06
 
 ### ✨ Features
