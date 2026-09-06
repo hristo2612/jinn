@@ -111,7 +111,7 @@ describe("privacy guard", () => {
       const findings = findBlockedTerms(listTrackedTextFiles(repo, ["docs"]), repo);
       expect(findings).not.toEqual([]);
       expect(findings).toEqual(
-        expect.arrayContaining([expect.stringContaining("docs/scratch.md:1 contains")]),
+        expect.arrayContaining([expect.stringContaining(`${join("docs", "scratch.md")}:1 contains`)]),
       );
     } finally {
       rmSync(repo, { recursive: true, force: true });
