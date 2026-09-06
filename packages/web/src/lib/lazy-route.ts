@@ -1,5 +1,5 @@
 import { lazy, type ComponentType, type LazyExoticComponent } from 'react'
-import { reloadRoute } from './reload-route'
+import { reloadRoute } from './gateway-transport'
 
 const RECOVERABLE_IMPORT_PATTERNS = [
   /failed to fetch dynamically imported module/i,

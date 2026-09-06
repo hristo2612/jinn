@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest'
-import { reloadRoute } from '../reload-route'
+import { reloadRoute } from '../gateway-transport'
 
 const origin = window.location.origin
 const links: HTMLLinkElement[] = []

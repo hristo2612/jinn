@@ -1,5 +1,5 @@
 import { useState, useSyncExternalStore } from 'react'
-import { reloadRoute } from '@/lib/reload-route'
+import { reloadRoute } from '@/lib/gateway-transport'
 
 function subscribe(listener: () => void) {
   window.addEventListener('online', listener)
