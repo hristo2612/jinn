@@ -1,10 +1,12 @@
 # Changelog
 
-## [Unreleased]
+## [0.33.4] - 2026-09-27
 
 ### 🐛 Fixes
-- **Release automation recovers from provider capacity and stranded publication.** Release probes identify incomplete versions before quiet-week checks, gates run at an isolated commit, and bounded repairs preserve existing tests and gate policies before a fresh independent sweep.
-- **Release tests isolate their databases and clean up virtualized scrolling.** Each gateway test file gets a private home before imports, and virtualizer scroll callbacks are cancelled when their observer disconnects.
+- **Completed chat answers stay visible.** Final answers remain outside collapsed activity summaries and survive the transition from streaming to saved messages, including after a reload.
+- **Native agent status follows the actual work.** Codex child agents retain their identity and lifecycle across creation, follow-up, waiting and completion, so the dashboard can show their current state.
+- **Interrupted releases can finish the same version.** Release checks detect stranded publication, isolate the cleared commit and use bounded repairs followed by an independent sweep.
+- **Verification is more reliable across platforms.** Gateway tests use private homes, Windows fixtures use portable paths, and virtualized scrolling cancels callbacks when its observer disconnects.
 
 ## [0.33.3] - 2026-09-06
 
