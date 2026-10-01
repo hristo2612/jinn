@@ -52,7 +52,7 @@ function listPhrase(items: string[]): string {
   return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`
 }
 
-function sortedAsc(set: Set<number>): number[] {
+export function sortedAsc(set: Set<number>): number[] {
   return Array.from(set).sort((a, b) => a - b)
 }
 
@@ -75,43 +75,6 @@ function dowPhrase(dow: Set<number>): string | null {
   if (days.length === 2 && days[0] === 0 && days[1] === 6) return 'Weekends'
   if (days.length <= 3) return listPhrase(days.map((d) => DAY_NAMES[d]))
   return null
-}
-
-/** True per-day fire cap before the weekly grid aggregates a job into a
- *  single counted pill (so `* * * * *` cannot explode the view). */
-export const MAX_WEEKLY_PILLS_PER_DAY = 8
-
-export interface WeeklySlots {
-  /** Distinct (hour, minute) fire slots within one active day, ascending. */
-  slots: { hour: number; minute: number }[]
-  /** Days of week the job fires on (0=Sun..6=Sat). */
-  days: number[]
-  /** Set when the job fires more than MAX_WEEKLY_PILLS_PER_DAY times a day:
-   *  `slots` collapses to the first fire and this carries the true per-day
-   *  count for an aggregated pill. */
-  aggregatedCount?: number
-}
-
-/**
- * Expand a 5-field cron expression into weekly-grid slots using the same
- * field expansion nextCronDate schedules by (lists, ranges, steps, dow 7→0).
- * Day-of-month/month constraints don't map onto a generic week and are not
- * applied here. Returns null for unparseable expressions.
- */
-export function weeklyScheduleSlots(schedule: string): WeeklySlots | null {
-  const sets = parseCronFields(schedule)
-  if (!sets) return null
-  const days = sortedAsc(sets.dow)
-  const hours = sortedAsc(sets.hour)
-  const minutes = sortedAsc(sets.minute)
-  const perDay = hours.length * minutes.length
-  if (perDay > MAX_WEEKLY_PILLS_PER_DAY) {
-    return { slots: [{ hour: hours[0], minute: minutes[0] }], days, aggregatedCount: perDay }
-  }
-  return {
-    slots: hours.flatMap((hour) => minutes.map((minute) => ({ hour, minute }))),
-    days,
-  }
 }
 
 /**
@@ -221,7 +184,7 @@ function expandField(field: string, min: number, max: number, foldSeven = false)
   return out.size > 0 ? out : null
 }
 
-interface CronSets {
+export interface CronSets {
   minute: Set<number>
   hour: Set<number>
   dom: Set<number>
@@ -231,7 +194,7 @@ interface CronSets {
   dowRestricted: boolean
 }
 
-function parseCronFields(schedule: string): CronSets | null {
+export function parseCronFields(schedule: string): CronSets | null {
   const parts = schedule.trim().split(/\s+/)
   if (parts.length !== 5) return null
   const [minF, hourF, domF, monF, dowF] = parts
@@ -294,11 +257,17 @@ function wallClockAt(t: number, dtf: Intl.DateTimeFormat): WallClock {
   }
 }
 
+/** Whether a calendar date satisfies the month/dom/dow fields. Standard cron:
+ *  when BOTH dom and dow are restricted, either matching is enough. */
+export function dateMatches(sets: CronSets, month: number, dom: number, dow: number): boolean {
+  if (!sets.month.has(month)) return false
+  if (sets.domRestricted && sets.dowRestricted) return sets.dom.has(dom) || sets.dow.has(dow)
+  return sets.dom.has(dom) && sets.dow.has(dow)
+}
+
 function matches(w: WallClock, sets: CronSets): boolean {
-  if (!sets.minute.has(w.minute) || !sets.hour.has(w.hour) || !sets.month.has(w.month)) return false
-  // Standard cron: when BOTH dom and dow are restricted, either may match.
-  if (sets.domRestricted && sets.dowRestricted) return sets.dom.has(w.dom) || sets.dow.has(w.dow)
-  return sets.dom.has(w.dom) && sets.dow.has(w.dow)
+  if (!sets.minute.has(w.minute) || !sets.hour.has(w.hour)) return false
+  return dateMatches(sets, w.month, w.dom, w.dow)
 }
 
 const MINUTE = 60_000

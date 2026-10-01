@@ -4,9 +4,7 @@ import {
   describeCron,
   formatNextRun,
   formatRunTime,
-  MAX_WEEKLY_PILLS_PER_DAY,
   nextCronDate,
-  weeklyScheduleSlots,
 } from "../cron-utils"
 import { filterJobs, groupJobsByEmployee, runOutcome, type CronJobWire } from "@/routes/cron/shared"
 
@@ -107,43 +105,6 @@ describe("agoLabel", () => {
     expect(agoLabel("2026-07-08T10:00:00Z", now)).toBe("3d ago")
     expect(agoLabel(undefined, now)).toBe("")
     expect(agoLabel("garbage", now)).toBe("")
-  })
-})
-
-describe("weeklyScheduleSlots", () => {
-  it("expands range/step schedules into every fire slot (QA r2-1)", () => {
-    const w = weeklyScheduleSlots("15 9-17/2 * * 1-5")!
-    expect(w.days).toEqual([1, 2, 3, 4, 5])
-    expect(w.slots).toEqual([9, 11, 13, 15, 17].map((hour) => ({ hour, minute: 15 })))
-    expect(w.aggregatedCount).toBeUndefined()
-    // 5 hour-slots × 5 weekdays → 25 weekly pills.
-    expect(w.slots.length * w.days.length).toBe(25)
-  })
-
-  it("keeps simple dailies as one slot across all days", () => {
-    const w = weeklyScheduleSlots("0 8 * * *")!
-    expect(w.slots).toEqual([{ hour: 8, minute: 0 }])
-    expect(w.days).toEqual([0, 1, 2, 3, 4, 5, 6])
-  })
-
-  it("aggregates dense schedules instead of exploding the grid", () => {
-    const every = weeklyScheduleSlots("* * * * *")!
-    expect(every.aggregatedCount).toBe(1440)
-    expect(every.slots).toHaveLength(1)
-
-    const quarterHourly = weeklyScheduleSlots("*/15 9-17 * * *")!
-    expect(quarterHourly.aggregatedCount).toBe(36) // 4 × 9 hours
-    expect(quarterHourly.slots).toEqual([{ hour: 9, minute: 0 }])
-
-    // Exactly at the cap stays fully expanded.
-    const atCap = weeklyScheduleSlots("0,30 9-12 * * *")! // 2 × 4 = 8
-    expect(atCap.aggregatedCount).toBeUndefined()
-    expect(atCap.slots).toHaveLength(MAX_WEEKLY_PILLS_PER_DAY)
-  })
-
-  it("returns null for unparseable schedules", () => {
-    expect(weeklyScheduleSlots("not a cron")).toBeNull()
-    expect(weeklyScheduleSlots("0 8 * *")).toBeNull()
   })
 })
 
