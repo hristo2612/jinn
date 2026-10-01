@@ -107,21 +107,22 @@ describe("QuickCaptureBar — the voice path and its one confirm", () => {
 
     await dictate()
 
-    expect((screen.getByTestId("quick-capture-input") as HTMLInputElement).value).toBe("the closed rail scrolls under the header")
+    expect((screen.getByTestId("quick-capture-input") as HTMLTextAreaElement).value).toBe("the closed rail scrolls under the header")
     expect(startTodoCapture).not.toHaveBeenCalled()
     expect(screen.getByTestId("quick-capture-confirm-hint")).toBeTruthy()
   })
 
-  it("posts once, as speech-derived, when the confirm is tapped", async () => {
+  it("posts once, as speech-derived, when a capture action is tapped", async () => {
     renderBar()
     await dictate()
 
-    await act(async () => { fireEvent.click(screen.getByTestId("quick-capture-send")) })
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Shape only" })) })
 
     expect(startTodoCapture).toHaveBeenCalledTimes(1)
     expect(startTodoCapture).toHaveBeenCalledWith({
       text: "the closed rail scrolls under the header",
       speechDerived: true,
+      action: "shape",
     })
   })
 
@@ -132,23 +133,28 @@ describe("QuickCaptureBar — the voice path and its one confirm", () => {
     fireEvent.change(screen.getByTestId("quick-capture-input"), { target: { value: "the closed rail scrolls under the header on mobile" } })
     expect(startTodoCapture).not.toHaveBeenCalled()
 
-    await act(async () => { fireEvent.click(screen.getByTestId("quick-capture-send")) })
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Shape and dispatch" })) })
 
     expect(startTodoCapture).toHaveBeenCalledWith({
       text: "the closed rail scrolls under the header on mobile",
       speechDerived: true,
+      action: "shape-and-dispatch",
     })
   })
 
-  // The other half of the contract: typing is still fully autonomous.
-  it("still posts a typed capture with no confirm, and not as speech-derived", async () => {
+  // The other half of the contract: typed text needs no dictation confirm.
+  it("still posts typed text with Mod+Enter and not as speech-derived", async () => {
     renderBar()
     const input = await type("typed straight through")
 
-    await act(async () => { fireEvent.keyDown(input, { key: "Enter" }) })
+    await act(async () => { fireEvent.keyDown(input, { key: "Enter", ctrlKey: true }) })
 
     expect(screen.queryByTestId("quick-capture-confirm-hint")).toBeNull()
     expect(startTodoCapture).toHaveBeenCalledTimes(1)
-    expect(startTodoCapture).toHaveBeenCalledWith({ text: "typed straight through", speechDerived: false })
+    expect(startTodoCapture).toHaveBeenCalledWith({
+      text: "typed straight through",
+      speechDerived: false,
+      action: "shape-and-dispatch",
+    })
   })
 })

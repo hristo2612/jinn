@@ -78,14 +78,15 @@ describe("scanOrg system employees", () => {
     expect(shaper?.persona.trim().length).toBeGreaterThan(0);
   });
 
-  // The Shaper hands off rather than assigning, and the handoff is the whole
-  // reason it is a separate employee: if the persona ever stops naming the
-  // dispatch verb, quick capture ends at a Todo nobody starts.
-  it("tells the Shaper to create exactly one Todo, leave the assignee alone, and hand off", () => {
+  // The selected capture action is authoritative: Shape stops after shaping,
+  // while Shape & Dispatch makes the same Todo eligible for handoff.
+  it("tells the Shaper to create exactly one Todo and obey both action handoffs", () => {
     const persona = scanOrg(config).get("todo-shaper")!.persona;
 
     expect(persona).toContain("create_work_item");
     expect(persona).toContain("dispatch_work_item");
+    expect(persona).toMatch(/For Shape only, stop after the Todo and comment exist/);
+    expect(persona).toMatch(/For Shape & Dispatch, call dispatch_work_item/);
     expect(persona).toMatch(/exactly one/i);
     expect(persona).toMatch(/do not set an assignee/i);
   });

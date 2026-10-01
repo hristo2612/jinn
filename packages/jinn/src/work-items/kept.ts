@@ -10,7 +10,9 @@ import { CREATE_META_TABLE } from "../sessions/migrate.js";
  *  rather than the operator's own hand, and Home filled up with work they never
  *  asked to follow. Since PLA-230 a pin is no longer the only thing on Home:
  *  the operator's own Todos join it as a term in `HOME_SCOPE_SQL`, read at
- *  query time, so nothing writes to the kept set on their behalf.
+ *  query time. The explicit default is quick capture: its authenticated Shaper
+ *  creation is pinned because capture means "keep this rough idea in Home"
+ *  even when the operator chose Shape without dispatch.
  *
  *  Additive, never a column on `work_items`: the exact-shape verifier refuses
  *  any drift in an existing table, so a new table is the only extension a

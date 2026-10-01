@@ -204,9 +204,7 @@ import {
 import {
   createLabel,
   listLabels,
-  setWorkItemLabels,
   TODO_LABELS_MAX,
-  type Label,
 } from "../work-items/labels.js";
 import {
   addAttachment,
@@ -239,6 +237,7 @@ import { resolveApprovalDecisionAuthority, resolveRootApprovalTarget, type Appro
 import { approvalGateClass } from "./workflow-todo-binding.js";
 import { orgRegistry } from "./org-registry.js";
 import { TODO_DISPATCHER_NAME } from "./system-employees.js";
+import { createWorkItemWithCompanions } from "./work-item-create.js";
 import { claimTodoForDelegation, claimTodoForDispatch } from "./todo-claim.js";
 import {
   hasSupportedTodoEditContentEncoding,
@@ -246,7 +245,7 @@ import {
   todoEditContentLength,
   todoEditValidationError,
 } from "./todo-edit-precondition.js";
-import { createWorkItemIdempotent, WorkItemCreateIdempotencyConflictError } from "../work-items/create-idempotency.js";
+import { WorkItemCreateIdempotencyConflictError } from "../work-items/create-idempotency.js";
 import { resolveTodoDispatch, setTodoDispatchConfig } from "../work-items/dispatch-config.js";
 import {
   ISO_DATE_OR_INSTANT,
@@ -2361,22 +2360,10 @@ export async function handleApiRequest(
       try {
         // Tagging runs inside the create transaction: an unknown label must fail
         // the whole request rather than leave an untagged Todo behind.
-        let labels: Label[] | undefined;
-        const create = () => idempotencyKey
-          ? createWorkItemIdempotent(input, idempotencyKey, labelRefs)
-          : { item: createWorkItem(input), replayed: false };
-        const created = labelRefs === undefined
-          ? create()
-          : initDb().transaction(() => {
-            const result = create();
-            // A replay's labels were written by the create it replays. Setting
-            // them again would rewrite a set the Todo may have had edited since.
-            if (!result.replayed) labels = setWorkItemLabels(result.item.id, labelRefs, workItemActor(caller), caller.origin);
-            return result;
-          })();
+        const created = createWorkItemWithCompanions(input, idempotencyKey, labelRefs, caller);
         if (created.replayed) return json(res, { workItem: created.item, replayed: true }, 200);
         const activityReceiptId = persistTodoMutationActivity(req, context, created.item, "created");
-        return json(res, withActivityReceipt({ workItem: created.item, ...(labels ? { labels } : {}) }, activityReceiptId), 201);
+        return json(res, withActivityReceipt({ workItem: created.item, ...(created.labels ? { labels: created.labels } : {}) }, activityReceiptId), 201);
       } catch (err) {
         if (err instanceof WorkItemCreateIdempotencyConflictError) {
           return json(res, { error: err.message, code: "todo_create_idempotency_conflict", workItemId: err.workItemId }, 409);

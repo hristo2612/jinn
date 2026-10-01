@@ -2,7 +2,16 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 // The harness comes FIRST, before anything that reaches shared/paths.js: paths
 // freezes JINN_HOME at import, so an earlier one would leave this file on the
 // run-wide home. startRouteHarness asserts it.
-import { call, config, startRouteHarness, stopRouteHarness, unavailableEngines, type Registry } from "./todo-route-harness.js";
+import {
+  call,
+  config,
+  firstUserMessage,
+  sessionToolHeaders,
+  startRouteHarness,
+  stopRouteHarness,
+  unavailableEngines,
+  type Registry,
+} from "./todo-route-harness.js";
 
 /**
  * What the capture POST spends, and what it refuses to spend, over a real
@@ -36,6 +45,56 @@ describe("POST /api/todo-captures", () => {
     expect(response.body.captureId).toBe(response.body.sessionId);
     expect(registry.countSessions()).toBe(before + 1);
     expect(registry.getSession(response.body.sessionId)).toMatchObject({ employee: "todo-shaper", status: "running" });
+  });
+
+  it.each([
+    ["shape", "Shape only. Create or land the Todo, then stop without dispatching it."],
+    ["shape-and-dispatch", "Shape & Dispatch. Create or land the Todo, then dispatch a newly created Todo."],
+  ] as const)("hands the %s action to Todo Shaper only", async (action, instruction) => {
+    const response = await call("POST", "/api/todo-captures", {
+      text: "make the capture action explicit",
+      action,
+    });
+
+    expect(response.status).toBe(201);
+    expect(registry.getSession(response.body.sessionId)).toMatchObject({ employee: "todo-shaper" });
+    expect(firstUserMessage(registry, response.body.sessionId)).toContain(instruction);
+  });
+
+  it("preserves line breaks in the message accepted by the shaping session", async () => {
+    const text = "Keep the rough title\n\nAcceptance:\n- first line\n- second line";
+
+    const response = await call("POST", "/api/todo-captures", { text, action: "shape" });
+
+    expect(response.status).toBe(201);
+    expect(firstUserMessage(registry, response.body.sessionId)).toContain(`Capture:\n${text}`);
+  });
+
+  it.each(["shape", "shape-and-dispatch"] as const)("pins Todos created by the %s path so Home includes them", async (action) => {
+    const capture = await call("POST", "/api/todo-captures", { text: `pin the ${action} result`, action });
+    const created = await call(
+      "POST",
+      "/api/work-items",
+      { title: `Captured through ${action}` },
+      await sessionToolHeaders(capture.body.sessionId),
+    );
+
+    expect(created.status).toBe(201);
+    const home = await call("GET", "/api/work-items?home=true&rootsOnly=true&limit=200");
+    expect(home.body.workItems).toContainEqual(expect.objectContaining({
+      id: created.body.workItem.id,
+      kept: true,
+    }));
+  });
+
+  it("refuses an unknown action without creating a session", async () => {
+    const before = registry.countSessions();
+
+    const response = await call("POST", "/api/todo-captures", { text: "do something unclear", action: "launch" });
+
+    expect(response.status).toBe(400);
+    expect(response.body.error).toMatch(/action/);
+    expect(registry.countSessions()).toBe(before);
   });
 
   // The operator's own words are what gets stored. The speech note is added to

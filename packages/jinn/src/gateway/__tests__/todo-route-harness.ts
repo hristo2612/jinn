@@ -175,6 +175,16 @@ export async function stopRouteHarness(): Promise<void> {
   (await import("../../mcp/attachment.js")).setJinnAttachGate(null);
 }
 
+/** Authenticate a request as one of the harness's spawned engine sessions. */
+export async function sessionToolHeaders(sessionId: string): Promise<Record<string, string>> {
+  const identity = await import("../../mcp/identity.js");
+  return {
+    [identity.TOOL_CALL_HEADER]: identity.TOOL_CALL_HEADER_VALUE,
+    [identity.CALLER_SESSION_HEADER]: sessionId,
+    [identity.CALLER_SESSION_CAPABILITY_HEADER]: identity.ensureSessionCapability(sessionId),
+  };
+}
+
 /** The prompt the attempt actually received. */
 export function firstUserMessage(registry: Registry, sessionId: string): string {
   return registry.getMessages(sessionId).find((message) => message.role === "user")?.content ?? "";
