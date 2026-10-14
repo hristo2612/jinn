@@ -120,7 +120,7 @@ const ENGINE_INSTALL_HINT: Record<EngineName, string> = {
   grok: "npm install -g @xai-official/grok, then run grok once to authenticate",
   pi: "install the Pi CLI",
   hermes: "install the Hermes CLI: curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash",
-  muse: "install the Muse launcher from https://api.meta.ai/muse-launcher.sh, then run muse login once to authenticate (lab image pins the binary instead — see engines/muse.ts)",
+  muse: "install the Muse launcher from https://api.meta.ai/muse-launcher.sh, then run muse login once to authenticate",
 };
 
 /** Actionable error message for a session blocked by a missing engine binary. */

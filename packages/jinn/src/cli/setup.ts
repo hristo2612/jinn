@@ -252,7 +252,7 @@ engines:
   hermes:
     bin: hermes
     model: openai-codex:gpt-5.5
-  # LAB (pendlerosa fork): Muse headless engine.
+  # Muse headless engine.
   muse:
     bin: muse
     model: muse-wonder-1.0
@@ -405,12 +405,12 @@ export async function runSetup(opts?: { force?: boolean }): Promise<void> {
     info("Install the Hermes CLI: curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash");
   }
 
-  // 4b. Check for muse binary (LAB fork engine; optional outside the lab image)
+  // 4b. Check for muse binary (optional engine; only needed for muse employees)
   const musePath = whichBin("muse");
   if (musePath) {
     ok(`muse found at ${musePath}`);
   } else {
-    warn("muse not found (lab fork engine; only needed for muse employees)");
+    warn("muse not found (only needed for muse employees)");
   }
 
   // 5. Loudly warn if NO engine is installed — the gateway will start, but it

@@ -1,7 +1,7 @@
 import type { ModelInfo } from "./types.js";
 
 /**
- * Muse model catalog (lab fork). Muse has no non-interactive model-list
+ * Muse model catalog. Muse has no non-interactive model-list
  * command, so — like the offline Claude/Grok fallbacks — the registry ships a
  * known list and the operator can override it wholesale with a `models.muse`
  * block in config.yaml.

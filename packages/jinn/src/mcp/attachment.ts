@@ -67,7 +67,7 @@ export const JINN_ATTACH_DEFAULT = true;
  *   - antigravity: guarded Gemini MCP config entry plus per-session child env.
  *   - muse: per-invocation `-c mcpServers.<name>=<json>` argv overrides (the CLI
  *             refuses a whole-map override), with session identity carried in the
- *             server env (lab fork; engines/muse-mcp.ts).
+ *             server env (engines/muse-mcp.ts).
  * (Lives here, not in resolver.ts, so the attachment decision can consult it
  * without an import cycle; resolver.ts re-exports it.)
  */

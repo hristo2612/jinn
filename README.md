@@ -223,10 +223,13 @@ Jinn detects installed agent CLIs and lets each employee or session choose an en
 | **antigravity** | Antigravity CLI (`agy`) | see Antigravity docs | CLI (xterm) | - |
 | **pi** | Pi coding agent CLI | see Pi CLI docs | Chat | - |
 | **hermes** | NousResearch Hermes - open-source, model-agnostic agent | `curl -fsSL https://hermes-agent.nousresearch.com/install.sh \| bash` | Chat (ACP streaming) · CLI (xterm view) | - |
+| **muse** | Meta Muse - headless `muse exec` per turn | launcher from `https://api.meta.ai/muse-launcher.sh`, then `muse login` | Chat | low / medium / high / xhigh / max / ultra |
 
 Fallback labels include **Opus (Latest)**, **Sonnet (Latest)**, **Fable (Latest)**, **GPT-5.5 Codex**, **Grok Build**, and **Gemini 3.5 Flash Medium / High / Low**. Pi and Hermes report their models at session start.
 
 > **Hermes cost note.** Unlike the subscription-wrapped engines, Hermes owns its own model loop and bills **per token** on the provider configured in `~/.hermes`. It streams over the Agent Client Protocol (ACP) and runs fully auto-approved. See [`docs/engines-hermes.md`](docs/engines-hermes.md).
+
+> **Muse note.** Muse runs spawn-per-turn over `muse exec --json` (MSP event stream): the adapter owns a stable session UUID per Jinn session, passes effort via `--reasoning-effort`, and attaches MCP servers per invocation with `-c mcpServers.<name>=<json>` (env values ride as `${VAR}` references expanded from the child env, since the CLI refuses literal secret leaves). Billing follows the operator's `muse login`. Chat-only for now; the CLI's interactive TUI is not wired to the PTY view.
 
 <details>
 <summary><b>How the Claude engine runs on your subscription</b> (the PTY details)</summary>

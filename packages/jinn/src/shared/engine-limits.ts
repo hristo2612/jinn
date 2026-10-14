@@ -365,7 +365,7 @@ export async function collectEngineLimits(
       engines[name] = collectUnsupported(
         config,
         name,
-        "Muse exposes subscription usage only over its session wire protocol; no quota collector is registered for the headless exec adapter (lab fork).",
+        "Muse exposes subscription usage only over its session wire protocol; no quota collector is registered for the headless exec adapter.",
       );
     } else {
       engines[name] = collectUnsupported(config, name, "No limit collector is registered for this engine.");

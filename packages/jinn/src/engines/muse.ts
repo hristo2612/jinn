@@ -30,7 +30,7 @@ const TURN_TIMEOUT_MS = 14 * 24 * 60 * 60 * 1000;
 const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
 /**
- * Muse (`muse` CLI) run headlessly, one process per turn (lab fork).
+ * Muse (`muse` CLI) run headlessly, one process per turn.
  *
  * Invocation: `muse exec --json --prompt-file <file> --session-id <uuid> \
  *   --workspace <cwd> --trust-workspace --approval-mode never --disable-sandbox \
