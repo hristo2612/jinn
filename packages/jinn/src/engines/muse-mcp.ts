@@ -2,6 +2,8 @@ import type { McpServerConfig, McpServerStdioConfig, ResolvedMcpConfig } from ".
 import { logger } from "../shared/logger.js";
 
 const JINN_BUILTIN_SERVER = "jinn";
+const SAFE_SERVER_NAME = /^[A-Za-z0-9_-]+$/;
+const SESSION_ENV_KEYS = ["JINN_SESSION_ID", "JINN_SESSION_CAPABILITY", "JINN_GATEWAY_URL"] as const;
 
 /**
  * Muse consumes MCP servers from `mcpServers` in its settings, and its
@@ -37,22 +39,16 @@ function jinnStdioSpec(resolvedMcp: ResolvedMcpConfig | undefined): McpServerStd
 
 /** Session identity for the muse child env (mirrors piJinnSessionEnv). */
 export function museJinnSessionEnv(resolvedMcp: ResolvedMcpConfig | undefined): Record<string, string> {
-  const spec = jinnStdioSpec(resolvedMcp);
-  const sessionId = spec?.env?.JINN_SESSION_ID;
-  const capability = spec?.env?.JINN_SESSION_CAPABILITY;
-  const workflowAttempt = spec?.env?.JINN_WORKFLOW_ATTEMPT;
-  const gatewayUrl = spec?.env?.JINN_GATEWAY_URL;
-  return sessionId && capability
-    ? {
-        JINN_SESSION_ID: sessionId,
-        JINN_SESSION_CAPABILITY: capability,
-        ...(gatewayUrl ? { JINN_GATEWAY_URL: gatewayUrl } : {}),
-        ...(workflowAttempt === "1" ? { JINN_WORKFLOW_ATTEMPT: workflowAttempt } : {}),
-      }
-    : {};
+  const specEnv = jinnStdioSpec(resolvedMcp)?.env;
+  if (!specEnv?.JINN_SESSION_ID || !specEnv.JINN_SESSION_CAPABILITY) return {};
+  const env: Record<string, string> = {};
+  for (const key of SESSION_ENV_KEYS) {
+    const value = specEnv[key];
+    if (value) env[key] = value;
+  }
+  if (specEnv.JINN_WORKFLOW_ATTEMPT === "1") env.JINN_WORKFLOW_ATTEMPT = "1";
+  return env;
 }
-
-const SAFE_SERVER_NAME = /^[A-Za-z0-9_-]+$/;
 
 /**
  * Translate the resolved MCP set into muse `-c` argv pairs. A `jinn` server
@@ -60,42 +56,48 @@ const SAFE_SERVER_NAME = /^[A-Za-z0-9_-]+$/;
  * the turn still runs, the model just improvises around the missing tools.
  */
 export function buildMuseMcpArgs(resolvedMcp: ResolvedMcpConfig | undefined, sessionId: string): MuseMcpArgs {
-  const servers = resolvedMcp?.mcpServers ?? {};
+  warnUnattachableJinn(resolvedMcp, sessionId);
   const args: string[] = [];
   const attachedNames: string[] = [];
-
-  const jinnSpec = servers[JINN_BUILTIN_SERVER] as (McpServerConfig & { url?: unknown }) | undefined;
-  if (jinnSpec && !isStdio(jinnSpec)) {
-    const shape = jinnSpec.url !== undefined ? "is URL-based" : "carries no command";
-    logger.warn(`Muse engine is starting session ${sessionId} WITHOUT the jinn toolset: the resolved "jinn" server ${shape}, and the built-in server is stdio-only.`);
-  }
-
-  for (const [name, spec] of Object.entries(servers)) {
-    if (!SAFE_SERVER_NAME.test(name)) {
-      logger.warn(`Muse engine is skipping MCP server "${name}" for session ${sessionId}: the name cannot be addressed via -c mcpServers.<name>.`);
-      continue;
-    }
-    let value: Record<string, unknown> | null = null;
-    if (isStdio(spec)) {
-      value = {
-        command: spec.command,
-        ...(spec.args?.length ? { args: spec.args } : {}),
-        ...(spec.env && Object.keys(spec.env).length ? { env: spec.env } : {}),
-      };
-    } else {
-      const url = (spec as { url?: unknown }).url;
-      const headers = (spec as { headers?: unknown }).headers;
-      if (typeof url === "string" && url) {
-        value = { url, ...(headers && typeof headers === "object" ? { headers } : {}) };
-      }
-    }
-    if (!value) {
-      logger.warn(`Muse engine is skipping MCP server "${name}" for session ${sessionId}: unrecognized server shape (no command, no url).`);
-      continue;
-    }
+  for (const [name, spec] of Object.entries(resolvedMcp?.mcpServers ?? {})) {
+    const value = museServerValue(name, spec, sessionId);
+    if (!value) continue;
     args.push("-c", `mcpServers.${name}=${JSON.stringify(value)}`);
     attachedNames.push(name);
   }
-
   return { args, attachedNames };
+}
+
+function warnUnattachableJinn(resolvedMcp: ResolvedMcpConfig | undefined, sessionId: string): void {
+  const spec = resolvedMcp?.mcpServers?.[JINN_BUILTIN_SERVER] as (McpServerConfig & { url?: unknown }) | undefined;
+  if (!spec || isStdio(spec)) return;
+  const shape = spec.url !== undefined ? "is URL-based" : "carries no command";
+  logger.warn(`Muse engine is starting session ${sessionId} WITHOUT the jinn toolset: the resolved "jinn" server ${shape}, and the built-in server is stdio-only.`);
+}
+
+function museServerValue(name: string, spec: McpServerConfig, sessionId: string): Record<string, unknown> | null {
+  if (!SAFE_SERVER_NAME.test(name)) {
+    logger.warn(`Muse engine is skipping MCP server "${name}" for session ${sessionId}: the name cannot be addressed via -c mcpServers.<name>.`);
+    return null;
+  }
+  if (isStdio(spec)) return stdioValue(spec);
+  const urlValue = urlServerValue(spec);
+  if (urlValue) return urlValue;
+  logger.warn(`Muse engine is skipping MCP server "${name}" for session ${sessionId}: unrecognized server shape (no command, no url).`);
+  return null;
+}
+
+function stdioValue(spec: McpServerStdioConfig): Record<string, unknown> {
+  return {
+    command: spec.command,
+    ...(spec.args?.length ? { args: spec.args } : {}),
+    ...(spec.env && Object.keys(spec.env).length ? { env: spec.env } : {}),
+  };
+}
+
+function urlServerValue(spec: McpServerConfig): Record<string, unknown> | null {
+  const url = (spec as { url?: unknown }).url;
+  if (typeof url !== "string" || !url) return null;
+  const headers = (spec as { headers?: unknown }).headers;
+  return { url, ...(headers && typeof headers === "object" ? { headers } : {}) };
 }

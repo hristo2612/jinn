@@ -546,6 +546,22 @@ function buildPiEntry(
   return { ...synthEntry, available };
 }
 
+/** Registry entry from a static known catalog (engines with no discovery). */
+function synthesizedKnownEntry(
+  name: EngineName,
+  config: JinnConfig,
+  known: { defaultModel: string; models: ModelInfo[] },
+  modelId: string,
+): EngineRegistryEntry {
+  return {
+    name,
+    available: engineAvailable(config, name),
+    defaultModel: known.defaultModel || modelId,
+    effortMechanism: EFFORT_MECHANISM[name],
+    models: known.models,
+  };
+}
+
 /** Backward-compat: synthesize a minimal registry from engines.<name>.model. */
 export function synthesizeFromEngineConfig(config: JinnConfig): ModelRegistry {
   const registry: ModelRegistry = {};
@@ -576,14 +592,7 @@ export function synthesizeFromEngineConfig(config: JinnConfig): ModelRegistry {
       continue;
     }
     if (name === "muse") {
-      const known = knownMuseModels(modelId);
-      registry[name] = {
-        name,
-        available: engineAvailable(config, name),
-        defaultModel: known.defaultModel || modelId,
-        effortMechanism: EFFORT_MECHANISM[name],
-        models: known.models,
-      };
+      registry[name] = synthesizedKnownEntry(name, config, knownMuseModels(modelId), modelId);
       continue;
     }
     const model: ModelInfo = {

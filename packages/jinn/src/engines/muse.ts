@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
-import type { InterruptibleEngine, EngineRunOpts, EngineResult } from "../shared/types.js";
+import type { InterruptibleEngine, EngineRunOpts, EngineResult, StreamDelta } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
 import { resolveBin } from "../shared/resolve-bin.js";
 import { JINN_HOME } from "../shared/paths.js";
@@ -66,21 +66,16 @@ export class MuseEngine implements InterruptibleEngine {
   kill(sessionId: string, reason = "Interrupted"): void {
     const live = this.liveProcesses.get(sessionId);
     if (!live) return;
-
     live.terminationReason = reason;
     logger.info(`Killing Muse process for session ${sessionId}`);
-
     try {
       live.rl.close();
     } catch {
       /* ignore */
     }
-
     this.signalProcess(live.proc, "SIGTERM");
     setTimeout(() => {
-      if (live.proc.exitCode === null) {
-        this.signalProcess(live.proc, "SIGKILL");
-      }
+      if (live.proc.exitCode === null) this.signalProcess(live.proc, "SIGKILL");
     }, 2000);
   }
 
@@ -109,75 +104,56 @@ export class MuseEngine implements InterruptibleEngine {
       ? opts.resumeSessionId
       : crypto.randomUUID();
 
-    let prompt = opts.prompt;
-    if (opts.systemPrompt && !opts.resumeSessionId) {
-      prompt = opts.systemPrompt + "\n\n---\n\n" + prompt;
-    }
-    if (opts.attachments?.length) {
-      prompt += "\n\nAttached files:\n" + opts.attachments.map((a) => `- ${a}`).join("\n");
-    }
-
-    const bin = resolveBin("muse", opts.bin);
-
-    // The prompt rides a file, never argv: no size/dash/quoting hazards, and
-    // the platform-context preamble stays out of the process table.
-    const promptDir = path.join(JINN_HOME, "tmp", "muse", trackingId.replace(/[^A-Za-z0-9_.-]/g, "_"));
-    const promptFile = path.join(promptDir, "prompt.txt");
+    let staged: { promptDir: string; promptFile: string };
     try {
-      fs.mkdirSync(promptDir, { recursive: true, mode: 0o700 });
-      fs.writeFileSync(promptFile, prompt, { mode: 0o600 });
-      try {
-        fs.chmodSync(promptFile, 0o600);
-      } catch {
-        /* best effort on platforms without chmod */
-      }
+      staged = stagePromptFile(trackingId, prepareTurnPrompt(opts));
     } catch (err) {
-      logger.error(`MuseEngine failed to write prompt file ${promptFile}: ${err instanceof Error ? err.message : err}`);
-      return { sessionId: museSessionId, result: "", error: `Muse engine could not stage the prompt: ${err instanceof Error ? err.message : String(err)}` };
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error(`MuseEngine failed to stage the prompt for session ${trackingId}: ${message}`);
+      return { sessionId: museSessionId, result: "", error: `Muse engine could not stage the prompt: ${message}` };
     }
 
     const mcp = buildMuseMcpArgs(opts.resolvedMcp, trackingId);
-    const args: string[] = [
-      "exec",
-      "--json",
-      "--prompt-file", promptFile,
-      "--session-id", museSessionId,
-      "--workspace", opts.cwd,
-      "--trust-workspace",
-      "--approval-mode", "never",
-      "--disable-sandbox",
-    ];
-    if (opts.model) args.push("--model", opts.model);
-    if (opts.effortLevel && opts.effortLevel !== "default") {
-      args.push("--reasoning-effort", opts.effortLevel);
-    }
-    args.push(...mcp.args);
-    if (opts.cliFlags?.length) args.push(...opts.cliFlags);
+    const bin = resolveBin("muse", opts.bin);
+    const args = buildExecArgs(opts, staged.promptFile, museSessionId, mcp.args);
+    logger.info(startLogLine(bin, opts, mcp.attachedNames));
 
-    logger.info(
-      `Muse engine starting: ${bin} exec --model ${opts.model ?? "(default)"}` +
-        `${opts.effortLevel && opts.effortLevel !== "default" ? ` --reasoning-effort ${opts.effortLevel}` : ""}` +
-        `${mcp.attachedNames.length ? ` (mcp: ${mcp.attachedNames.join(",")})` : ""}` +
-        ` (resume: ${opts.resumeSessionId || "none"})`,
-    );
+    const env = { ...this.buildCleanEnv(trackingId), ...museJinnSessionEnv(opts.resolvedMcp) };
+    return this.spawnTurn({
+      bin,
+      args,
+      cwd: opts.cwd,
+      env,
+      trackingId,
+      museSessionId,
+      promptDir: staged.promptDir,
+      onStream: opts.onStream || null,
+    });
+  }
 
-    const cleanEnv = { ...this.buildCleanEnv(trackingId), ...museJinnSessionEnv(opts.resolvedMcp) };
-
+  private spawnTurn(turn: {
+    bin: string;
+    args: string[];
+    cwd: string;
+    env: Record<string, string>;
+    trackingId: string;
+    museSessionId: string;
+    promptDir: string;
+    onStream: EngineRunOpts["onStream"] | null;
+  }): Promise<EngineResult> {
+    const { bin, args, cwd, env, trackingId, museSessionId, promptDir, onStream } = turn;
     return new Promise((resolve, reject) => {
       const proc = spawn(bin, args, {
-        cwd: opts.cwd,
-        env: cleanEnv,
+        cwd,
+        env,
         stdio: ["pipe", "pipe", "pipe"],
         detached: process.platform !== "win32",
       });
       // No stdin protocol: close it so a muse build that probes stdin cannot wedge.
       proc.stdin.end();
-
-      const rl = readline.createInterface({ input: proc.stdout, terminal: false });
-
       const live: LiveProcess = {
         proc,
-        rl,
+        rl: readline.createInterface({ input: proc.stdout, terminal: false }),
         terminationReason: null,
         resultText: "",
         turnError: null,
@@ -188,52 +164,47 @@ export class MuseEngine implements InterruptibleEngine {
         promptDir,
       };
       this.liveProcesses.set(trackingId, live);
-      live.hardTimeout = setTimeout(() => {
-        const l = this.liveProcesses.get(trackingId);
-        if (!l || l.settled) return;
-        l.terminationReason = "Muse turn timed out";
-        logger.warn(`Muse turn timed out for session ${trackingId}; terminating process`);
-        this.signalProcess(l.proc, "SIGTERM");
-        setTimeout(() => {
-          if (l.proc.exitCode === null) this.signalProcess(l.proc, "SIGKILL");
-        }, 2000).unref?.();
-      }, TURN_TIMEOUT_MS);
-      live.hardTimeout.unref?.();
-
-      const onStream = opts.onStream || null;
-
-      rl.on("line", (line) => {
-        const trimmed = line.trim();
-        if (!trimmed) return;
-
-        let parsed: Record<string, unknown>;
-        try {
-          parsed = JSON.parse(trimmed);
-        } catch {
-          logger.debug(`[muse stream] unparseable line: ${trimmed.slice(0, 100)}`);
-          return;
-        }
-        if (!parsed || typeof parsed !== "object") return;
-        this.handleEnvelope(live, parsed, onStream);
-      });
-
-      proc.stderr.on("data", (d: Buffer) => {
-        const chunk = d.toString();
-        live.stderr = (live.stderr + chunk).slice(-STDERR_MAX);
-        for (const l of chunk.trim().split("\n").filter(Boolean)) logger.debug(`[muse stderr] ${l}`);
-      });
-
-      proc.on("close", (code) => this.settle(trackingId, code));
-
-      proc.on("error", (err) => {
-        const l = this.liveProcesses.get(trackingId);
-        if (!l || l.settled) return;
-        l.settled = true;
-        this.cleanup(l);
-        this.liveProcesses.delete(trackingId);
-        reject(new Error(`Failed to spawn Muse CLI: ${err.message}`));
-      });
+      this.armHardTimeout(trackingId, live);
+      this.wireProcess(live, trackingId, onStream, reject);
     });
+  }
+
+  private wireProcess(
+    live: LiveProcess,
+    trackingId: string,
+    onStream: EngineRunOpts["onStream"] | null,
+    reject: (err: Error) => void,
+  ): void {
+    live.rl.on("line", (line) => {
+      const envelope = parseEnvelope(line);
+      if (envelope) this.handleEnvelope(live, envelope, onStream);
+    });
+    live.proc.stderr?.on("data", (d: Buffer) => {
+      const chunk = d.toString();
+      live.stderr = (live.stderr + chunk).slice(-STDERR_MAX);
+      for (const l of chunk.trim().split("\n").filter(Boolean)) logger.debug(`[muse stderr] ${l}`);
+    });
+    live.proc.on("close", (code) => this.settle(trackingId, code));
+    live.proc.on("error", (err) => {
+      if (live.settled) return;
+      live.settled = true;
+      this.cleanup(live);
+      this.liveProcesses.delete(trackingId);
+      reject(new Error(`Failed to spawn Muse CLI: ${err.message}`));
+    });
+  }
+
+  private armHardTimeout(trackingId: string, live: LiveProcess): void {
+    live.hardTimeout = setTimeout(() => {
+      if (live.settled) return;
+      live.terminationReason = "Muse turn timed out";
+      logger.warn(`Muse turn timed out for session ${trackingId}; terminating process`);
+      this.signalProcess(live.proc, "SIGTERM");
+      setTimeout(() => {
+        if (live.proc.exitCode === null) this.signalProcess(live.proc, "SIGKILL");
+      }, 2000).unref?.();
+    }, TURN_TIMEOUT_MS);
+    live.hardTimeout.unref?.();
   }
 
   /**
@@ -247,71 +218,20 @@ export class MuseEngine implements InterruptibleEngine {
     onStream: EngineRunOpts["onStream"] | null,
   ): void {
     const payloadType = typeof envelope.payload_type === "string" ? envelope.payload_type : "";
-    const payload = envelope.payload && typeof envelope.payload === "object" && !Array.isArray(envelope.payload)
-      ? envelope.payload as Record<string, unknown>
-      : {};
+    const payload = payloadOf(envelope);
     const kind = typeof payload.kind === "string" ? payload.kind : "";
 
     if (payloadType === "run.output.delta") {
-      const text = payload.text;
-      if (typeof text === "string" && text) {
-        live.resultText += text;
-        if (onStream) onStream({ type: "text", content: text });
-      }
+      applyOutputDelta(live, payload, onStream);
       return;
     }
-
     if (payloadType.includes("tool") || kind.includes("tool")) {
-      this.handleToolEnvelope(payload, payloadType, kind, onStream);
+      if (onStream) onStream(toolDelta(payload, payloadType, kind));
       return;
     }
-
     // Failure bookkeeping: capture the message, but settle() still prefers a
     // non-empty answer — a failed reminder subagent must not fail the turn.
-    if (payloadType.includes("error") || payloadType.includes("failed") || kind.endsWith("_failed") || kind === "failed") {
-      const message = firstString(payload, ["message", "error", "text"]);
-      if (message) live.turnError = message;
-    }
-  }
-
-  private handleToolEnvelope(
-    payload: Record<string, unknown>,
-    payloadType: string,
-    kind: string,
-    onStream: EngineRunOpts["onStream"] | null,
-  ): void {
-    if (!onStream) return;
-    const toolName = firstString(payload, ["tool_name", "toolName", "name", "operation"]) || "tool";
-    const toolId = firstString(payload, ["tool_id", "toolId", "call_id", "id", "task_id"]);
-    const output = firstString(payload, ["output", "result_text", "text"]);
-    const isResult = payloadType.includes("result") || payloadType.includes("receipt")
-      || kind.includes("result") || kind.includes("completed") || output !== undefined;
-
-    if (isResult) {
-      const rawResult = payload.result ?? payload.output ?? output ?? "";
-      const text = typeof rawResult === "string" ? rawResult : safeStringify(rawResult);
-      const isError = payload.is_error === true || payload.isError === true || kind.includes("failed");
-      const activityReceiptId = extractActivityReceiptId(text, { isError });
-      onStream({
-        type: "tool_result",
-        content: text.slice(0, 500),
-        toolName,
-        ...(toolId ? { toolId } : {}),
-        ...(activityReceiptId ? { activityReceiptId } : {}),
-      });
-      return;
-    }
-
-    const input = payload.input ?? payload.arguments ?? payload.args;
-    const detail = input && typeof input === "object"
-      ? firstString(input as Record<string, unknown>, ["command", "path", "file_path", "description"])
-      : undefined;
-    onStream({
-      type: "tool_use",
-      content: detail ? `${toolName}: ${detail}` : `Running ${toolName}`,
-      toolName,
-      ...(toolId ? { toolId } : {}),
-    });
+    if (isFailureEnvelope(payloadType, kind)) noteFailure(live, payload);
   }
 
   /** Resolve a live run exactly once, mirroring Pi's close semantics. */
@@ -320,7 +240,6 @@ export class MuseEngine implements InterruptibleEngine {
     if (!live || live.settled) return;
     live.settled = true;
     this.cleanup(live);
-
     try {
       live.rl.close();
     } catch {
@@ -334,39 +253,19 @@ export class MuseEngine implements InterruptibleEngine {
       }
     }
     this.liveProcesses.delete(trackingId);
-
-    const result = live.resultText;
-
-    if (live.terminationReason) {
-      live.resolve({ sessionId: live.sessionIdOut, result: "", error: live.terminationReason });
-      return;
-    }
-    // A non-empty answer means the turn succeeded even if a benign error
-    // event also appeared — don't surface it as a failure.
-    if (result.trim()) {
-      live.resolve({ sessionId: live.sessionIdOut, result, error: undefined });
-      return;
-    }
-
-    const errMsg = live.turnError
-      || (code === 0
-        ? "Muse process exited successfully without a final assistant response"
-        : `Muse process exited with code ${code}: ${live.stderr.slice(0, 500)}`);
-    logger.error(errMsg);
-    live.resolve({ sessionId: live.sessionIdOut, result, error: errMsg });
+    live.resolve(settledResult(live, code));
   }
 
   private cleanup(live: LiveProcess): void {
     if (live.hardTimeout) clearTimeout(live.hardTimeout);
     live.hardTimeout = undefined;
-    if (live.promptDir) {
-      try {
-        fs.rmSync(live.promptDir, { recursive: true, force: true });
-      } catch {
-        /* best effort temp cleanup */
-      }
-      live.promptDir = undefined;
+    if (!live.promptDir) return;
+    try {
+      fs.rmSync(live.promptDir, { recursive: true, force: true });
+    } catch {
+      /* best effort temp cleanup */
     }
+    live.promptDir = undefined;
   }
 
   private buildCleanEnv(sessionId?: string): Record<string, string> {
@@ -387,6 +286,148 @@ export class MuseEngine implements InterruptibleEngine {
       logger.debug(`Failed to send ${signal} to Muse process: ${err instanceof Error ? err.message : err}`);
     }
   }
+}
+
+function prepareTurnPrompt(opts: EngineRunOpts): string {
+  let prompt = opts.prompt;
+  if (opts.systemPrompt && !opts.resumeSessionId) {
+    prompt = opts.systemPrompt + "\n\n---\n\n" + prompt;
+  }
+  if (opts.attachments?.length) {
+    prompt += "\n\nAttached files:\n" + opts.attachments.map((a) => `- ${a}`).join("\n");
+  }
+  return prompt;
+}
+
+/** The prompt rides a file, never argv: no size/dash/quoting hazards, and the
+ *  platform-context preamble stays out of the process table. */
+function stagePromptFile(trackingId: string, prompt: string): { promptDir: string; promptFile: string } {
+  const promptDir = path.join(JINN_HOME, "tmp", "muse", trackingId.replace(/[^A-Za-z0-9_.-]/g, "_"));
+  const promptFile = path.join(promptDir, "prompt.txt");
+  fs.mkdirSync(promptDir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(promptFile, prompt, { mode: 0o600 });
+  try {
+    fs.chmodSync(promptFile, 0o600);
+  } catch {
+    /* best effort on platforms without chmod */
+  }
+  return { promptDir, promptFile };
+}
+
+function buildExecArgs(opts: EngineRunOpts, promptFile: string, museSessionId: string, mcpArgs: string[]): string[] {
+  const args: string[] = [
+    "exec",
+    "--json",
+    "--prompt-file", promptFile,
+    "--session-id", museSessionId,
+    "--workspace", opts.cwd,
+    "--trust-workspace",
+    "--approval-mode", "never",
+    "--disable-sandbox",
+  ];
+  if (opts.model) args.push("--model", opts.model);
+  if (opts.effortLevel && opts.effortLevel !== "default") args.push("--reasoning-effort", opts.effortLevel);
+  args.push(...mcpArgs);
+  if (opts.cliFlags?.length) args.push(...opts.cliFlags);
+  return args;
+}
+
+function startLogLine(bin: string, opts: EngineRunOpts, attachedNames: string[]): string {
+  const effort = opts.effortLevel && opts.effortLevel !== "default" ? ` --reasoning-effort ${opts.effortLevel}` : "";
+  const mcp = attachedNames.length ? ` (mcp: ${attachedNames.join(",")})` : "";
+  return `Muse engine starting: ${bin} exec --model ${opts.model ?? "(default)"}${effort}${mcp} (resume: ${opts.resumeSessionId || "none"})`;
+}
+
+function parseEnvelope(line: string): Record<string, unknown> | null {
+  const trimmed = line.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch {
+    logger.debug(`[muse stream] unparseable line: ${trimmed.slice(0, 100)}`);
+    return null;
+  }
+}
+
+function payloadOf(envelope: Record<string, unknown>): Record<string, unknown> {
+  const payload = envelope.payload;
+  return payload && typeof payload === "object" && !Array.isArray(payload) ? payload as Record<string, unknown> : {};
+}
+
+function applyOutputDelta(live: LiveProcess, payload: Record<string, unknown>, onStream: EngineRunOpts["onStream"] | null): void {
+  if (typeof payload.text !== "string" || !payload.text) return;
+  live.resultText += payload.text;
+  if (onStream) onStream({ type: "text", content: payload.text });
+}
+
+function noteFailure(live: LiveProcess, payload: Record<string, unknown>): void {
+  const message = firstString(payload, ["message", "error", "text"]);
+  if (message) live.turnError = message;
+}
+
+function isFailureEnvelope(payloadType: string, kind: string): boolean {
+  return payloadType.includes("error") || payloadType.includes("failed") || kind.endsWith("_failed") || kind === "failed";
+}
+
+/** Pi's settle precedence: interruption > non-empty answer > captured error. */
+function settledResult(live: LiveProcess, code: number | null): EngineResult {
+  if (live.terminationReason) {
+    return { sessionId: live.sessionIdOut, result: "", error: live.terminationReason };
+  }
+  if (live.resultText.trim()) {
+    return { sessionId: live.sessionIdOut, result: live.resultText, error: undefined };
+  }
+  const error = live.turnError
+    || (code === 0
+      ? "Muse process exited successfully without a final assistant response"
+      : `Muse process exited with code ${code}: ${live.stderr.slice(0, 500)}`);
+  logger.error(error);
+  return { sessionId: live.sessionIdOut, result: live.resultText, error };
+}
+
+function toolDelta(payload: Record<string, unknown>, payloadType: string, kind: string): StreamDelta {
+  return isToolResult(payload, payloadType, kind) ? toolResultDelta(payload, kind) : toolUseDelta(payload);
+}
+
+function isToolResult(payload: Record<string, unknown>, payloadType: string, kind: string): boolean {
+  if (payloadType.includes("result") || payloadType.includes("receipt")) return true;
+  if (kind.includes("result") || kind.includes("completed")) return true;
+  return firstString(payload, ["output", "result_text", "text"]) !== undefined;
+}
+
+function toolResultDelta(payload: Record<string, unknown>, kind: string): StreamDelta {
+  const rawResult = payload.result ?? payload.output ?? firstString(payload, ["result_text", "text"]) ?? "";
+  const text = typeof rawResult === "string" ? rawResult : safeStringify(rawResult);
+  const isError = payload.is_error === true || payload.isError === true || kind.includes("failed");
+  const activityReceiptId = extractActivityReceiptId(text, { isError });
+  const toolId = firstString(payload, ["tool_id", "toolId", "call_id", "id", "task_id"]);
+  return {
+    type: "tool_result",
+    content: text.slice(0, 500),
+    toolName: toolNameOf(payload),
+    ...(toolId ? { toolId } : {}),
+    ...(activityReceiptId ? { activityReceiptId } : {}),
+  };
+}
+
+function toolUseDelta(payload: Record<string, unknown>): StreamDelta {
+  const toolName = toolNameOf(payload);
+  const input = payload.input ?? payload.arguments ?? payload.args;
+  const detail = input && typeof input === "object"
+    ? firstString(input as Record<string, unknown>, ["command", "path", "file_path", "description"])
+    : undefined;
+  const toolId = firstString(payload, ["tool_id", "toolId", "call_id", "id", "task_id"]);
+  return {
+    type: "tool_use",
+    content: detail ? `${toolName}: ${detail}` : `Running ${toolName}`,
+    toolName,
+    ...(toolId ? { toolId } : {}),
+  };
+}
+
+function toolNameOf(payload: Record<string, unknown>): string {
+  return firstString(payload, ["tool_name", "toolName", "name", "operation"]) || "tool";
 }
 
 function firstString(obj: Record<string, unknown>, keys: string[]): string | undefined {

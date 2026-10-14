@@ -34,6 +34,7 @@ import { codexMcpConfigArgs, prepareCodexSessionHome } from "../../engines/codex
 import { prepareGrokProjectMcpConfig, cleanupGrokProjectMcpConfig, grokJinnSessionEnv, JINN_GROK_MCP_MARKER } from "../../engines/grok-mcp.js";
 import { buildAcpMcpServers } from "../../engines/hermes-mcp.js";
 import { writePiJinnMcpExtension, cleanupPiJinnMcpExtension, piJinnSessionEnv } from "../../engines/pi-mcp.js";
+import { buildMuseMcpArgs, museJinnSessionEnv } from "../../engines/muse-mcp.js";
 import {
   ensureAntigravityJinnMcpConfig,
   antigravityJinnSessionEnv,
@@ -68,7 +69,7 @@ describe("per-engine jinn-server wiring (GRS-018 seam for GRS-017 default-on)", 
   it("covers every MCP-capable engine (fails when the set grows without a wiring test here)", () => {
     // If a new engine joins MCP_CAPABLE_ENGINES, add its attach-artifact case
     // below and extend this list — the seam must stay complete.
-    expect([...MCP_CAPABLE_ENGINES].sort()).toEqual(["antigravity", "claude", "codex", "grok", "hermes", "pi"]);
+    expect([...MCP_CAPABLE_ENGINES].sort()).toEqual(["antigravity", "claude", "codex", "grok", "hermes", "muse", "pi"]);
   });
 
   it("claude: temp-file JSON carries the jinn spec verbatim, non-secret env only, and cleans up", () => {
@@ -181,6 +182,7 @@ describe("per-engine jinn-server wiring (GRS-018 seam for GRS-017 default-on)", 
       expect(spec.env?.[JINN_WORKFLOW_ATTEMPT_ENV]).toBe("1");
       expect(grokJinnSessionEnv(resolved)[JINN_WORKFLOW_ATTEMPT_ENV]).toBe("1");
       expect(piJinnSessionEnv(resolved)[JINN_WORKFLOW_ATTEMPT_ENV]).toBe("1");
+      expect(museJinnSessionEnv(resolved)[JINN_WORKFLOW_ATTEMPT_ENV]).toBe("1");
       expect(antigravityJinnSessionEnv(resolved)[JINN_WORKFLOW_ATTEMPT_ENV]).toBe("1");
       expect(buildAcpMcpServers(resolved).find((server) => server.name === "jinn")?.env)
         .toContainEqual({ name: JINN_WORKFLOW_ATTEMPT_ENV, value: "1" });
@@ -319,6 +321,32 @@ describe("per-engine jinn-server wiring (GRS-018 seam for GRS-017 default-on)", 
       expect(antigravityJinnSessionEnv(resolveMcpServers(ON, undefined))).toEqual({});
       expect(antigravityJinnSessionEnv(undefined)).toEqual({});
     });
+
+    it("muse: -c argv carries the jinn spec with identity in server env, NEVER the gateway token", () => {
+      const resolved = stamped();
+      const capability = capabilityOf(resolved);
+      const { args, attachedNames } = buildMuseMcpArgs(resolved, SID);
+      expect(attachedNames).toEqual(["jinn"]);
+      const joined = args.join(" ");
+      expect(joined).not.toContain(TOKEN);
+      const cIndex = args.indexOf("-c");
+      expect(cIndex).toBeGreaterThan(-1);
+      const assignment = args[cIndex + 1]!;
+      expect(assignment.startsWith("mcpServers.jinn=")).toBe(true);
+      const spec = JSON.parse(assignment.slice("mcpServers.jinn=".length));
+      expect(spec.command).toBeTruthy();
+      expect(spec.env.JINN_SESSION_ID).toBe(SID);
+      expect(spec.env.JINN_SESSION_CAPABILITY).toBe(capability);
+      expect(spec.env.JINN_HOME).toBeTruthy();
+      expect(spec.env.JINN_GATEWAY_URL).toBe(GATEWAY_URL);
+      expect(museJinnSessionEnv(resolved)).toEqual({
+        JINN_SESSION_ID: SID,
+        JINN_SESSION_CAPABILITY: capability,
+        JINN_GATEWAY_URL: GATEWAY_URL,
+      });
+      expect(museJinnSessionEnv(resolveMcpServers(ON, undefined))).toEqual({});
+      expect(museJinnSessionEnv(undefined)).toEqual({});
+    });
   });
 
   it("explicit kill switch keeps every adapter a no-op for jinn", () => {
@@ -336,6 +364,9 @@ describe("per-engine jinn-server wiring (GRS-018 seam for GRS-017 default-on)", 
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }
+
+    // muse: no jinn -c override in argv.
+    expect(buildMuseMcpArgs(resolved, "wiring-muse-off").args.join(" ")).not.toContain("mcpServers.jinn");
 
     // hermes: no jinn entry on the ACP wire (and thus no token anywhere).
     expect(buildAcpMcpServers(resolved).find((s) => s.name === "jinn")).toBeUndefined();
