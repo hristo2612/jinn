@@ -255,7 +255,7 @@ engines:
   # LAB (pendlerosa fork): Muse headless engine.
   muse:
     bin: muse
-    model: muse-wonder-full-1.0
+    model: muse-wonder-1.0
     effortLevel: high
 # Model + capability registry — single source of truth for the UI selectors.
 # Add a model here (id + label + capability flags); no code change needed.
@@ -293,12 +293,13 @@ models:
       - { id: "Claude Opus 4.6 (Thinking)", label: "Claude Opus 4.6 Thinking", supportsEffort: false, effortLevels: [], contextWindow: 200000 }
       - { id: "GPT-OSS 120B (Medium)", label: "GPT-OSS 120B Medium", supportsEffort: false, effortLevels: [], contextWindow: 131072 }
   muse:
-    default: muse-wonder-full-1.0
+    default: muse-wonder-1.0
     effortMechanism: muse-flag
     models:
-      - { id: muse-wonder-full-1.0, label: "Muse Wonder Full 1.0", supportsEffort: true, effortLevels: [low, medium, high, xhigh, max, ultra] }
-      - { id: muse-wonder-1.0, label: "Muse Wonder 1.0", supportsEffort: true, effortLevels: [low, medium, high, xhigh, max, ultra] }
-      - { id: muse-spark-1.3, label: "Muse Spark 1.3", supportsEffort: true, effortLevels: [low, medium, high, xhigh, max, ultra] }
+      - { id: muse-wonder-1.0, label: "Muse Wonder 1.0", supportsEffort: true, effortLevels: [low, medium, high, xhigh, max, ultra], contextWindow: 1007997 }
+      - { id: muse-wonder-full-1.0, label: "Muse Wonder Full 1.0", supportsEffort: true, effortLevels: [low, medium, high, xhigh, max, ultra], contextWindow: 1007997 }
+      - { id: muse-spark-1.3, label: "Muse Spark 1.3", supportsEffort: true, effortLevels: [low, medium, high, xhigh, max, ultra], contextWindow: 1007997 }
+      - { id: muse-spark-1.2, label: "Muse Spark 1.2", supportsEffort: true, effortLevels: [low, medium, high, xhigh, max, ultra], contextWindow: 1007997 }
 connectors: {}
 portal:
   companyName: "Jinn"
