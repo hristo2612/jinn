@@ -179,9 +179,14 @@ describe("MuseEngine argv", () => {
     expect(assignment.startsWith("mcpServers.jinn=")).toBe(true);
     const spec = JSON.parse(assignment.slice("mcpServers.jinn=".length));
     expect(spec.command).toBe("node");
-    expect(spec.env.JINN_SESSION_CAPABILITY).toBe("cap-123");
+    // Muse refuses literal secret leaves in -c: env rides as ${VAR} refs,
+    // literals only in the child env (probe-verified against Muse 1.4.7).
+    expect(spec.env.JINN_SESSION_CAPABILITY).toBe("${JINN_SESSION_CAPABILITY}");
+    expect(spec.env.JINN_HOME).toBe("${JINN_HOME}");
+    expect(call.args.join(" ")).not.toContain("cap-123");
     const env = (call.opts as { env: Record<string, string> }).env;
     expect(env.JINN_SESSION_CAPABILITY).toBe("cap-123");
+    expect(env.JINN_HOME).toBe("/home/node/.jinn");
 
     call.proc.emitStdout(outputDelta("ok") + "\n");
     await flush();

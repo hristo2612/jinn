@@ -118,7 +118,7 @@ export class MuseEngine implements InterruptibleEngine {
     const args = buildExecArgs(opts, staged.promptFile, museSessionId, mcp.args);
     logger.info(startLogLine(bin, opts, mcp.attachedNames));
 
-    const env = { ...this.buildCleanEnv(trackingId), ...museJinnSessionEnv(opts.resolvedMcp) };
+    const env = { ...this.buildCleanEnv(trackingId), ...mcp.childEnv, ...museJinnSessionEnv(opts.resolvedMcp) };
     return this.spawnTurn({
       bin,
       args,

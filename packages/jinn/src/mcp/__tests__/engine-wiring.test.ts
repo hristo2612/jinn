@@ -322,23 +322,31 @@ describe("per-engine jinn-server wiring (GRS-018 seam for GRS-017 default-on)", 
       expect(antigravityJinnSessionEnv(undefined)).toEqual({});
     });
 
-    it("muse: -c argv carries the jinn spec with identity in server env, NEVER the gateway token", () => {
+    it("muse: -c argv carries ${VAR} refs only — identity literals ride the child env, NEVER argv or the token", () => {
       const resolved = stamped();
       const capability = capabilityOf(resolved);
-      const { args, attachedNames } = buildMuseMcpArgs(resolved, SID);
+      const { args, attachedNames, childEnv } = buildMuseMcpArgs(resolved, SID);
       expect(attachedNames).toEqual(["jinn"]);
       const joined = args.join(" ");
       expect(joined).not.toContain(TOKEN);
+      expect(joined).not.toContain(String(capability));
+      // The session id itself is descriptive and legitimately rides the
+      // spec's bootstrap args (--jinn-session-id) for every engine; only
+      // the capability and token are secret-channel material.
       const cIndex = args.indexOf("-c");
       expect(cIndex).toBeGreaterThan(-1);
       const assignment = args[cIndex + 1]!;
       expect(assignment.startsWith("mcpServers.jinn=")).toBe(true);
       const spec = JSON.parse(assignment.slice("mcpServers.jinn=".length));
       expect(spec.command).toBeTruthy();
-      expect(spec.env.JINN_SESSION_ID).toBe(SID);
-      expect(spec.env.JINN_SESSION_CAPABILITY).toBe(capability);
-      expect(spec.env.JINN_HOME).toBeTruthy();
-      expect(spec.env.JINN_GATEWAY_URL).toBe(GATEWAY_URL);
+      expect(spec.env.JINN_SESSION_ID).toBe("${JINN_SESSION_ID}");
+      expect(spec.env.JINN_SESSION_CAPABILITY).toBe("${JINN_SESSION_CAPABILITY}");
+      expect(spec.env.JINN_HOME).toBe("${JINN_HOME}");
+      expect(spec.env.JINN_GATEWAY_URL).toBe("${JINN_GATEWAY_URL}");
+      expect(childEnv.JINN_SESSION_ID).toBe(SID);
+      expect(childEnv.JINN_SESSION_CAPABILITY).toBe(capability);
+      expect(childEnv.JINN_GATEWAY_URL).toBe(GATEWAY_URL);
+      expect(childEnv.JINN_HOME).toBeTruthy();
       expect(museJinnSessionEnv(resolved)).toEqual({
         JINN_SESSION_ID: SID,
         JINN_SESSION_CAPABILITY: capability,

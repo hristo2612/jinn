@@ -15,17 +15,26 @@ const SESSION_ENV_KEYS = ["JINN_SESSION_ID", "JINN_SESSION_CAPABILITY", "JINN_GA
  * startup, so a server that cannot start fails the turn visibly instead of
  * silently degrading — which is what the attachment authed-smoke gate wants.
  *
- * The per-session capability rides inside the built-in server's `env` in the
- * `-c` JSON (and, mirrored, in the child env via {@link museJinnSessionEnv}).
- * That is the same same-uid trust boundary pi uses for env-carried identity;
- * the gateway bearer token itself is never serialized — the server reads it
- * from `<JINN_HOME>/gateway.json` per the resolver design.
+ * Every `env` leaf under `mcpServers` is a *secret leaf* to the CLI: a
+ * literal value refuses the run ("secret leaves need exactly one
+ * whole-value `${VAR}` naming a set variable", probe-verified — even
+ * JINN_HOME counts). So the `-c` JSON carries `${KEY}` references only and
+ * the literal values ride the muse child env ({@link MuseMcpArgs.childEnv}),
+ * which muse expands when spawning the server. The capability therefore
+ * never reaches argv at all; the gateway bearer token is never serialized
+ * either — the server reads it from `<JINN_HOME>/gateway.json` per the
+ * resolver design.
  */
 
 export interface MuseMcpArgs {
   args: string[];
   /** Names actually wired onto argv (empty when nothing resolved). */
   attachedNames: string[];
+  /** Literal env for the muse child process, resolving the `${VAR}` refs in
+   *  `args`. Merged across attached stdio servers in order; on a key
+   *  collision the later server wins for every ref of that name (inherent
+   *  to muse's whole-value expansion — the built-in's keys are unique). */
+  childEnv: Record<string, string>;
 }
 
 function isStdio(spec: McpServerConfig): spec is McpServerStdioConfig {
@@ -59,13 +68,15 @@ export function buildMuseMcpArgs(resolvedMcp: ResolvedMcpConfig | undefined, ses
   warnUnattachableJinn(resolvedMcp, sessionId);
   const args: string[] = [];
   const attachedNames: string[] = [];
+  const childEnv: Record<string, string> = {};
   for (const [name, spec] of Object.entries(resolvedMcp?.mcpServers ?? {})) {
-    const value = museServerValue(name, spec, sessionId);
-    if (!value) continue;
-    args.push("-c", `mcpServers.${name}=${JSON.stringify(value)}`);
+    const wired = museServerValue(name, spec, sessionId);
+    if (!wired) continue;
+    args.push("-c", `mcpServers.${name}=${JSON.stringify(wired.value)}`);
     attachedNames.push(name);
+    Object.assign(childEnv, wired.childEnv);
   }
-  return { args, attachedNames };
+  return { args, attachedNames, childEnv };
 }
 
 function warnUnattachableJinn(resolvedMcp: ResolvedMcpConfig | undefined, sessionId: string): void {
@@ -75,29 +86,55 @@ function warnUnattachableJinn(resolvedMcp: ResolvedMcpConfig | undefined, sessio
   logger.warn(`Muse engine is starting session ${sessionId} WITHOUT the jinn toolset: the resolved "jinn" server ${shape}, and the built-in server is stdio-only.`);
 }
 
-function museServerValue(name: string, spec: McpServerConfig, sessionId: string): Record<string, unknown> | null {
+type WiredServer = { value: Record<string, unknown>; childEnv: Record<string, string> };
+
+function museServerValue(name: string, spec: McpServerConfig, sessionId: string): WiredServer | null {
   if (!SAFE_SERVER_NAME.test(name)) {
     logger.warn(`Muse engine is skipping MCP server "${name}" for session ${sessionId}: the name cannot be addressed via -c mcpServers.<name>.`);
     return null;
   }
   if (isStdio(spec)) return stdioValue(spec);
-  const urlValue = urlServerValue(spec);
+  const urlValue = urlServerValue(name, spec, sessionId);
   if (urlValue) return urlValue;
   logger.warn(`Muse engine is skipping MCP server "${name}" for session ${sessionId}: unrecognized server shape (no command, no url).`);
   return null;
 }
 
-function stdioValue(spec: McpServerStdioConfig): Record<string, unknown> {
+function stdioValue(spec: McpServerStdioConfig): WiredServer {
+  const childEnv = { ...(spec.env ?? {}) };
+  const envRefs: Record<string, string> = {};
+  for (const key of Object.keys(childEnv)) envRefs[key] = `\${${key}}`;
   return {
-    command: spec.command,
-    ...(spec.args?.length ? { args: spec.args } : {}),
-    ...(spec.env && Object.keys(spec.env).length ? { env: spec.env } : {}),
+    value: {
+      command: spec.command,
+      ...(spec.args?.length ? { args: spec.args } : {}),
+      ...(Object.keys(envRefs).length ? { env: envRefs } : {}),
+    },
+    childEnv,
   };
 }
 
-function urlServerValue(spec: McpServerConfig): Record<string, unknown> | null {
+const WHOLE_VALUE_REF = /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/;
+
+function urlServerValue(name: string, spec: McpServerConfig, sessionId: string): WiredServer | null {
   const url = (spec as { url?: unknown }).url;
   if (typeof url !== "string" || !url) return null;
-  const headers = (spec as { headers?: unknown }).headers;
-  return { url, ...(headers && typeof headers === "object" ? { headers } : {}) };
+  const headers = refOnlyHeaders(name, (spec as { headers?: unknown }).headers, sessionId);
+  return { value: { url, ...(headers ? { headers } : {}) }, childEnv: {} };
+}
+
+/** Header values are secret leaves too: only pre-formed `${VAR}` refs may
+ *  pass (the operator then owns setting that var in the gateway env);
+ *  literals are dropped loudly rather than refusing the whole turn. */
+function refOnlyHeaders(name: string, raw: unknown, sessionId: string): Record<string, string> | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const headers: Record<string, string> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === "string" && WHOLE_VALUE_REF.test(value)) {
+      headers[key] = value;
+    } else {
+      logger.warn(`Muse engine is dropping header "${key}" of MCP server "${name}" for session ${sessionId}: muse only accepts whole-value \${VAR} references for secret leaves.`);
+    }
+  }
+  return Object.keys(headers).length ? headers : null;
 }
