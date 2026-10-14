@@ -36,6 +36,7 @@ import {
   HERMES_EFFORT_LEVELS,
   type HermesModelDiscovery,
 } from "./hermes-models.js";
+import { knownMuseModels, MUSE_EFFORT_LEVELS, MUSE_DEFAULT_MODEL } from "./muse-models.js";
 
 /**
  * Model + capability registry — the single source of truth for which engines and
@@ -52,7 +53,7 @@ import {
  */
 
 /** Engines registered in this build (mirrors server.ts engine map). */
-export const ENGINE_NAMES = ["claude", "codex", "antigravity", "grok", "pi", "hermes"] as const;
+export const ENGINE_NAMES = ["claude", "codex", "antigravity", "grok", "pi", "hermes", "muse"] as const;
 export type EngineName = (typeof ENGINE_NAMES)[number];
 export const PTY_VIEW_ENGINE_NAMES = ["claude", "codex", "antigravity", "grok", "hermes"] as const; // engines with a /ws/pty view
 export type PtyViewEngineName = (typeof PTY_VIEW_ENGINE_NAMES)[number];
@@ -65,6 +66,7 @@ const ENGINE_BIN: Record<EngineName, string> = {
   grok: "grok",
   pi: "pi",
   hermes: "hermes",
+  muse: "muse",
 };
 
 const EFFORT_MECHANISM: Record<EngineName, EffortMechanism> = {
@@ -74,6 +76,7 @@ const EFFORT_MECHANISM: Record<EngineName, EffortMechanism> = {
   grok: "grok-flag",
   pi: "pi-flag",
   hermes: "none",
+  muse: "muse-flag",
 };
 
 export const CODEX_DEFAULT_MODEL = "gpt-5.5";
@@ -88,6 +91,7 @@ const SYNTH_DEFAULTS: Record<EngineName, { supportsEffort: boolean; effortLevels
   // provider/id form keeps it well-typed for the engine's split.
   pi: { supportsEffort: false, effortLevels: [], fallbackModel: "ollama/gemma4:12b" },
   hermes: { supportsEffort: false, effortLevels: HERMES_EFFORT_LEVELS, fallbackModel: "openai-codex:gpt-5.5" },
+  muse: { supportsEffort: true, effortLevels: MUSE_EFFORT_LEVELS, fallbackModel: MUSE_DEFAULT_MODEL },
 };
 
 /** Optional per-engine `bin` override from config. */
@@ -116,6 +120,7 @@ const ENGINE_INSTALL_HINT: Record<EngineName, string> = {
   grok: "npm install -g @xai-official/grok, then run grok once to authenticate",
   pi: "install the Pi CLI",
   hermes: "install the Hermes CLI: curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash",
+  muse: "install the Muse launcher from https://api.meta.ai/muse-launcher.sh, then run muse login once to authenticate (lab image pins the binary instead — see engines/muse.ts)",
 };
 
 /** Actionable error message for a session blocked by a missing engine binary. */
@@ -561,6 +566,17 @@ export function synthesizeFromEngineConfig(config: JinnConfig): ModelRegistry {
     }
     if (name === "grok") {
       const known = knownGrokModels(modelId);
+      registry[name] = {
+        name,
+        available: engineAvailable(config, name),
+        defaultModel: known.defaultModel || modelId,
+        effortMechanism: EFFORT_MECHANISM[name],
+        models: known.models,
+      };
+      continue;
+    }
+    if (name === "muse") {
+      const known = knownMuseModels(modelId);
       registry[name] = {
         name,
         available: engineAvailable(config, name),

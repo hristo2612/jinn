@@ -716,7 +716,7 @@ export interface ConnectorInstance {
  */
 
 /** How an engine conveys reasoning-effort to its CLI. */
-export type EffortMechanism = "claude-flag" | "codex-config" | "grok-flag" | "pi-flag" | "none";
+export type EffortMechanism = "claude-flag" | "codex-config" | "grok-flag" | "pi-flag" | "muse-flag" | "none";
 
 /** A single model and its capabilities, as exposed to the UI / validation. */
 export interface ModelInfo {

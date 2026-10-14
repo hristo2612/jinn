@@ -361,6 +361,12 @@ export async function collectEngineLimits(
         name,
         "Hermes currently exposes model/session behavior through its CLI, but no stable local quota endpoint is registered.",
       );
+    } else if (name === "muse") {
+      engines[name] = collectUnsupported(
+        config,
+        name,
+        "Muse exposes subscription usage only over its session wire protocol; no quota collector is registered for the headless exec adapter (lab fork).",
+      );
     } else {
       engines[name] = collectUnsupported(config, name, "No limit collector is registered for this engine.");
     }

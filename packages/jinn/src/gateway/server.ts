@@ -27,6 +27,7 @@ import { CodexEngine, startCodexSessionHomeSweeps } from "../engines/codex.js";
 import { CodexInteractiveEngine } from "../engines/codex-interactive.js";
 import { createAntigravityEnginePair } from "../engines/antigravity-runtime.js";
 import { PiEngine } from "../engines/pi.js";
+import { MuseEngine } from "../engines/muse.js";
 import { GrokEngine } from "../engines/grok.js";
 import { GrokInteractiveEngine } from "../engines/grok-interactive.js";
 import { HermesAcpEngine } from "../engines/hermes-acp.js";
@@ -639,7 +640,8 @@ export async function startGateway(
   });
   const hermesInteractiveEngine = new HermesInteractiveEngine(hermesLifecycle);
   const piEngine = new PiEngine();
-  logger.info("Engines initialized: claude (interactive PTY), codex (headless + interactive PTY), antigravity (headless + interactive PTY), grok (headless + interactive PTY), hermes (headless + interactive PTY), pi");
+  const museEngine = new MuseEngine();
+  logger.info("Engines initialized: claude (interactive PTY), codex (headless + interactive PTY), antigravity (headless + interactive PTY), grok (headless + interactive PTY), hermes (headless + interactive PTY), pi, muse (headless)");
 
   const codexEngine = new CodexEngine();
   const grokEngine = new GrokEngine();
@@ -655,6 +657,7 @@ export async function startGateway(
   engines.set("grok", grokEngine);
   engines.set("hermes", hermesEngine);
   engines.set("pi", piEngine);
+  engines.set("muse", museEngine);
 
   // PTY-capable engines, keyed by engine name — the /ws/pty handler routes by
   // session.engine so the xterm view attaches to the right engine.
