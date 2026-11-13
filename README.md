@@ -1,3 +1,6 @@
+> [!WARNING]
+> **Not maintained.** This project is no longer developed or used by its author. Issues and pull requests will not be answered.
+
 <h1 align="center">🧞 Jinn</h1>
 
 <p align="center"><b>Run your AI agents as a company.</b></p>
