@@ -320,9 +320,9 @@ describe("featured models (registry marking)", () => {
   });
 });
 
-it("drift guard: registers 6 engines and stamps supportsPty on the 5 PTY-capable ones", () => {
+it("drift guard: registers 7 engines and stamps supportsPty on the 5 PTY-capable ones", () => {
   const reg = getModelRegistry(cfg({}));
-  expect(Object.keys(reg)).toEqual(["claude", "codex", "antigravity", "grok", "pi", "hermes"]);
+  expect(Object.keys(reg)).toEqual(["claude", "codex", "antigravity", "grok", "pi", "hermes", "muse"]);
   expect(Object.keys(reg).filter((n) => reg[n].supportsPty)).toEqual(["claude", "codex", "antigravity", "grok", "hermes"]);
 });
 

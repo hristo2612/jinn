@@ -36,7 +36,7 @@ describe("isMcpCapableEngine (GRS-012b-0 capability set)", () => {
   });
 
   it("MCP_CAPABLE_ENGINES is exactly the wired engines", () => {
-    expect([...MCP_CAPABLE_ENGINES].sort()).toEqual(["antigravity", "claude", "codex", "grok", "hermes", "pi"]);
+    expect([...MCP_CAPABLE_ENGINES].sort()).toEqual(["antigravity", "claude", "codex", "grok", "hermes", "muse", "pi"]);
   });
 });
 

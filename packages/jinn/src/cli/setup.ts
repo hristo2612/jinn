@@ -252,6 +252,11 @@ engines:
   hermes:
     bin: hermes
     model: openai-codex:gpt-5.5
+  # Muse headless engine.
+  muse:
+    bin: muse
+    model: muse-wonder-1.0
+    effortLevel: high
 # Model + capability registry — single source of truth for the UI selectors.
 # Add a model here (id + label + capability flags); no code change needed.
 # effortLevels gate the effort picker (empty = no effort support). Omit the block
@@ -287,6 +292,14 @@ models:
       - { id: "Claude Sonnet 4.6 (Thinking)", label: "Claude Sonnet 4.6 Thinking", supportsEffort: false, effortLevels: [], contextWindow: 200000 }
       - { id: "Claude Opus 4.6 (Thinking)", label: "Claude Opus 4.6 Thinking", supportsEffort: false, effortLevels: [], contextWindow: 200000 }
       - { id: "GPT-OSS 120B (Medium)", label: "GPT-OSS 120B Medium", supportsEffort: false, effortLevels: [], contextWindow: 131072 }
+  muse:
+    default: muse-wonder-1.0
+    effortMechanism: muse-flag
+    models:
+      - { id: muse-wonder-1.0, label: "Muse Wonder 1.0", supportsEffort: true, effortLevels: [low, medium, high, xhigh, max, ultra], contextWindow: 1007997 }
+      - { id: muse-wonder-full-1.0, label: "Muse Wonder Full 1.0", supportsEffort: true, effortLevels: [low, medium, high, xhigh, max, ultra], contextWindow: 1007997 }
+      - { id: muse-spark-1.3, label: "Muse Spark 1.3", supportsEffort: true, effortLevels: [low, medium, high, xhigh, max, ultra], contextWindow: 1007997 }
+      - { id: muse-spark-1.2, label: "Muse Spark 1.2", supportsEffort: true, effortLevels: [low, medium, high, xhigh, max, ultra], contextWindow: 1007997 }
 connectors: {}
 portal:
   companyName: "Jinn"
@@ -392,11 +405,19 @@ export async function runSetup(opts?: { force?: boolean }): Promise<void> {
     info("Install the Hermes CLI: curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash");
   }
 
+  // 4b. Check for muse binary (optional engine; only needed for muse employees)
+  const musePath = whichBin("muse");
+  if (musePath) {
+    ok(`muse found at ${musePath}`);
+  } else {
+    warn("muse not found (only needed for muse employees)");
+  }
+
   // 5. Loudly warn if NO engine is installed — the gateway will start, but it
   //     cannot run any session until at least one engine CLI is on PATH.
-  if (!claudePath && !codexPath && !grokPath && !hermesPath) {
+  if (!claudePath && !codexPath && !grokPath && !hermesPath && !musePath) {
     console.log("");
-    warn("No AI engine CLI found (claude, codex, grok, or hermes).");
+    warn("No AI engine CLI found (claude, codex, grok, hermes, or muse).");
     warn("The gateway will start, but sessions will fail until you install one above.");
   }
 
@@ -422,14 +443,20 @@ export async function runSetup(opts?: { force?: boolean }): Promise<void> {
     if (ver) ok(`hermes --version: ${ver}`);
     else warn("hermes --version failed");
   }
+  if (musePath) {
+    const ver = runVersion("muse");
+    if (ver) ok(`muse --version: ${ver}`);
+    else warn("muse --version failed");
+  }
   // A successful --version does NOT mean the engine is authenticated — the #1
   // silent fresh-install failure. Nudge the login step explicitly.
-  if (claudePath || codexPath || grokPath || hermesPath) {
+  if (claudePath || codexPath || grokPath || hermesPath || musePath) {
     warn("A successful --version does NOT mean the engine is logged in.");
     if (claudePath) info("First run? Launch `claude` once and use /login to authenticate.");
     if (codexPath) info("First run? Launch `codex` once and sign in to authenticate.");
     if (grokPath) info("First run? Launch `grok` once to authenticate, or configure XAI_API_KEY.");
     if (hermesPath) info("First run? Launch `hermes` once to authenticate, or configure your API key.");
+    if (musePath) info("First run? Run `muse login` once and approve the code in your browser.");
     info("Do this before `jinn start`, or sessions will fail silently.");
   }
 
